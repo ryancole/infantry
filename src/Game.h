@@ -7,6 +7,8 @@
 
 #include <DirectXMath.h>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 // Prototype gameplay: one soldier on a grid arena, screen-relative WASD
@@ -15,9 +17,8 @@
 class Game
 {
 public:
-    Game();
-
-    // Loads GPU assets; call once after Renderer::Init.
+    // Loads the level (assets/levels/) and GPU assets; call once after
+    // Renderer::Init. Throws std::runtime_error on a bad level or model.
     void LoadContent(Renderer& renderer);
 
     void Update(float dt, const Input& input, IsoCamera& camera);
@@ -30,14 +31,19 @@ private:
         float life;
     };
 
-    struct Obstacle
+    // Runtime halves of a level object: solid objects contribute a Collider
+    // (physics + player push-out), visible ones a Prop. Collider-only objects
+    // are blockout geometry, drawn as debug cubes until they get a model.
+    struct Collider
     {
-        DirectX::XMFLOAT3 pos;
+        DirectX::XMFLOAT3 center;
         DirectX::XMFLOAT3 size;
+        bool debugDraw; // no model to represent it, so draw the box itself
     };
 
-    struct TreeInstance
+    struct Prop
     {
+        const Model* model; // owned by m_models
         DirectX::XMFLOAT3 pos;
         float scale;
         float yaw;
@@ -46,14 +52,15 @@ private:
     void FireWeapon();
 
     Physics m_physics;
+    float m_arenaHalf = 32.0f;
     DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
     float m_fireCooldown = 0.0f;
 
     std::vector<Projectile> m_projectiles;
-    std::vector<Obstacle> m_obstacles;
-    std::vector<TreeInstance> m_trees;
-    std::unique_ptr<Model> m_treeModel;
+    std::vector<Collider> m_colliders;
+    std::vector<Prop> m_props;
+    std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
     std::vector<Vertex> m_scratch;     // reused per draw
 };

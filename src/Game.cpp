@@ -1,5 +1,7 @@
 #include "Game.h"
 
+#include "Level.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -7,7 +9,6 @@ using namespace DirectX;
 
 namespace
 {
-    constexpr float kArenaHalf = 32.0f;      // arena spans [-32, 32] on x and z
     constexpr float kPlayerSpeed = 9.0f;
     constexpr float kPlayerHalf = 0.4f;
     constexpr float kProjectileSpeed = 34.0f;
@@ -60,55 +61,51 @@ namespace
     }
 }
 
-Game::Game()
+void Game::LoadContent(Renderer& renderer)
 {
+    const LevelData level = LevelData::Load("assets/levels/arena01.json");
+    m_arenaHalf = level.arenaHalf;
+    m_playerPos = level.spawns.front().pos; // single player: first spawn wins
+
     // Static floor grid.
-    const int half = static_cast<int>(kArenaHalf);
+    const int half = static_cast<int>(m_arenaHalf);
     for (int i = -half; i <= half; ++i)
     {
         const bool border = (i == -half || i == half);
         const bool major = (i % 8) == 0;
         const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
         const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -kArenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, kArenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ -kArenaHalf, 0.0f, f }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ kArenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -m_arenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, m_arenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ -m_arenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ m_arenaHalf, 0.0f, f }, col });
     }
 
-    // A few bunkers to give the arena some structure.
-    m_obstacles = {
-        { { -10.0f, 1.0f, -6.0f }, { 4.0f, 2.0f, 2.0f } },
-        { { 8.0f, 1.0f, 10.0f }, { 2.0f, 2.0f, 6.0f } },
-        { { 14.0f, 0.75f, -12.0f }, { 3.0f, 1.5f, 3.0f } },
-        { { -18.0f, 1.25f, 14.0f }, { 5.0f, 2.5f, 2.5f } },
-        { { 0.0f, 1.0f, -20.0f }, { 8.0f, 2.0f, 2.0f } },
-    };
-
-    // Scattered trees (kept clear of bunkers and the spawn point), with a
-    // little deterministic variety in size and facing.
-    m_trees = {
-        { { -24.0f, 0.0f, -20.0f }, 1.20f, 0.4f },
-        { { 20.0f, 0.0f, -24.0f }, 0.95f, 2.1f },
-        { { 25.0f, 0.0f, 17.0f }, 1.35f, 4.8f },
-        { { -8.0f, 0.0f, 24.0f }, 1.05f, 1.3f },
-        { { -26.0f, 0.0f, 8.0f }, 0.85f, 3.6f },
-        { { 15.0f, 0.0f, 5.0f }, 1.10f, 5.5f },
-        { { 6.0f, 0.0f, -13.0f }, 0.90f, 0.9f },
-        { { -14.0f, 0.0f, -26.0f }, 1.25f, 2.8f },
-    };
-
-    // Static collision: the arena floor plus the bunkers. Projectiles are
-    // dynamic bodies, so gravity, bounces, and ricochets come from Jolt.
+    // Arena floor. Projectiles are dynamic bodies, so gravity, bounces, and
+    // ricochets come from Jolt.
     m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
-                           { kArenaHalf * 2.0f, 1.0f, kArenaHalf * 2.0f });
-    for (const Obstacle& ob : m_obstacles)
-        m_physics.AddStaticBox(ob.pos, ob.size);
-}
+                           { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
 
-void Game::LoadContent(Renderer& renderer)
-{
-    m_treeModel = renderer.LoadModel("assets\\tree.glb");
+    // Split each level object into its runtime halves: collision box and/or
+    // rendered model. Each distinct model is loaded once; instances share it.
+    for (const LevelData::Object& obj : level.objects)
+    {
+        if (obj.collider)
+        {
+            const XMFLOAT3 size = { obj.collider->x * obj.scale, obj.collider->y * obj.scale,
+                                    obj.collider->z * obj.scale };
+            const XMFLOAT3 center = { obj.pos.x, obj.pos.y + size.y * 0.5f, obj.pos.z };
+            m_colliders.push_back({ center, size, obj.model.empty() });
+            m_physics.AddStaticBox(center, size);
+        }
+        if (!obj.model.empty())
+        {
+            auto it = m_models.find(obj.model);
+            if (it == m_models.end())
+                it = m_models.emplace(obj.model, renderer.LoadModel(obj.model)).first;
+            m_props.push_back({ it->second.get(), obj.pos, obj.scale, obj.yaw });
+        }
+    }
 }
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
@@ -133,19 +130,19 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerPos.x += dx * kPlayerSpeed * dt;
         m_playerPos.z += dz * kPlayerSpeed * dt;
     }
-    const float limit = kArenaHalf - kPlayerHalf;
+    const float limit = m_arenaHalf - kPlayerHalf;
     m_playerPos.x = std::clamp(m_playerPos.x, -limit, limit);
     m_playerPos.z = std::clamp(m_playerPos.z, -limit, limit);
 
-    // Keep the player out of the bunkers: push out along the axis of least
+    // Keep the player out of solid objects: push out along the axis of least
     // penetration. (Kinematic on purpose — movement should stay crisp, so the
     // player doesn't live in the physics world yet.)
-    for (const Obstacle& ob : m_obstacles)
+    for (const Collider& c : m_colliders)
     {
-        const float ex = ob.size.x * 0.5f + kPlayerHalf;
-        const float ez = ob.size.z * 0.5f + kPlayerHalf;
-        const float px = m_playerPos.x - ob.pos.x;
-        const float pz = m_playerPos.z - ob.pos.z;
+        const float ex = c.size.x * 0.5f + kPlayerHalf;
+        const float ez = c.size.z * 0.5f + kPlayerHalf;
+        const float px = m_playerPos.x - c.center.x;
+        const float pz = m_playerPos.z - c.center.z;
         if (std::abs(px) >= ex || std::abs(pz) >= ez)
             continue;
         const float pushX = (px > 0.0f) ? ex - px : -ex - px;
@@ -179,8 +176,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         shot.life -= dt;
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
-        if (pos.x < -kArenaHalf || pos.x > kArenaHalf ||
-            pos.z < -kArenaHalf || pos.z > kArenaHalf)
+        if (pos.x < -m_arenaHalf || pos.x > m_arenaHalf ||
+            pos.z < -m_arenaHalf || pos.z > m_arenaHalf)
             shot.life = 0.0f;
     }
     for (const Projectile& shot : m_projectiles)
@@ -208,8 +205,9 @@ void Game::Render(Renderer& renderer)
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
 
     m_scratch.clear();
-    for (const Obstacle& ob : m_obstacles)
-        AppendCube(m_scratch, ob.pos, ob.size, kObstacleColor);
+    for (const Collider& c : m_colliders)
+        if (c.debugDraw)
+            AppendCube(m_scratch, c.center, c.size, kObstacleColor);
 
     // Player body plus a small "turret" cap.
     const XMFLOAT3 body = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
@@ -225,15 +223,12 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
-    if (m_treeModel)
+    for (const Prop& prop : m_props)
     {
-        for (const TreeInstance& tree : m_trees)
-        {
-            const XMMATRIX world = XMMatrixScaling(tree.scale, tree.scale, tree.scale) *
-                                   XMMatrixRotationY(tree.yaw) *
-                                   XMMatrixTranslation(tree.pos.x, tree.pos.y, tree.pos.z);
-            renderer.DrawModel(*m_treeModel, world);
-        }
+        const XMMATRIX world = XMMatrixScaling(prop.scale, prop.scale, prop.scale) *
+                               XMMatrixRotationY(prop.yaw) *
+                               XMMatrixTranslation(prop.pos.x, prop.pos.y, prop.pos.z);
+        renderer.DrawModel(*prop.model, world);
     }
 
     // Aim indicator line.

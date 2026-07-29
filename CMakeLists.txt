@@ -37,13 +37,21 @@ FetchContent_Declare(JoltPhysics
     SOURCE_SUBDIR Build
 )
 
-FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics)
+# nlohmann/json: parses the hand-authored level files in assets/levels/.
+# Release tarball instead of the git repo — the repo's history is huge.
+FetchContent_Declare(json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+
+FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json)
 
 add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
     src/Camera.cpp
     src/Game.cpp
+    src/Level.cpp
     src/Model.cpp
     src/Physics.cpp
 )
@@ -59,6 +67,7 @@ target_include_directories(infantry PRIVATE ${cgltf_SOURCE_DIR})
 target_link_libraries(infantry PRIVATE
     DirectXTK12
     Jolt
+    nlohmann_json::nlohmann_json
     d3d12
     dxgi
     user32

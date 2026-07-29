@@ -120,7 +120,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     }
     catch (const std::exception& e)
     {
-        MessageBoxA(hwnd, e.what(), "Renderer initialization failed", MB_OK | MB_ICONERROR);
+        MessageBoxA(hwnd, e.what(), "Startup failed", MB_OK | MB_ICONERROR);
         return 1;
     }
     app.rendererReady = true;
