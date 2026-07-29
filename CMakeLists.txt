@@ -50,6 +50,8 @@ add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
     src/Camera.cpp
+    src/ClassSelect.cpp
+    src/DebugText.cpp
     src/Game.cpp
     src/Level.cpp
     src/Model.cpp

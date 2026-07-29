@@ -9,14 +9,8 @@ using namespace DirectX;
 
 namespace
 {
-    constexpr float kPlayerSpeed = 9.0f;
     constexpr float kPlayerHalf = 0.4f;
-    constexpr float kProjectileSpeed = 34.0f;
-    constexpr float kProjectileLife = 3.0f;
-    constexpr float kProjectileRadius = 0.11f;
-    constexpr float kProjectileMass = 0.4f;
     constexpr float kMuzzleHeight = 0.6f;
-    constexpr float kFireInterval = 0.12f;
 
     // Line of sight is computed at eye level: colliders whose box doesn't
     // reach this height (low crates, curbs) can be seen and shot over.
@@ -27,7 +21,6 @@ namespace
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
     constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
-    constexpr XMFLOAT4 kPlayerColor = { 0.25f, 0.85f, 0.35f, 1.0f };
     constexpr XMFLOAT4 kObstacleColor = { 0.35f, 0.40f, 0.50f, 1.0f };
     constexpr XMFLOAT4 kProjectileColor = { 1.00f, 0.80f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 1.0f };
@@ -121,6 +114,20 @@ void Game::LoadContent(Renderer& renderer)
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
+    if (m_phase == Phase::ClassSelect)
+    {
+        if (const auto picked =
+                m_classSelect.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
+        {
+            m_class = &GetClassDef(*picked);
+            m_phase = Phase::Playing;
+            m_fireCooldown = 0.3f; // so the selection click doesn't fire a shot
+            camera.SetTarget(m_playerPos);
+            camera.SnapToTarget();
+        }
+        return;
+    }
+
     // --- Movement: WASD relative to the screen ---
     const XMFLOAT3 upG = camera.ScreenUpOnGround();
     const XMFLOAT3 rightG = camera.ScreenRightOnGround();
@@ -138,8 +145,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         dx /= len;
         dz /= len;
-        m_playerPos.x += dx * kPlayerSpeed * dt;
-        m_playerPos.z += dz * kPlayerSpeed * dt;
+        m_playerPos.x += dx * m_class->moveSpeed * dt;
+        m_playerPos.z += dz * m_class->moveSpeed * dt;
     }
     const float limit = m_arenaHalf - kPlayerHalf;
     m_playerPos.x = std::clamp(m_playerPos.x, -limit, limit);
@@ -174,10 +181,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     // --- Firing ---
     m_fireCooldown -= dt;
-    if ((input.mouseDown[0] || input.Key(VK_SPACE)) && m_fireCooldown <= 0.0f)
+    if ((input.mouseDown[0] || input.MousePressed(0) || input.Key(VK_SPACE)) &&
+        m_fireCooldown <= 0.0f)
     {
         FireWeapon();
-        m_fireCooldown = kFireInterval;
+        m_fireCooldown = m_class->fireInterval;
     }
 
     // --- Projectiles (simulated by Jolt) ---
@@ -201,12 +209,15 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
 void Game::FireWeapon()
 {
+    const ClassDef& c = *m_class;
     const XMFLOAT3 pos = { m_playerPos.x + m_aimDir.x * 0.7f, kMuzzleHeight,
                            m_playerPos.z + m_aimDir.z * 0.7f };
-    const XMFLOAT3 vel = { m_aimDir.x * kProjectileSpeed, 0.0f, m_aimDir.z * kProjectileSpeed };
-    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, kProjectileRadius,
-                                                        kProjectileMass),
-                              kProjectileLife });
+    // lobVelocity arcs the shot (grenades); flat-shooting classes fire level.
+    const XMFLOAT3 vel = { m_aimDir.x * c.projectileSpeed, c.lobVelocity,
+                           m_aimDir.z * c.projectileSpeed };
+    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, c.projectileRadius,
+                                                        c.projectileMass),
+                              c.projectileLife });
 }
 
 // Builds the fog overlay: the visibility polygon splits the world into
@@ -255,6 +266,12 @@ void Game::AppendFog(std::vector<Vertex>& out) const
 
 void Game::Render(Renderer& renderer)
 {
+    if (m_phase == Phase::ClassSelect)
+    {
+        m_classSelect.Render(renderer);
+        return;
+    }
+
     const XMMATRIX identity = XMMatrixIdentity();
 
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
@@ -264,12 +281,12 @@ void Game::Render(Renderer& renderer)
         if (c.debugDraw)
             AppendCube(m_scratch, c.center, c.size, kObstacleColor);
 
-    // Player body plus a small "turret" cap.
+    // Player body plus a small "turret" cap, tinted by class.
     const XMFLOAT3 body = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
     AppendCube(m_scratch, body, { kPlayerHalf * 2.0f, kPlayerHalf * 2.0f, kPlayerHalf * 2.0f },
-               kPlayerColor);
+               m_class->color);
     AppendCube(m_scratch, { body.x, kPlayerHalf * 2.2f, body.z },
-               { 0.35f, 0.35f, 0.35f }, kPlayerColor);
+               { 0.35f, 0.35f, 0.35f }, m_class->color);
 
     // Projectiles the player can't see stay hidden — a shot that flies behind
     // a wall disappears until it re-emerges.
@@ -278,10 +295,10 @@ void Game::Render(Renderer& renderer)
     {
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
         if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
-            AppendCube(m_scratch, pos,
-                       { kProjectileRadius * 2.0f, kProjectileRadius * 2.0f,
-                         kProjectileRadius * 2.0f },
-                       kProjectileColor);
+        {
+            const float d = m_class->projectileRadius * 2.0f;
+            AppendCube(m_scratch, pos, { d, d, d }, kProjectileColor);
+        }
     }
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
