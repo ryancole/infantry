@@ -18,6 +18,12 @@ namespace
     constexpr float kMuzzleHeight = 0.6f;
     constexpr float kFireInterval = 0.12f;
 
+    // Line of sight is computed at eye level: colliders whose box doesn't
+    // reach this height (low crates, curbs) can be seen and shot over.
+    constexpr float kEyeHeight = 0.6f;
+    constexpr float kFogHeight = 0.02f; // just above the floor grid lines
+    constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
+
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
     constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
@@ -25,6 +31,7 @@ namespace
     constexpr XMFLOAT4 kObstacleColor = { 0.35f, 0.40f, 0.50f, 1.0f };
     constexpr XMFLOAT4 kProjectileColor = { 1.00f, 0.80f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 1.0f };
+    constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
 
     // Appends a solid cube with per-face shading (fakes lighting until a real
     // lit pipeline exists).
@@ -97,6 +104,10 @@ void Game::LoadContent(Renderer& renderer)
             const XMFLOAT3 center = { obj.pos.x, obj.pos.y + size.y * 0.5f, obj.pos.z };
             m_colliders.push_back({ center, size, obj.model.empty() });
             m_physics.AddStaticBox(center, size);
+
+            if (center.y + size.y * 0.5f >= kEyeHeight && center.y - size.y * 0.5f <= kEyeHeight)
+                m_occluders.push_back({ center.x - size.x * 0.5f, center.z - size.z * 0.5f,
+                                        center.x + size.x * 0.5f, center.z + size.z * 0.5f });
         }
         if (!obj.model.empty())
         {
@@ -198,6 +209,50 @@ void Game::FireWeapon()
                               kProjectileLife });
 }
 
+// Builds the fog overlay: the visibility polygon splits the world into
+// angular wedges around the player, and for each boundary run between
+// consecutive polygon points the far side gets a dark quad (boundary edge
+// extruded radially outward). Wedges partition the plane by angle, so the
+// semi-transparent quads never overlap and nothing double-darkens.
+void Game::AppendFog(std::vector<Vertex>& out) const
+{
+    const XMFLOAT2 viewer = { m_playerPos.x, m_playerPos.z };
+    const std::vector<XMFLOAT2> poly =
+        Visibility::ComputePolygon(viewer, m_occluders, m_arenaHalf);
+    if (poly.size() < 2)
+        return;
+
+    const float farDist = m_arenaHalf * kFogFar;
+    const auto extrude = [&](const XMFLOAT2& v) -> XMFLOAT2 {
+        const float dx = v.x - viewer.x;
+        const float dz = v.y - viewer.y;
+        const float len = std::sqrt(dx * dx + dz * dz);
+        if (len < 1e-5f)
+            return v;
+        return { viewer.x + dx / len * farDist, viewer.y + dz / len * farDist };
+    };
+
+    for (size_t i = 0; i < poly.size(); ++i)
+    {
+        const XMFLOAT2& a = poly[i];
+        const XMFLOAT2& b = poly[(i + 1) % poly.size()];
+        const XMFLOAT2 af = extrude(a);
+        const XMFLOAT2 bf = extrude(b);
+        const Vertex quad[4] = {
+            { XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor },
+            { XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor },
+            { XMFLOAT3{ bf.x, kFogHeight, bf.y }, kFogColor },
+            { XMFLOAT3{ af.x, kFogHeight, af.y }, kFogColor },
+        };
+        out.push_back(quad[0]);
+        out.push_back(quad[1]);
+        out.push_back(quad[2]);
+        out.push_back(quad[0]);
+        out.push_back(quad[2]);
+        out.push_back(quad[3]);
+    }
+}
+
 void Game::Render(Renderer& renderer)
 {
     const XMMATRIX identity = XMMatrixIdentity();
@@ -216,10 +271,18 @@ void Game::Render(Renderer& renderer)
     AppendCube(m_scratch, { body.x, kPlayerHalf * 2.2f, body.z },
                { 0.35f, 0.35f, 0.35f }, kPlayerColor);
 
+    // Projectiles the player can't see stay hidden — a shot that flies behind
+    // a wall disappears until it re-emerges.
+    const XMFLOAT2 eye = { m_playerPos.x, m_playerPos.z };
     for (const Projectile& shot : m_projectiles)
-        AppendCube(m_scratch, m_physics.GetPosition(shot.body),
-                   { kProjectileRadius * 2.0f, kProjectileRadius * 2.0f, kProjectileRadius * 2.0f },
-                   kProjectileColor);
+    {
+        const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
+        if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
+            AppendCube(m_scratch, pos,
+                       { kProjectileRadius * 2.0f, kProjectileRadius * 2.0f,
+                         kProjectileRadius * 2.0f },
+                       kProjectileColor);
+    }
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
@@ -230,6 +293,13 @@ void Game::Render(Renderer& renderer)
                                XMMatrixTranslation(prop.pos.x, prop.pos.y, prop.pos.z);
         renderer.DrawModel(*prop.model, world);
     }
+
+    // Fog of war goes on after all opaque geometry so it blends over the
+    // floor while walls (which wrote depth) still punch through it.
+    m_fogVerts.clear();
+    AppendFog(m_fogVerts);
+    renderer.DrawTrianglesAlpha(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
+                                identity);
 
     // Aim indicator line.
     const Vertex aimLine[2] = {

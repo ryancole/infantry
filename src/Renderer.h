@@ -39,6 +39,11 @@ public:
     void DrawTriangles(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
     void DrawLines(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
 
+    // Alpha-blended triangles that test depth but don't write it — overlays
+    // like the fog of war that must darken the ground yet sit behind walls.
+    // Draw these after all opaque geometry.
+    void DrawTrianglesAlpha(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
+
     // Loads a glTF model (path relative to the exe dir or the repo root).
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
@@ -74,6 +79,7 @@ private:
     std::unique_ptr<DirectX::GraphicsMemory> m_graphicsMemory;
     std::unique_ptr<DirectX::BasicEffect> m_triEffect;
     std::unique_ptr<DirectX::BasicEffect> m_lineEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_alphaEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;
 
