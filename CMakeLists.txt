@@ -21,7 +21,23 @@ FetchContent_Declare(cgltf
     GIT_TAG v1.15
 )
 
-FetchContent_MakeAvailable(DirectXTK12 cgltf)
+# Jolt: rigid-body physics (projectiles, world collision). Deterministic on a
+# given binary, which keeps lockstep net play on the table.
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE) # match our /MD CRT
+set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG v5.6.0
+    SOURCE_SUBDIR Build
+)
+
+FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics)
 
 add_executable(infantry WIN32
     src/main.cpp
@@ -29,6 +45,7 @@ add_executable(infantry WIN32
     src/Camera.cpp
     src/Game.cpp
     src/Model.cpp
+    src/Physics.cpp
 )
 
 target_compile_definitions(infantry PRIVATE
@@ -41,6 +58,7 @@ target_include_directories(infantry PRIVATE ${cgltf_SOURCE_DIR})
 
 target_link_libraries(infantry PRIVATE
     DirectXTK12
+    Jolt
     d3d12
     dxgi
     user32

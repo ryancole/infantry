@@ -11,7 +11,10 @@ namespace
     constexpr float kPlayerSpeed = 9.0f;
     constexpr float kPlayerHalf = 0.4f;
     constexpr float kProjectileSpeed = 34.0f;
-    constexpr float kProjectileLife = 1.6f;
+    constexpr float kProjectileLife = 3.0f;
+    constexpr float kProjectileRadius = 0.11f;
+    constexpr float kProjectileMass = 0.4f;
+    constexpr float kMuzzleHeight = 0.6f;
     constexpr float kFireInterval = 0.12f;
 
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
@@ -94,6 +97,13 @@ Game::Game()
         { { 6.0f, 0.0f, -13.0f }, 0.90f, 0.9f },
         { { -14.0f, 0.0f, -26.0f }, 1.25f, 2.8f },
     };
+
+    // Static collision: the arena floor plus the bunkers. Projectiles are
+    // dynamic bodies, so gravity, bounces, and ricochets come from Jolt.
+    m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
+                           { kArenaHalf * 2.0f, 1.0f, kArenaHalf * 2.0f });
+    for (const Obstacle& ob : m_obstacles)
+        m_physics.AddStaticBox(ob.pos, ob.size);
 }
 
 void Game::LoadContent(Renderer& renderer)
@@ -127,6 +137,25 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     m_playerPos.x = std::clamp(m_playerPos.x, -limit, limit);
     m_playerPos.z = std::clamp(m_playerPos.z, -limit, limit);
 
+    // Keep the player out of the bunkers: push out along the axis of least
+    // penetration. (Kinematic on purpose — movement should stay crisp, so the
+    // player doesn't live in the physics world yet.)
+    for (const Obstacle& ob : m_obstacles)
+    {
+        const float ex = ob.size.x * 0.5f + kPlayerHalf;
+        const float ez = ob.size.z * 0.5f + kPlayerHalf;
+        const float px = m_playerPos.x - ob.pos.x;
+        const float pz = m_playerPos.z - ob.pos.z;
+        if (std::abs(px) >= ex || std::abs(pz) >= ez)
+            continue;
+        const float pushX = (px > 0.0f) ? ex - px : -ex - px;
+        const float pushZ = (pz > 0.0f) ? ez - pz : -ez - pz;
+        if (std::abs(pushX) < std::abs(pushZ))
+            m_playerPos.x += pushX;
+        else
+            m_playerPos.z += pushZ;
+    }
+
     // --- Aim: mouse cursor projected onto the ground plane ---
     const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
     float ax = aimPoint.x - m_playerPos.x;
@@ -143,16 +172,20 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_fireCooldown = kFireInterval;
     }
 
-    // --- Projectiles ---
+    // --- Projectiles (simulated by Jolt) ---
+    m_physics.Step(dt);
+
     for (auto& shot : m_projectiles)
     {
-        shot.pos.x += shot.vel.x * dt;
-        shot.pos.z += shot.vel.z * dt;
         shot.life -= dt;
-        if (shot.pos.x < -kArenaHalf || shot.pos.x > kArenaHalf ||
-            shot.pos.z < -kArenaHalf || shot.pos.z > kArenaHalf)
+        const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
+        if (pos.x < -kArenaHalf || pos.x > kArenaHalf ||
+            pos.z < -kArenaHalf || pos.z > kArenaHalf)
             shot.life = 0.0f;
     }
+    for (const Projectile& shot : m_projectiles)
+        if (shot.life <= 0.0f)
+            m_physics.RemoveBody(shot.body);
     std::erase_if(m_projectiles, [](const Projectile& s) { return s.life <= 0.0f; });
 
     camera.SetTarget(m_playerPos);
@@ -160,11 +193,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
 void Game::FireWeapon()
 {
-    Projectile shot;
-    shot.pos = { m_playerPos.x + m_aimDir.x * 0.7f, 0.5f, m_playerPos.z + m_aimDir.z * 0.7f };
-    shot.vel = { m_aimDir.x * kProjectileSpeed, 0.0f, m_aimDir.z * kProjectileSpeed };
-    shot.life = kProjectileLife;
-    m_projectiles.push_back(shot);
+    const XMFLOAT3 pos = { m_playerPos.x + m_aimDir.x * 0.7f, kMuzzleHeight,
+                           m_playerPos.z + m_aimDir.z * 0.7f };
+    const XMFLOAT3 vel = { m_aimDir.x * kProjectileSpeed, 0.0f, m_aimDir.z * kProjectileSpeed };
+    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, kProjectileRadius,
+                                                        kProjectileMass),
+                              kProjectileLife });
 }
 
 void Game::Render(Renderer& renderer)
@@ -185,7 +219,9 @@ void Game::Render(Renderer& renderer)
                { 0.35f, 0.35f, 0.35f }, kPlayerColor);
 
     for (const Projectile& shot : m_projectiles)
-        AppendCube(m_scratch, shot.pos, { 0.22f, 0.22f, 0.22f }, kProjectileColor);
+        AppendCube(m_scratch, m_physics.GetPosition(shot.body),
+                   { kProjectileRadius * 2.0f, kProjectileRadius * 2.0f, kProjectileRadius * 2.0f },
+                   kProjectileColor);
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
