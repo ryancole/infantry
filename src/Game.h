@@ -68,6 +68,11 @@ private:
     ClassSelect m_classSelect;
     const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
     float m_arenaHalf = 32.0f;
+    // Team spawn points from the level, indexed by team id. The local player
+    // is on m_team; a team-select flow can set it before spawning, and future
+    // respawn/teammate logic reads from the same table.
+    std::vector<DirectX::XMFLOAT3> m_teamSpawns;
+    int m_team = 0;
     DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
     float m_fireCooldown = 0.0f;

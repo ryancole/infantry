@@ -34,6 +34,9 @@ struct LevelData
     std::string name;
     float arenaHalf = 32.0f; // arena spans [-arenaHalf, arenaHalf] on x and z
     std::vector<Object> objects;
+    // One spawn per team. Load enforces team ids 0..N-1 with no gaps or
+    // duplicates and sorts by team, so spawns.size() is the level's team count
+    // and spawns[team] is that team's spawn point.
     std::vector<Spawn> spawns;
 
     // Throws std::runtime_error (with the offending path in the message) on a

@@ -65,7 +65,10 @@ void Game::LoadContent(Renderer& renderer)
 {
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
     m_arenaHalf = level.arenaHalf;
-    m_playerPos = level.spawns.front().pos; // single player: first spawn wins
+    for (const LevelData::Spawn& spawn : level.spawns)
+        m_teamSpawns.push_back(spawn.pos);
+    m_team = std::min(m_team, static_cast<int>(m_teamSpawns.size()) - 1);
+    m_playerPos = m_teamSpawns[m_team];
 
     // Static floor grid.
     const int half = static_cast<int>(m_arenaHalf);
