@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <stdexcept>
 
@@ -46,12 +48,28 @@ LevelData LevelData::Load(const std::string& path)
         }
 
         for (const json& js : j.value("spawns", json::array()))
-            level.spawns.push_back({ js.value("team", 0), ToFloat3(js.at("pos")) });
+            level.spawns.push_back({ js.at("team").get<int>(), ToFloat3(js.at("pos")) });
 
         if (level.arenaHalf <= 0.0f)
             throw std::runtime_error(path + ": bounds.halfExtent must be positive");
         if (level.spawns.empty())
             throw std::runtime_error(path + ": at least one spawn is required");
+
+        // Normalize to spawns[team]: exactly one spawn per team, ids 0..N-1.
+        std::sort(level.spawns.begin(), level.spawns.end(),
+                  [](const Spawn& a, const Spawn& b) { return a.team < b.team; });
+        for (size_t i = 0; i < level.spawns.size(); ++i)
+        {
+            const Spawn& s = level.spawns[i];
+            if (s.team != static_cast<int>(i))
+                throw std::runtime_error(path + ": spawn teams must be 0.." +
+                                         std::to_string(level.spawns.size() - 1) +
+                                         " with one spawn each (got team " +
+                                         std::to_string(s.team) + ")");
+            if (std::abs(s.pos.x) > level.arenaHalf || std::abs(s.pos.z) > level.arenaHalf)
+                throw std::runtime_error(path + ": team " + std::to_string(s.team) +
+                                         " spawn is outside the arena bounds");
+        }
         return level;
     }
     catch (const json::exception& e)
