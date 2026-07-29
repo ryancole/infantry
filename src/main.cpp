@@ -153,7 +153,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
         prev = now;
         dt = std::min(dt, 0.1f); // avoid huge steps after stalls
 
-        app.camera.zoom = std::clamp(app.camera.zoom - app.input.wheel * 2.0f, 10.0f, 60.0f);
+        app.camera.AddZoom(app.input.wheel);
         app.game.Update(dt, app.input, app.camera);
         app.camera.Update(dt);
 
