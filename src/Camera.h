@@ -18,6 +18,9 @@ public:
 
     DirectX::XMMATRIX ViewProj() const;
 
+    uint32_t ViewportWidth() const { return m_width; }
+    uint32_t ViewportHeight() const { return m_height; }
+
     // Projects a screen-space point onto the y = 0 ground plane.
     DirectX::XMFLOAT3 ScreenToGround(float screenX, float screenY) const;
 

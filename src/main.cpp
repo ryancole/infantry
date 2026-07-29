@@ -45,7 +45,11 @@ namespace
             return 0;
         case WM_KEYDOWN:
             if (app)
+            {
                 app->input.keys[wParam & 0xFF] = true;
+                if (!(lParam & (1 << 30))) // ignore auto-repeat
+                    app->input.keyPressEvents[wParam & 0xFF] = true;
+            }
             if (wParam == VK_ESCAPE)
                 DestroyWindow(hwnd);
             return 0;
@@ -61,7 +65,11 @@ namespace
             }
             return 0;
         case WM_LBUTTONDOWN:
-            if (app) app->input.mouseDown[0] = true;
+            if (app)
+            {
+                app->input.mouseDown[0] = true;
+                app->input.mousePressEvents[0] = true;
+            }
             SetCapture(hwnd);
             return 0;
         case WM_LBUTTONUP:

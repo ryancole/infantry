@@ -1,8 +1,10 @@
 #pragma once
 
 #include "Camera.h"
+#include "ClassSelect.h"
 #include "Input.h"
 #include "Physics.h"
+#include "PlayerClass.h"
 #include "Renderer.h"
 #include "Visibility.h"
 
@@ -26,6 +28,14 @@ public:
     void Render(Renderer& renderer);
 
 private:
+    // Players must pick a class before they spawn; the arena only starts
+    // simulating once the choice is made.
+    enum class Phase
+    {
+        ClassSelect,
+        Playing,
+    };
+
     struct Projectile
     {
         Physics::BodyHandle body;
@@ -54,6 +64,9 @@ private:
     void AppendFog(std::vector<Vertex>& out) const;
 
     Physics m_physics;
+    Phase m_phase = Phase::ClassSelect;
+    ClassSelect m_classSelect;
+    const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
     float m_arenaHalf = 32.0f;
     DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
