@@ -13,6 +13,9 @@ public:
     void SnapToTarget() { m_focus = m_target; }
     void Update(float dt);
 
+    // Scroll-wheel zoom: positive notches zoom in, negative zoom out.
+    void AddZoom(float notches);
+
     DirectX::XMMATRIX ViewProj() const;
 
     // Projects a screen-space point onto the y = 0 ground plane.
@@ -22,13 +25,13 @@ public:
     DirectX::XMFLOAT3 ScreenUpOnGround() const;
     DirectX::XMFLOAT3 ScreenRightOnGround() const;
 
-    float zoom = 26.0f; // visible world units across the viewport width
-
 private:
     void ComputeMatrices(DirectX::XMMATRIX& view, DirectX::XMMATRIX& proj) const;
 
     DirectX::XMFLOAT3 m_focus = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_target = { 0.0f, 0.0f, 0.0f };
+    float m_zoom = 26.0f;       // visible world units across the viewport width
+    float m_zoomTarget = 26.0f;
     uint32_t m_width = 1280;
     uint32_t m_height = 720;
 };
