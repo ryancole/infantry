@@ -6,17 +6,24 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <memory>
+#include <string>
 
-struct Vertex
-{
-    DirectX::XMFLOAT3 pos;
-    DirectX::XMFLOAT4 color;
-};
+#include <Effects.h>
+#include <GraphicsMemory.h>
+#include <PrimitiveBatch.h>
+#include <VertexTypes.h>
 
-// Minimal immediate-mode style D3D12 renderer: one color-only pipeline,
-// per-draw MVP via root constants, dynamic geometry streamed through a
-// persistently mapped upload buffer. Single frame in flight (CPU waits for
-// the GPU every frame) — simple and plenty for a prototype.
+#include "Model.h"
+
+// Dynamic debug/gameplay geometry vertex (position + color).
+using Vertex = DirectX::VertexPositionColor;
+
+// D3D12 renderer built on DirectXTK12: the toolkit supplies shaders/PSOs
+// (BasicEffect), per-frame dynamic memory (GraphicsMemory), and dynamic
+// geometry submission (PrimitiveBatch); we keep the device/swap chain/fence
+// plumbing. Single frame in flight (CPU waits for the GPU every frame) —
+// simple and plenty for a prototype.
 class Renderer
 {
 public:
@@ -32,20 +39,23 @@ public:
     void DrawTriangles(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
     void DrawLines(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
 
+    // Loads a glTF model (path relative to the exe dir or the repo root).
+    std::unique_ptr<Model> LoadModel(const std::string& path);
+    void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
+
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
 
 private:
     static constexpr uint32_t kFrameCount = 2;
-    static constexpr uint64_t kVBBytes = 8 * 1024 * 1024;
+    static constexpr size_t kBatchVertices = 16384;
 
     void CreateSizedResources();
-    void CreatePipeline();
-    void CreateVertexBuffer();
+    void CreateEffects();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
-    void Draw(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
-              D3D_PRIMITIVE_TOPOLOGY topology);
+    void DrawBatch(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
+                   DirectX::BasicEffect* effect, D3D_PRIMITIVE_TOPOLOGY topology);
 
     uint32_t m_width = 0;
     uint32_t m_height = 0;
@@ -60,19 +70,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_cmdAlloc;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_cmdList;
     Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoTri;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoLine;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_vertexBuffer;
+
+    std::unique_ptr<DirectX::GraphicsMemory> m_graphicsMemory;
+    std::unique_ptr<DirectX::BasicEffect> m_triEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_lineEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
+    std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;
 
     HANDLE m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;
     uint32_t m_frameIndex = 0;
     uint32_t m_rtvSize = 0;
-
-    uint8_t* m_vbMapped = nullptr;
-    uint64_t m_vbOffset = 0;
-    D3D12_GPU_VIRTUAL_ADDRESS m_vbGpuVA = 0;
 
     D3D12_VIEWPORT m_viewport = {};
     D3D12_RECT m_scissor = {};

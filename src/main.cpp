@@ -116,6 +116,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     try
     {
         app.renderer.Init(hwnd, kInitialWidth, kInitialHeight);
+        app.game.LoadContent(app.renderer);
     }
     catch (const std::exception& e)
     {
