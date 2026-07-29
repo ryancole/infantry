@@ -54,6 +54,7 @@ add_executable(infantry WIN32
     src/Level.cpp
     src/Model.cpp
     src/Physics.cpp
+    src/Visibility.cpp
 )
 
 target_compile_definitions(infantry PRIVATE

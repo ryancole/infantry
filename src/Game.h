@@ -4,6 +4,7 @@
 #include "Input.h"
 #include "Physics.h"
 #include "Renderer.h"
+#include "Visibility.h"
 
 #include <DirectXMath.h>
 #include <memory>
@@ -50,6 +51,7 @@ private:
     };
 
     void FireWeapon();
+    void AppendFog(std::vector<Vertex>& out) const;
 
     Physics m_physics;
     float m_arenaHalf = 32.0f;
@@ -59,6 +61,8 @@ private:
 
     std::vector<Projectile> m_projectiles;
     std::vector<Collider> m_colliders;
+    std::vector<Visibility::Rect> m_occluders; // footprints of sight-blockers
+    std::vector<Vertex> m_fogVerts; // reused per frame
     std::vector<Prop> m_props;
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
