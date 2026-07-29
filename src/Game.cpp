@@ -67,10 +67,10 @@ Game::Game()
         const bool major = (i % 8) == 0;
         const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
         const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ { f, 0.0f, -kArenaHalf }, col });
-        m_gridVerts.push_back({ { f, 0.0f, kArenaHalf }, col });
-        m_gridVerts.push_back({ { -kArenaHalf, 0.0f, f }, col });
-        m_gridVerts.push_back({ { kArenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -kArenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, kArenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ -kArenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ kArenaHalf, 0.0f, f }, col });
     }
 
     // A few bunkers to give the arena some structure.
@@ -81,6 +81,24 @@ Game::Game()
         { { -18.0f, 1.25f, 14.0f }, { 5.0f, 2.5f, 2.5f } },
         { { 0.0f, 1.0f, -20.0f }, { 8.0f, 2.0f, 2.0f } },
     };
+
+    // Scattered trees (kept clear of bunkers and the spawn point), with a
+    // little deterministic variety in size and facing.
+    m_trees = {
+        { { -24.0f, 0.0f, -20.0f }, 1.20f, 0.4f },
+        { { 20.0f, 0.0f, -24.0f }, 0.95f, 2.1f },
+        { { 25.0f, 0.0f, 17.0f }, 1.35f, 4.8f },
+        { { -8.0f, 0.0f, 24.0f }, 1.05f, 1.3f },
+        { { -26.0f, 0.0f, 8.0f }, 0.85f, 3.6f },
+        { { 15.0f, 0.0f, 5.0f }, 1.10f, 5.5f },
+        { { 6.0f, 0.0f, -13.0f }, 0.90f, 0.9f },
+        { { -14.0f, 0.0f, -26.0f }, 1.25f, 2.8f },
+    };
+}
+
+void Game::LoadContent(Renderer& renderer)
+{
+    m_treeModel = renderer.LoadModel("assets\\tree.glb");
 }
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
@@ -171,10 +189,21 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
+    if (m_treeModel)
+    {
+        for (const TreeInstance& tree : m_trees)
+        {
+            const XMMATRIX world = XMMatrixScaling(tree.scale, tree.scale, tree.scale) *
+                                   XMMatrixRotationY(tree.yaw) *
+                                   XMMatrixTranslation(tree.pos.x, tree.pos.y, tree.pos.z);
+            renderer.DrawModel(*m_treeModel, world);
+        }
+    }
+
     // Aim indicator line.
     const Vertex aimLine[2] = {
-        { { body.x + m_aimDir.x * 0.6f, 0.45f, body.z + m_aimDir.z * 0.6f }, kAimColor },
-        { { body.x + m_aimDir.x * 1.6f, 0.45f, body.z + m_aimDir.z * 1.6f }, kAimColor },
+        { XMFLOAT3{ body.x + m_aimDir.x * 0.6f, 0.45f, body.z + m_aimDir.z * 0.6f }, kAimColor },
+        { XMFLOAT3{ body.x + m_aimDir.x * 1.6f, 0.45f, body.z + m_aimDir.z * 1.6f }, kAimColor },
     };
     renderer.DrawLines(aimLine, 2, identity);
 }

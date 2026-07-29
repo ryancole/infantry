@@ -1,8 +1,10 @@
 #include "Renderer.h"
 
-#include <d3dcompiler.h>
+#include <CommonStates.h>
+#include <EffectPipelineStateDescription.h>
+#include <RenderTargetState.h>
+
 #include <cstdio>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -11,6 +13,9 @@ using namespace DirectX;
 
 namespace
 {
+    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
+
     void HR(HRESULT hr, const char* what)
     {
         if (FAILED(hr))
@@ -21,32 +26,12 @@ namespace
         }
     }
 
-    std::wstring ExeDir()
+    std::string ExeDir()
     {
-        wchar_t buf[MAX_PATH];
-        GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        std::wstring path(buf);
-        return path.substr(0, path.find_last_of(L"\\/"));
-    }
-
-    ComPtr<ID3DBlob> CompileShader(const std::wstring& path, const char* entry, const char* target)
-    {
-        UINT flags = 0;
-#ifdef _DEBUG
-        flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-        ComPtr<ID3DBlob> code;
-        ComPtr<ID3DBlob> errors;
-        HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-                                        entry, target, flags, 0, &code, &errors);
-        if (FAILED(hr))
-        {
-            std::string msg = "Shader compile failed: ";
-            if (errors)
-                msg.append(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize());
-            throw std::runtime_error(msg);
-        }
-        return code;
+        char buf[MAX_PATH];
+        GetModuleFileNameA(nullptr, buf, MAX_PATH);
+        std::string path(buf);
+        return path.substr(0, path.find_last_of("\\/"));
     }
 }
 
@@ -79,7 +64,7 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
     scDesc.BufferCount = kFrameCount;
     scDesc.Width = width;
     scDesc.Height = height;
-    scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scDesc.Format = kBackBufferFormat;
     scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scDesc.SampleDesc.Count = 1;
@@ -115,8 +100,10 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
     if (!m_fenceEvent)
         throw std::runtime_error("CreateEvent failed");
 
-    CreatePipeline();
-    CreateVertexBuffer();
+    m_graphicsMemory = std::make_unique<GraphicsMemory>(m_device.Get());
+    m_batch = std::make_unique<PrimitiveBatch<Vertex>>(m_device.Get(), kBatchVertices * 3,
+                                                       kBatchVertices);
+    CreateEffects();
 }
 
 void Renderer::Shutdown()
@@ -124,11 +111,11 @@ void Renderer::Shutdown()
     if (!m_device)
         return;
     WaitForGpu();
-    if (m_vbMapped)
-    {
-        m_vertexBuffer->Unmap(0, nullptr);
-        m_vbMapped = nullptr;
-    }
+    m_batch.reset();
+    m_triEffect.reset();
+    m_lineEffect.reset();
+    m_modelEffect.reset();
+    m_graphicsMemory.reset();
     if (m_fenceEvent)
     {
         CloseHandle(m_fenceEvent);
@@ -148,7 +135,7 @@ void Renderer::Resize(uint32_t width, uint32_t height)
 
     m_width = width;
     m_height = height;
-    HR(m_swapChain->ResizeBuffers(kFrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0),
+    HR(m_swapChain->ResizeBuffers(kFrameCount, width, height, kBackBufferFormat, 0),
        "ResizeBuffers");
     CreateSizedResources();
 }
@@ -172,12 +159,12 @@ void Renderer::CreateSizedResources()
     depthDesc.Height = m_height;
     depthDesc.DepthOrArraySize = 1;
     depthDesc.MipLevels = 1;
-    depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    depthDesc.Format = kDepthFormat;
     depthDesc.SampleDesc.Count = 1;
     depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
     D3D12_CLEAR_VALUE clearValue = {};
-    clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    clearValue.Format = kDepthFormat;
     clearValue.DepthStencil.Depth = 1.0f;
 
     HR(m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &depthDesc,
@@ -191,106 +178,33 @@ void Renderer::CreateSizedResources()
     m_scissor = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
 }
 
-void Renderer::CreatePipeline()
+void Renderer::CreateEffects()
 {
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    param.Constants.ShaderRegister = 0;
-    param.Constants.Num32BitValues = 16;
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    const RenderTargetState rtState(kBackBufferFormat, kDepthFormat);
 
-    D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
-    rootDesc.NumParameters = 1;
-    rootDesc.pParameters = &param;
-    rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    const EffectPipelineStateDescription triDesc(
+        &Vertex::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_triEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor, triDesc);
 
-    ComPtr<ID3DBlob> sig;
-    ComPtr<ID3DBlob> err;
-    HR(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err),
-       "SerializeRootSignature");
-    HR(m_device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
-                                     IID_PPV_ARGS(&m_rootSig)),
-       "CreateRootSignature");
+    const EffectPipelineStateDescription lineDesc(
+        &Vertex::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+    m_lineEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor, lineDesc);
 
-    // Look next to the exe first (post-build copy), then fall back to the
-    // source tree for runs launched from the repo root.
-    std::wstring shaderPath = ExeDir() + L"\\shaders\\basic.hlsl";
-    if (GetFileAttributesW(shaderPath.c_str()) == INVALID_FILE_ATTRIBUTES)
-        shaderPath = L"src\\shaders\\basic.hlsl";
-
-    ComPtr<ID3DBlob> vs = CompileShader(shaderPath, "VSMain", "vs_5_0");
-    ComPtr<ID3DBlob> ps = CompileShader(shaderPath, "PSMain", "ps_5_0");
-
-    D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_RENDER_TARGET_BLEND_DESC blend = {};
-    blend.SrcBlend = D3D12_BLEND_ONE;
-    blend.DestBlend = D3D12_BLEND_ZERO;
-    blend.BlendOp = D3D12_BLEND_OP_ADD;
-    blend.SrcBlendAlpha = D3D12_BLEND_ONE;
-    blend.DestBlendAlpha = D3D12_BLEND_ZERO;
-    blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    blend.LogicOp = D3D12_LOGIC_OP_NOOP;
-    blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_rootSig.Get();
-    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
-    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.InputLayout = { layout, _countof(layout) };
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.BlendState.RenderTarget[0] = blend;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    pso.SampleMask = UINT_MAX;
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    HR(m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoTri)), "Create triangle PSO");
-
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-    HR(m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_psoLine)), "Create line PSO");
-}
-
-void Renderer::CreateVertexBuffer()
-{
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC bufferDesc = {};
-    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = kVBBytes;
-    bufferDesc.Height = 1;
-    bufferDesc.DepthOrArraySize = 1;
-    bufferDesc.MipLevels = 1;
-    bufferDesc.SampleDesc.Count = 1;
-    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HR(m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                         IID_PPV_ARGS(&m_vertexBuffer)),
-       "Create vertex buffer");
-
-    D3D12_RANGE noRead = { 0, 0 };
-    HR(m_vertexBuffer->Map(0, &noRead, reinterpret_cast<void**>(&m_vbMapped)), "Map vertex buffer");
-    m_vbGpuVA = m_vertexBuffer->GetGPUVirtualAddress();
+    const EffectPipelineStateDescription modelDesc(
+        &VertexPositionNormal::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_modelEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::Lighting, modelDesc);
+    m_modelEffect->EnableDefaultLighting();
+    m_modelEffect->DisableSpecular();
 }
 
 void Renderer::BeginFrame(const float clearColor[4])
 {
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     HR(m_cmdAlloc->Reset(), "Command allocator Reset");
-    HR(m_cmdList->Reset(m_cmdAlloc.Get(), m_psoTri.Get()), "Command list Reset");
+    HR(m_cmdList->Reset(m_cmdAlloc.Get(), nullptr), "Command list Reset");
 
     Transition(m_backBuffers[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT,
                D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -304,9 +218,6 @@ void Renderer::BeginFrame(const float clearColor[4])
     m_cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     m_cmdList->RSSetViewports(1, &m_viewport);
     m_cmdList->RSSetScissorRects(1, &m_scissor);
-    m_cmdList->SetGraphicsRootSignature(m_rootSig.Get());
-
-    m_vbOffset = 0;
 }
 
 void Renderer::EndFrame()
@@ -318,46 +229,55 @@ void Renderer::EndFrame()
     ID3D12CommandList* lists[] = { m_cmdList.Get() };
     m_queue->ExecuteCommandLists(1, lists);
     HR(m_swapChain->Present(1, 0), "Present");
+    m_graphicsMemory->Commit(m_queue.Get());
     WaitForGpu();
 }
 
 void Renderer::DrawTriangles(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
-    Draw(verts, count, world, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    DrawBatch(verts, count, world, m_triEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 void Renderer::DrawLines(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
-    Draw(verts, count, world, D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    DrawBatch(verts, count, world, m_lineEffect.get(), D3D_PRIMITIVE_TOPOLOGY_LINELIST);
 }
 
-void Renderer::Draw(const Vertex* verts, uint32_t count, const XMMATRIX& world,
-                    D3D_PRIMITIVE_TOPOLOGY topology)
+void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& world,
+                         BasicEffect* effect, D3D_PRIMITIVE_TOPOLOGY topology)
 {
-    if (count == 0)
+    if (count == 0 || count > kBatchVertices)
         return;
-    const uint64_t bytes = static_cast<uint64_t>(count) * sizeof(Vertex);
-    if (m_vbOffset + bytes > kVBBytes)
-        return; // out of scratch space this frame; drop the draw
 
-    std::memcpy(m_vbMapped + m_vbOffset, verts, bytes);
+    effect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
+    effect->Apply(m_cmdList.Get());
+    m_batch->Begin(m_cmdList.Get());
+    m_batch->Draw(topology, verts, count);
+    m_batch->End();
+}
 
-    XMFLOAT4X4 mvp;
-    XMStoreFloat4x4(&mvp, world * m_viewProj);
-    m_cmdList->SetGraphicsRoot32BitConstants(0, 16, &mvp, 0);
+std::unique_ptr<Model> Renderer::LoadModel(const std::string& path)
+{
+    // Look next to the exe first (post-build copy), then fall back to the
+    // path as given for runs launched from the repo root.
+    std::string resolved = ExeDir() + "\\" + path;
+    if (GetFileAttributesA(resolved.c_str()) == INVALID_FILE_ATTRIBUTES)
+        resolved = path;
+    return Model::LoadFromFile(m_device.Get(), m_queue.Get(), resolved);
+}
 
-    D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    vbv.BufferLocation = m_vbGpuVA + m_vbOffset;
-    vbv.SizeInBytes = static_cast<UINT>(bytes);
-    vbv.StrideInBytes = sizeof(Vertex);
-    m_cmdList->IASetVertexBuffers(0, 1, &vbv);
-
-    m_cmdList->SetPipelineState(topology == D3D_PRIMITIVE_TOPOLOGY_LINELIST ? m_psoLine.Get()
-                                                                            : m_psoTri.Get());
-    m_cmdList->IASetPrimitiveTopology(topology);
-    m_cmdList->DrawInstanced(count, 1, 0, 0);
-
-    m_vbOffset = (m_vbOffset + bytes + 255) & ~255ull;
+void Renderer::DrawModel(const Model& model, const XMMATRIX& world)
+{
+    m_modelEffect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
+    m_cmdList->IASetVertexBuffers(0, 1, &model.VertexView());
+    m_cmdList->IASetIndexBuffer(&model.IndexView());
+    m_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    for (const Model::Part& part : model.Parts())
+    {
+        m_modelEffect->SetDiffuseColor(XMLoadFloat4(&part.color));
+        m_modelEffect->Apply(m_cmdList.Get());
+        m_cmdList->DrawIndexedInstanced(part.indexCount, 1, part.indexStart, 0, 0);
+    }
 }
 
 void Renderer::WaitForGpu()
