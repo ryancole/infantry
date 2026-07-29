@@ -2,6 +2,7 @@
 
 #include "Camera.h"
 #include "Input.h"
+#include "Physics.h"
 #include "Renderer.h"
 
 #include <DirectXMath.h>
@@ -25,8 +26,7 @@ public:
 private:
     struct Projectile
     {
-        DirectX::XMFLOAT3 pos;
-        DirectX::XMFLOAT3 vel;
+        Physics::BodyHandle body;
         float life;
     };
 
@@ -45,6 +45,7 @@ private:
 
     void FireWeapon();
 
+    Physics m_physics;
     DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
     float m_fireCooldown = 0.0f;
