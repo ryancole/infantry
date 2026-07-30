@@ -17,6 +17,13 @@ namespace
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 
+    // Post-process tuning. The extract threshold is high enough that only
+    // genuinely bright pixels (projectiles, aim line, vivid class colors)
+    // bloom, not the whole scene.
+    constexpr float kBloomThreshold = 0.7f;
+    constexpr float kBloomBlurSize = 3.0f;
+    constexpr float kBloomIntensity = 1.2f;
+
     void HR(HRESULT hr, const char* what)
     {
         if (FAILED(hr))
@@ -77,7 +84,7 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kFrameCount;
+    rtvHeapDesc.NumDescriptors = kFrameCount + 4; // + scene, post, bloom1, bloom2
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     HR(m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap)), "Create RTV heap");
     m_rtvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -113,6 +120,8 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
     CreateEffects();
     CreateSpriteResources();
     CreateShapePrimitives();
+    CreatePostProcess();
+    CreateOffscreenTargets();
 }
 
 void Renderer::Shutdown()
@@ -122,6 +131,14 @@ void Renderer::Shutdown()
     WaitForGpu();
     m_font.reset();
     m_spriteBatch.reset();
+    m_bloomExtract.reset();
+    m_bloomBlur.reset();
+    m_monochromePass.reset();
+    m_bloomCombine.reset();
+    m_sceneColor.resource.Reset();
+    m_postColor.resource.Reset();
+    m_bloom1.resource.Reset();
+    m_bloom2.resource.Reset();
     for (auto& shape : m_shapes)
         shape.reset();
     m_batch.reset();
@@ -156,6 +173,7 @@ void Renderer::Resize(uint32_t width, uint32_t height)
     HR(m_swapChain->ResizeBuffers(kFrameCount, width, height, kBackBufferFormat, 0),
        "ResizeBuffers");
     CreateSizedResources();
+    CreateOffscreenTargets();
     if (m_spriteBatch)
         m_spriteBatch->SetViewport(m_viewport);
 }
@@ -325,6 +343,144 @@ void Renderer::DrawShape(Shape shape, const XMMATRIX& world, const XMFLOAT4& col
     m_shapes[static_cast<size_t>(shape)]->Draw(m_cmdList.Get());
 }
 
+void Renderer::CreatePostProcess()
+{
+    // Post passes draw a fullscreen triangle with no depth buffer bound.
+    const RenderTargetState postRtState(kBackBufferFormat, DXGI_FORMAT_UNKNOWN);
+    m_bloomExtract = std::make_unique<BasicPostProcess>(m_device.Get(), postRtState,
+                                                        BasicPostProcess::BloomExtract);
+    m_bloomBlur = std::make_unique<BasicPostProcess>(m_device.Get(), postRtState,
+                                                     BasicPostProcess::BloomBlur);
+    m_monochromePass = std::make_unique<BasicPostProcess>(m_device.Get(), postRtState,
+                                                          BasicPostProcess::Monochrome);
+    m_bloomCombine = std::make_unique<DualPostProcess>(m_device.Get(), postRtState,
+                                                       DualPostProcess::BloomCombine);
+}
+
+// (Re)creates the window-sized post targets. SRV pile slots are allocated on
+// first use and then reused, so resizing doesn't leak descriptors.
+void Renderer::CreateOffscreenTargets()
+{
+    PostTarget* targets[] = { &m_sceneColor, &m_postColor, &m_bloom1, &m_bloom2 };
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    // The optimized clear color only matters for the scene target; a
+    // mismatch with BeginFrame's clear is legal, just slower.
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = kBackBufferFormat;
+    clearValue.Color[0] = 0.030f;
+    clearValue.Color[1] = 0.038f;
+    clearValue.Color[2] = 0.055f;
+    clearValue.Color[3] = 1.0f;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>(kFrameCount) * m_rtvSize;
+
+    for (size_t i = 0; i < std::size(targets); ++i)
+    {
+        PostTarget& target = *targets[i];
+
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = std::max<uint32_t>((i >= 2) ? m_width / 2 : m_width, 1u);
+        desc.Height = std::max<uint32_t>((i >= 2) ? m_height / 2 : m_height, 1u);
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = kBackBufferFormat;
+        desc.SampleDesc.Count = 1;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        target.resource.Reset();
+        HR(m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                             &clearValue, IID_PPV_ARGS(&target.resource)),
+           "Create post target");
+
+        m_device->CreateRenderTargetView(target.resource.Get(), nullptr, rtv);
+        rtv.ptr += m_rtvSize;
+
+        if (target.srvSlot == SIZE_MAX)
+            target.srvSlot = m_srvPile->Allocate();
+        CreateShaderResourceView(m_device.Get(), target.resource.Get(),
+                                 m_srvPile->GetCpuHandle(target.srvSlot));
+        target.srv = m_srvPile->GetGpuHandle(target.srvSlot);
+    }
+}
+
+// Resolves the offscreen scene to the backbuffer: optional monochrome, then
+// bloom extract -> separable blur (half res) -> combine.
+void Renderer::RunPostChain()
+{
+    const auto rtvAt = [&](uint32_t index) {
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        rtv.ptr += static_cast<SIZE_T>(index) * m_rtvSize;
+        return rtv;
+    };
+    const auto setTarget = [&](uint32_t rtvIndex, uint32_t width, uint32_t height) {
+        const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvAt(rtvIndex);
+        m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(width),
+                                    static_cast<float>(height), 0.0f, 1.0f };
+        const D3D12_RECT sc = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+        m_cmdList->RSSetViewports(1, &vp);
+        m_cmdList->RSSetScissorRects(1, &sc);
+    };
+
+    Transition(m_sceneColor.resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    const PostTarget* base = &m_sceneColor;
+    if (m_monochrome)
+    {
+        Transition(m_postColor.resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_RENDER_TARGET);
+        setTarget(kFrameCount + 1, m_width, m_height);
+        m_monochromePass->SetSourceTexture(m_sceneColor.srv, m_sceneColor.resource.Get());
+        m_monochromePass->Process(m_cmdList.Get());
+        Transition(m_postColor.resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        base = &m_postColor;
+    }
+
+    const uint32_t halfW = std::max(m_width / 2, 1u);
+    const uint32_t halfH = std::max(m_height / 2, 1u);
+
+    Transition(m_bloom1.resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+               D3D12_RESOURCE_STATE_RENDER_TARGET);
+    setTarget(kFrameCount + 2, halfW, halfH);
+    m_bloomExtract->SetBloomExtractParameter(kBloomThreshold);
+    m_bloomExtract->SetSourceTexture(base->srv, base->resource.Get());
+    m_bloomExtract->Process(m_cmdList.Get());
+    Transition(m_bloom1.resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    Transition(m_bloom2.resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+               D3D12_RESOURCE_STATE_RENDER_TARGET);
+    setTarget(kFrameCount + 3, halfW, halfH);
+    m_bloomBlur->SetBloomBlurParameters(true, kBloomBlurSize, 1.0f);
+    m_bloomBlur->SetSourceTexture(m_bloom1.srv, m_bloom1.resource.Get());
+    m_bloomBlur->Process(m_cmdList.Get());
+    Transition(m_bloom2.resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    Transition(m_bloom1.resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+               D3D12_RESOURCE_STATE_RENDER_TARGET);
+    setTarget(kFrameCount + 2, halfW, halfH);
+    m_bloomBlur->SetBloomBlurParameters(false, kBloomBlurSize, 1.0f);
+    m_bloomBlur->SetSourceTexture(m_bloom2.srv, m_bloom2.resource.Get());
+    m_bloomBlur->Process(m_cmdList.Get());
+    Transition(m_bloom1.resource.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    setTarget(m_frameIndex, m_width, m_height);
+    m_bloomCombine->SetBloomCombineParameters(kBloomIntensity, 1.0f, 1.0f, 1.0f);
+    m_bloomCombine->SetSourceTexture(m_bloom1.srv);
+    m_bloomCombine->SetSourceTexture2(base->srv);
+    m_bloomCombine->Process(m_cmdList.Get());
+}
+
 void Renderer::DrawScreenText(std::string_view text, float x, float y, float size,
                               const XMFLOAT4& color)
 {
@@ -348,9 +504,13 @@ void Renderer::BeginFrame(const float clearColor[4])
 
     Transition(m_backBuffers[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT,
                D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(m_sceneColor.resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+               D3D12_RESOURCE_STATE_RENDER_TARGET);
 
+    // The scene draws into the offscreen color target; EndFrame's post chain
+    // resolves it to the backbuffer.
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>(m_frameIndex) * m_rtvSize;
+    rtv.ptr += static_cast<SIZE_T>(kFrameCount) * m_rtvSize;
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
@@ -365,6 +525,8 @@ void Renderer::BeginFrame(const float clearColor[4])
 
 void Renderer::EndFrame()
 {
+    RunPostChain();
+
     if (!m_textDraws.empty())
     {
         m_spriteBatch->Begin(m_cmdList.Get());

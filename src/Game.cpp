@@ -7,6 +7,7 @@
 #include <string>
 
 using namespace DirectX;
+using namespace DirectX::SimpleMath;
 
 namespace
 {
@@ -172,6 +173,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     const float rumble = m_rumbleTime > 0.0f ? 0.6f : 0.0f;
     DirectX::GamePad::Get().SetVibration(0, rumble, rumble);
 
+    m_deathFlashTime = std::max(0.0f, m_deathFlashTime - dt);
+
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -187,8 +190,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- Movement: WASD relative to the screen ---
-    const XMFLOAT3 upG = camera.ScreenUpOnGround();
-    const XMFLOAT3 rightG = camera.ScreenRightOnGround();
+    const Vector3 upG = camera.ScreenUpOnGround();
+    const Vector3 rightG = camera.ScreenRightOnGround();
 
     float moveUp = 0.0f, moveRight = 0.0f;
     if (input.Key('W')) moveUp += 1.0f;
@@ -198,15 +201,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveUp += input.pad.thumbSticks.leftY;
     moveRight += input.pad.thumbSticks.leftX;
 
-    float dx = upG.x * moveUp + rightG.x * moveRight;
-    float dz = upG.z * moveUp + rightG.z * moveRight;
-    const float len = std::sqrt(dx * dx + dz * dz);
-    if (len > 1e-5f)
+    Vector3 move = upG * moveUp + rightG * moveRight;
+    if (move.LengthSquared() > 1e-10f)
     {
-        dx /= len;
-        dz /= len;
-        m_playerPos.x += dx * m_class->moveSpeed * dt;
-        m_playerPos.z += dz * m_class->moveSpeed * dt;
+        move.Normalize();
+        m_playerPos += move * (m_class->moveSpeed * dt);
     }
     ResolveObstacles(m_playerPos);
 
@@ -216,19 +215,16 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     // --- Aim: mouse cursor projected onto the ground plane, or the right
     // stick as a screen-relative direction when deflected ---
-    const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
-    float ax = aimPoint.x - m_playerPos.x;
-    float az = aimPoint.z - m_playerPos.z;
-    const float rsx = input.pad.thumbSticks.rightX;
-    const float rsy = input.pad.thumbSticks.rightY;
-    if (rsx * rsx + rsy * rsy > 0.1f)
+    Vector3 aim = camera.ScreenToGround(input.mouseX, input.mouseY) - m_playerPos;
+    const Vector2 stick(input.pad.thumbSticks.rightX, input.pad.thumbSticks.rightY);
+    if (stick.LengthSquared() > 0.1f)
+        aim = upG * stick.y + rightG * stick.x;
+    aim.y = 0.0f;
+    if (aim.LengthSquared() > 1e-8f)
     {
-        ax = upG.x * rsy + rightG.x * rsx;
-        az = upG.z * rsy + rightG.z * rsx;
+        aim.Normalize();
+        m_aimDir = aim;
     }
-    const float alen = std::sqrt(ax * ax + az * az);
-    if (alen > 1e-4f)
-        m_aimDir = { ax / alen, 0.0f, az / alen };
 
     // --- Firing ---
     m_fireCooldown -= dt;
@@ -255,6 +251,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerDied = false;
         m_playerHp = kMaxHealth;
         m_playerPos = m_teamSpawns[m_team];
+        m_deathFlashTime = 0.6f; // brief grayscale flash while respawning
         camera.SetTarget(m_playerPos);
         camera.SnapToTarget();
         return;
@@ -263,12 +260,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     camera.SetTarget(m_playerPos);
 }
 
-void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& dir, int team)
+void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team)
 {
-    const XMFLOAT3 pos = { from.x + dir.x * 0.7f, kMuzzleHeight, from.z + dir.z * 0.7f };
+    Vector3 pos = from + dir * 0.7f;
+    pos.y = kMuzzleHeight;
     // lobVelocity arcs the shot (grenades); flat-shooting classes fire level.
-    const XMFLOAT3 vel = { dir.x * cls.projectileSpeed, cls.lobVelocity,
-                           dir.z * cls.projectileSpeed };
+    const Vector3 vel = dir * cls.projectileSpeed + Vector3(0.0f, cls.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
                                                         cls.projectileMass),
                               cls.projectileLife, pos, team, cls.damage, cls.projectileRadius });
@@ -279,12 +276,11 @@ void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& 
     PlaySoundAt("fire", from, pitch);
 }
 
-void Game::PlaySoundAt(const std::string& name, const XMFLOAT3& pos, float pitch)
+void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
 {
     // Past kRange the voice would be silent anyway; skip spawning it.
-    const float dx = pos.x - m_playerPos.x;
-    const float dz = pos.z - m_playerPos.z;
-    if (dx * dx + dz * dz < Sound::kRange * Sound::kRange)
+    if (Vector2(pos.x - m_playerPos.x, pos.z - m_playerPos.z).LengthSquared() <
+        Sound::kRange * Sound::kRange)
         m_sound.Play3D(name, pos, pitch);
 }
 
@@ -293,7 +289,7 @@ float Game::Rand(float lo, float hi)
     return std::uniform_real_distribution<float>(lo, hi)(m_rng);
 }
 
-void Game::ResolveObstacles(XMFLOAT3& pos) const
+void Game::ResolveObstacles(Vector3& pos) const
 {
     const float limit = m_arenaHalf - kPlayerHalf;
     pos.x = std::clamp(pos.x, -limit, limit);
@@ -344,27 +340,26 @@ void Game::SpawnNpc()
 
 void Game::UpdateNpcs(float dt)
 {
-    const XMFLOAT2 playerXZ = { m_playerPos.x, m_playerPos.z };
+    const Vector2 playerXZ = { m_playerPos.x, m_playerPos.z };
     for (Npc& npc : m_npcs)
     {
         npc.fireCooldown -= dt;
 
-        float toPx = m_playerPos.x - npc.pos.x;
-        float toPz = m_playerPos.z - npc.pos.z;
-        const float dist = std::sqrt(toPx * toPx + toPz * toPz);
+        Vector3 toPlayer = m_playerPos - npc.pos;
+        toPlayer.y = 0.0f;
+        const float dist = toPlayer.Length();
         // NPCs obey the same sight rules as the player's fog of war, so they
         // can't shoot through walls the player can't see through either.
         const bool engaged = dist < kNpcEngageRange && dist > 1e-3f &&
                              Visibility::IsPointVisible({ npc.pos.x, npc.pos.z }, playerXZ,
                                                         m_occluders);
 
-        float moveX = 0.0f, moveZ = 0.0f;
+        Vector3 move;
         float speed = npc.cls->moveSpeed;
         if (engaged)
         {
-            toPx /= dist;
-            toPz /= dist;
-            npc.aimDir = { toPx, 0.0f, toPz };
+            toPlayer /= dist;
+            npc.aimDir = toPlayer;
 
             npc.strafeTimer -= dt;
             if (npc.strafeTimer <= 0.0f)
@@ -373,25 +368,17 @@ void Game::UpdateNpcs(float dt)
                 npc.strafeTimer = Rand(1.0f, 2.5f);
             }
             if (dist > kNpcPreferredRange)
-            {
-                moveX = toPx;
-                moveZ = toPz;
-            }
+                move = toPlayer;
             else
-            {
-                moveX = -toPz * npc.strafeSign;
-                moveZ = toPx * npc.strafeSign;
-            }
+                move = Vector3(-toPlayer.z, 0.0f, toPlayer.x) * npc.strafeSign;
             speed *= kNpcCombatSpeed;
 
             if (npc.fireCooldown <= 0.0f)
             {
                 // A touch of angular spread keeps NPCs beatable up close and
                 // makes long-range sniper duels survivable.
-                const float jitter = Rand(-kNpcAimJitter, kNpcAimJitter);
-                const float s = std::sin(jitter), c = std::cos(jitter);
-                const XMFLOAT3 dir = { npc.aimDir.x * c - npc.aimDir.z * s, 0.0f,
-                                       npc.aimDir.x * s + npc.aimDir.z * c };
+                const Vector3 dir = Vector3::Transform(
+                    npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
                 const int npcTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
                 SpawnShot(*npc.cls, npc.pos, dir, npcTeam);
                 npc.fireCooldown = npc.cls->fireInterval;
@@ -400,9 +387,8 @@ void Game::UpdateNpcs(float dt)
         else
         {
             npc.repickTimer -= dt;
-            const float wx = npc.wanderTarget.x - npc.pos.x;
-            const float wz = npc.wanderTarget.z - npc.pos.z;
-            const float wlen = std::sqrt(wx * wx + wz * wz);
+            const Vector3 toTarget = npc.wanderTarget - npc.pos;
+            const float wlen = toTarget.Length();
             if (wlen < 1.0f || npc.repickTimer <= 0.0f)
             {
                 const float margin = m_arenaHalf - 2.0f;
@@ -411,15 +397,13 @@ void Game::UpdateNpcs(float dt)
             }
             else
             {
-                moveX = wx / wlen;
-                moveZ = wz / wlen;
-                npc.aimDir = { moveX, 0.0f, moveZ };
+                move = toTarget / wlen;
+                npc.aimDir = move;
             }
             speed *= kNpcWanderSpeed;
         }
 
-        npc.pos.x += moveX * speed * dt;
-        npc.pos.z += moveZ * speed * dt;
+        npc.pos += move * (speed * dt);
         ResolveObstacles(npc.pos);
     }
 
@@ -427,18 +411,14 @@ void Game::UpdateNpcs(float dt)
     for (size_t i = 0; i < m_npcs.size(); ++i)
         for (size_t j = i + 1; j < m_npcs.size(); ++j)
         {
-            const float dx = m_npcs[j].pos.x - m_npcs[i].pos.x;
-            const float dz = m_npcs[j].pos.z - m_npcs[i].pos.z;
-            const float len = std::sqrt(dx * dx + dz * dz);
+            const Vector3 between = m_npcs[j].pos - m_npcs[i].pos;
+            const float len = between.Length();
             const float minDist = kPlayerHalf * 2.0f;
             if (len >= minDist || len < 1e-5f)
                 continue;
-            const float push = (minDist - len) * 0.5f;
-            const float nx = dx / len, nz = dz / len;
-            m_npcs[i].pos.x -= nx * push;
-            m_npcs[i].pos.z -= nz * push;
-            m_npcs[j].pos.x += nx * push;
-            m_npcs[j].pos.z += nz * push;
+            const Vector3 push = between * ((minDist - len) * 0.5f / len);
+            m_npcs[i].pos -= push;
+            m_npcs[j].pos += push;
         }
 }
 
@@ -498,28 +478,27 @@ void Game::UpdateProjectiles(float dt)
 // semi-transparent quads never overlap and nothing double-darkens.
 void Game::AppendFog(std::vector<Vertex>& out) const
 {
-    const XMFLOAT2 viewer = { m_playerPos.x, m_playerPos.z };
+    const Vector2 viewer = { m_playerPos.x, m_playerPos.z };
     const std::vector<XMFLOAT2> poly =
         Visibility::ComputePolygon(viewer, m_occluders, m_arenaHalf);
     if (poly.size() < 2)
         return;
 
     const float farDist = m_arenaHalf * kFogFar;
-    const auto extrude = [&](const XMFLOAT2& v) -> XMFLOAT2 {
-        const float dx = v.x - viewer.x;
-        const float dz = v.y - viewer.y;
-        const float len = std::sqrt(dx * dx + dz * dz);
+    const auto extrude = [&](const Vector2& v) -> Vector2 {
+        const Vector2 d = v - viewer;
+        const float len = d.Length();
         if (len < 1e-5f)
             return v;
-        return { viewer.x + dx / len * farDist, viewer.y + dz / len * farDist };
+        return viewer + d * (farDist / len);
     };
 
     for (size_t i = 0; i < poly.size(); ++i)
     {
-        const XMFLOAT2& a = poly[i];
-        const XMFLOAT2& b = poly[(i + 1) % poly.size()];
-        const XMFLOAT2 af = extrude(a);
-        const XMFLOAT2 bf = extrude(b);
+        const Vector2 a = poly[i];
+        const Vector2 b = poly[(i + 1) % poly.size()];
+        const Vector2 af = extrude(a);
+        const Vector2 bf = extrude(b);
         const Vertex quad[4] = {
             { XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor },
             { XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor },
@@ -537,6 +516,8 @@ void Game::AppendFog(std::vector<Vertex>& out) const
 
 void Game::Render(Renderer& renderer)
 {
+    renderer.SetMonochrome(m_deathFlashTime > 0.0f);
+
     if (m_phase == Phase::ClassSelect)
     {
         m_classSelect.Render(renderer);

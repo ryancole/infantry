@@ -10,6 +10,7 @@
 #include "Visibility.h"
 
 #include <DirectXMath.h>
+#include <SimpleMath.h>
 #include <memory>
 #include <random>
 #include <string>
@@ -38,12 +39,15 @@ private:
         Playing,
     };
 
+    using Vector2 = DirectX::SimpleMath::Vector2;
+    using Vector3 = DirectX::SimpleMath::Vector3;
+
     struct Projectile
     {
         Physics::BodyHandle body;
         float life;
-        DirectX::XMFLOAT3 prevPos; // last frame's position, for swept hit tests
-        int team;                  // whose shot this is; it only hurts the other side
+        Vector3 prevPos; // last frame's position, for swept hit tests
+        int team;        // whose shot this is; it only hurts the other side
         float damage;
         float radius;
     };
@@ -54,11 +58,11 @@ private:
     struct Npc
     {
         const ClassDef* cls;
-        DirectX::XMFLOAT3 pos;
-        DirectX::XMFLOAT3 aimDir;
+        Vector3 pos;
+        Vector3 aimDir;
         float hp;
         float fireCooldown;
-        DirectX::XMFLOAT3 wanderTarget;
+        Vector3 wanderTarget;
         float repickTimer; // forces a fresh wander target even when stuck
         float strafeSign;  // +1/-1: which way to circle while engaged
         float strafeTimer; // time until the strafe direction flips
@@ -69,28 +73,27 @@ private:
     // are blockout geometry, drawn as debug cubes until they get a model.
     struct Collider
     {
-        DirectX::XMFLOAT3 center;
-        DirectX::XMFLOAT3 size;
+        Vector3 center;
+        Vector3 size;
         bool debugDraw; // no model to represent it, so draw the box itself
     };
 
     struct Prop
     {
         const Model* model; // owned by m_models
-        DirectX::XMFLOAT3 pos;
+        Vector3 pos;
         float scale;
         float yaw;
     };
 
-    void SpawnShot(const ClassDef& cls, const DirectX::XMFLOAT3& from,
-                   const DirectX::XMFLOAT3& dir, int team);
+    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team);
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
     // Clamps pos to the arena and pushes it out of solid colliders.
-    void ResolveObstacles(DirectX::XMFLOAT3& pos) const;
+    void ResolveObstacles(Vector3& pos) const;
     // Positional one-shot SFX: panned and attenuated relative to the player.
-    void PlaySoundAt(const std::string& name, const DirectX::XMFLOAT3& pos, float pitch = 0.0f);
+    void PlaySoundAt(const std::string& name, const Vector3& pos, float pitch = 0.0f);
     float Rand(float lo, float hi);
     void AppendFog(std::vector<Vertex>& out) const;
     void RenderHud(Renderer& renderer);
@@ -106,14 +109,15 @@ private:
     // Team spawn points from the level, indexed by team id. The local player
     // is on m_team; a team-select flow can set it before spawning, and future
     // respawn/teammate logic reads from the same table.
-    std::vector<DirectX::XMFLOAT3> m_teamSpawns;
+    std::vector<Vector3> m_teamSpawns;
     int m_team = 0;
-    DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
-    DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
+    Vector3 m_playerPos;
+    Vector3 m_aimDir = Vector3::UnitX;
     float m_fireCooldown = 0.0f;
     float m_playerHp = kMaxHealth;
-    float m_rumbleTime = 0.0f; // gamepad vibration left on a damage pulse
-    bool m_playerDied = false; // set by projectile hits, handled in Update
+    float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
+    float m_deathFlashTime = 0.0f; // grayscale post flash after dying
+    bool m_playerDied = false;     // set by projectile hits, handled in Update
 
     std::vector<Npc> m_npcs;
     int m_nextNpcClass = 0; // spawns cycle through the class table

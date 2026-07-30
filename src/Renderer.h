@@ -14,6 +14,7 @@
 #include <Effects.h>
 #include <GeometricPrimitive.h>
 #include <GraphicsMemory.h>
+#include <PostProcess.h>
 #include <PrimitiveBatch.h>
 #include <SpriteBatch.h>
 #include <SpriteFont.h>
@@ -43,6 +44,11 @@ enum class Shape
 // geometry submission (PrimitiveBatch); we keep the device/swap chain/fence
 // plumbing. Single frame in flight (CPU waits for the GPU every frame) —
 // simple and plenty for a prototype.
+//
+// The scene renders to an offscreen color target, then EndFrame resolves it
+// to the backbuffer through a post chain: optional monochrome (death flash),
+// then bloom (extract -> separable blur at half res -> combine). Screen text
+// draws directly on the backbuffer afterwards, so the HUD stays crisp.
 class Renderer
 {
 public:
@@ -71,6 +77,9 @@ public:
     void DrawShape(Shape shape, const DirectX::XMMATRIX& world,
                    const DirectX::XMFLOAT4& color);
 
+    // Renders the frame in grayscale while enabled (death/spectator flash).
+    void SetMonochrome(bool enabled) { m_monochrome = enabled; }
+
     // Queues screen-space text, drawn on top of everything else at EndFrame
     // via SpriteBatch/SpriteFont. (x, y) is the top-left of a capital letter
     // and `size` its pixel height, matching the old DebugText metrics.
@@ -91,6 +100,9 @@ private:
     void CreateFlatNormalTexture();
     void CreateSpriteResources();
     void CreateShapePrimitives();
+    void CreatePostProcess();
+    void CreateOffscreenTargets();
+    void RunPostChain();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
     void DrawBatch(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
@@ -125,6 +137,25 @@ private:
     // ships no normal texture (NormalMapEffect requires one).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_flatNormalTex;
     D3D12_GPU_DESCRIPTOR_HANDLE m_flatNormalSrv = {};
+
+    // Post-process chain targets. Indexed into the RTV heap after the
+    // swap-chain buffers and into fixed SRV slots on the descriptor pile
+    // (allocated once; resize recreates the views in place).
+    struct PostTarget
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = {};
+        size_t srvSlot = SIZE_MAX;
+    };
+    PostTarget m_sceneColor; // full res, scene renders here
+    PostTarget m_postColor;  // full res, monochrome intermediate
+    PostTarget m_bloom1;     // half res, extract + blur ping-pong
+    PostTarget m_bloom2;     // half res
+    std::unique_ptr<DirectX::BasicPostProcess> m_bloomExtract;
+    std::unique_ptr<DirectX::BasicPostProcess> m_bloomBlur;
+    std::unique_ptr<DirectX::BasicPostProcess> m_monochromePass;
+    std::unique_ptr<DirectX::DualPostProcess> m_bloomCombine;
+    bool m_monochrome = false;
 
     struct TextDraw
     {
