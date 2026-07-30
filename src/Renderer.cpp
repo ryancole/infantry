@@ -1,8 +1,9 @@
 #include "Renderer.h"
 
-#include <CommonStates.h>
+#include <DirectXHelpers.h>
 #include <EffectPipelineStateDescription.h>
 #include <RenderTargetState.h>
+#include <ResourceUploadBatch.h>
 
 #include <cstdio>
 #include <stdexcept>
@@ -101,8 +102,14 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
         throw std::runtime_error("CreateEvent failed");
 
     m_graphicsMemory = std::make_unique<GraphicsMemory>(m_device.Get());
+    m_states = std::make_unique<CommonStates>(m_device.Get());
+    m_srvPile = std::make_unique<DescriptorPile>(m_device.Get(),
+                                                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                                                 D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                                                 kSrvHeapSize);
     m_batch = std::make_unique<PrimitiveBatch<Vertex>>(m_device.Get(), kBatchVertices * 3,
                                                        kBatchVertices);
+    CreateFlatNormalTexture();
     CreateEffects();
 }
 
@@ -116,6 +123,10 @@ void Renderer::Shutdown()
     m_lineEffect.reset();
     m_alphaEffect.reset();
     m_modelEffect.reset();
+    m_texModelEffect.reset();
+    m_flatNormalTex.Reset();
+    m_srvPile.reset();
+    m_states.reset();
     m_graphicsMemory.reset();
     if (m_fenceEvent)
     {
@@ -200,11 +211,54 @@ void Renderer::CreateEffects()
                                                   alphaDesc);
 
     const EffectPipelineStateDescription modelDesc(
-        &VertexPositionNormal::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
+        &VertexPositionNormalTexture::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
         CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     m_modelEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::Lighting, modelDesc);
     m_modelEffect->EnableDefaultLighting();
     m_modelEffect->DisableSpecular();
+
+    m_texModelEffect = std::make_unique<NormalMapEffect>(m_device.Get(), EffectFlags::None,
+                                                         modelDesc);
+    m_texModelEffect->EnableDefaultLighting();
+    m_texModelEffect->DisableSpecular();
+}
+
+// NormalMapEffect always samples a normal map, so parts without one get this
+// single flat texel (x=y=0.5 → straight-up tangent-space normal).
+void Renderer::CreateFlatNormalTexture()
+{
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = 1;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    HR(m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                         IID_PPV_ARGS(&m_flatNormalTex)),
+       "Create flat normal texture");
+
+    static const uint8_t texel[4] = { 128, 128, 255, 255 };
+    D3D12_SUBRESOURCE_DATA sub = {};
+    sub.pData = texel;
+    sub.RowPitch = sizeof(texel);
+    sub.SlicePitch = sizeof(texel);
+
+    ResourceUploadBatch upload(m_device.Get());
+    upload.Begin();
+    upload.Upload(m_flatNormalTex.Get(), 0, &sub, 1);
+    upload.Transition(m_flatNormalTex.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    upload.End(m_queue.Get()).wait();
+
+    const size_t slot = m_srvPile->Allocate();
+    CreateShaderResourceView(m_device.Get(), m_flatNormalTex.Get(), m_srvPile->GetCpuHandle(slot));
+    m_flatNormalSrv = m_srvPile->GetGpuHandle(slot);
 }
 
 void Renderer::BeginFrame(const float clearColor[4])
@@ -225,6 +279,9 @@ void Renderer::BeginFrame(const float clearColor[4])
     m_cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     m_cmdList->RSSetViewports(1, &m_viewport);
     m_cmdList->RSSetScissorRects(1, &m_scissor);
+
+    ID3D12DescriptorHeap* heaps[] = { m_srvPile->Heap(), m_states->Heap() };
+    m_cmdList->SetDescriptorHeaps(static_cast<UINT>(std::size(heaps)), heaps);
 }
 
 void Renderer::EndFrame()
@@ -275,19 +332,33 @@ std::unique_ptr<Model> Renderer::LoadModel(const std::string& path)
     std::string resolved = ExeDir() + "\\" + path;
     if (GetFileAttributesA(resolved.c_str()) == INVALID_FILE_ATTRIBUTES)
         resolved = path;
-    return Model::LoadFromFile(m_device.Get(), m_queue.Get(), resolved);
+    return Model::LoadFromFile(m_device.Get(), m_queue.Get(), *m_srvPile, resolved);
 }
 
 void Renderer::DrawModel(const Model& model, const XMMATRIX& world)
 {
-    m_modelEffect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
     m_cmdList->IASetVertexBuffers(0, 1, &model.VertexView());
     m_cmdList->IASetIndexBuffer(&model.IndexView());
     m_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     for (const Model::Part& part : model.Parts())
     {
-        m_modelEffect->SetDiffuseColor(XMLoadFloat4(&part.color));
-        m_modelEffect->Apply(m_cmdList.Get());
+        if (part.baseColorTex >= 0)
+        {
+            m_texModelEffect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
+            m_texModelEffect->SetDiffuseColor(XMLoadFloat4(&part.color));
+            m_texModelEffect->SetTexture(model.Textures()[part.baseColorTex].srv,
+                                         m_states->AnisotropicWrap());
+            m_texModelEffect->SetNormalTexture(part.normalTex >= 0
+                                                   ? model.Textures()[part.normalTex].srv
+                                                   : m_flatNormalSrv);
+            m_texModelEffect->Apply(m_cmdList.Get());
+        }
+        else
+        {
+            m_modelEffect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
+            m_modelEffect->SetDiffuseColor(XMLoadFloat4(&part.color));
+            m_modelEffect->Apply(m_cmdList.Get());
+        }
         m_cmdList->DrawIndexedInstanced(part.indexCount, 1, part.indexStart, 0, 0);
     }
 }

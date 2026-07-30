@@ -9,6 +9,8 @@
 #include <memory>
 #include <string>
 
+#include <CommonStates.h>
+#include <DescriptorHeap.h>
 #include <Effects.h>
 #include <GraphicsMemory.h>
 #include <PrimitiveBatch.h>
@@ -54,9 +56,11 @@ public:
 private:
     static constexpr uint32_t kFrameCount = 2;
     static constexpr size_t kBatchVertices = 16384;
+    static constexpr size_t kSrvHeapSize = 256;
 
     void CreateSizedResources();
     void CreateEffects();
+    void CreateFlatNormalTexture();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
     void DrawBatch(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
@@ -77,11 +81,19 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
 
     std::unique_ptr<DirectX::GraphicsMemory> m_graphicsMemory;
+    std::unique_ptr<DirectX::CommonStates> m_states;
+    std::unique_ptr<DirectX::DescriptorPile> m_srvPile;
     std::unique_ptr<DirectX::BasicEffect> m_triEffect;
     std::unique_ptr<DirectX::BasicEffect> m_lineEffect;
     std::unique_ptr<DirectX::BasicEffect> m_alphaEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
+    std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
     std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;
+
+    // 1x1 (0.5, 0.5, 1) normal map bound for textured parts whose material
+    // ships no normal texture (NormalMapEffect requires one).
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_flatNormalTex;
+    D3D12_GPU_DESCRIPTOR_HANDLE m_flatNormalSrv = {};
 
     HANDLE m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;

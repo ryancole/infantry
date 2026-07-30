@@ -1,10 +1,15 @@
 #include "Model.h"
 
 #include <BufferHelpers.h>
+#include <DirectXHelpers.h>
 #include <ResourceUploadBatch.h>
 #include <VertexTypes.h>
+#include <WICTextureLoader.h>
+
+#include <objbase.h>
 
 #include <cstring>
+#include <map>
 #include <stdexcept>
 
 #define CGLTF_IMPLEMENTATION
@@ -15,7 +20,7 @@ using namespace DirectX;
 
 namespace
 {
-    using ModelVertex = VertexPositionNormal;
+    using ModelVertex = VertexPositionNormalTexture;
 
     void Fail(const std::string& path, const char* what)
     {
@@ -36,15 +41,99 @@ namespace
     const cgltf_accessor* FindAttribute(const cgltf_primitive& prim, cgltf_attribute_type type)
     {
         for (cgltf_size i = 0; i < prim.attributes_count; ++i)
-            if (prim.attributes[i].type == type)
+            if (prim.attributes[i].type == type && prim.attributes[i].index == 0)
                 return prim.attributes[i].data;
         return nullptr;
     }
+
+    std::wstring Widen(const std::string& s)
+    {
+        std::wstring out(s.size(), L'\0');
+        const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                                          out.data(), static_cast<int>(out.size()));
+        out.resize(static_cast<size_t>(n < 0 ? 0 : n));
+        return out;
+    }
+
+    // Loads each distinct glTF image once, creating its GPU resource and an
+    // SRV on the renderer's descriptor pile. Images either sit in a GLB
+    // buffer view or reference a file next to the .gltf.
+    class TextureLoader
+    {
+    public:
+        TextureLoader(ID3D12Device* device, ResourceUploadBatch& upload, DescriptorPile& pile,
+                      const std::string& path, std::vector<Model::Texture>& out)
+            : m_device(device), m_upload(upload), m_pile(pile), m_path(path), m_out(out)
+        {
+            const size_t slash = path.find_last_of("\\/");
+            m_dir = (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
+        }
+
+        // Returns an index into the model's texture array, or -1 if the
+        // glTF texture slot is empty.
+        int Load(const cgltf_texture* texture)
+        {
+            if (!texture || !texture->image)
+                return -1;
+            const cgltf_image* image = texture->image;
+            if (const auto it = m_cache.find(image); it != m_cache.end())
+                return it->second;
+
+            // The render pipeline is gamma-naive (UNORM backbuffer, color
+            // factors passed through raw), so keep texels raw too instead of
+            // tagging base color as sRGB.
+            constexpr WIC_LOADER_FLAGS kFlags = static_cast<WIC_LOADER_FLAGS>(
+                WIC_LOADER_MIP_AUTOGEN | WIC_LOADER_IGNORE_SRGB | WIC_LOADER_FORCE_RGBA32);
+
+            Model::Texture tex;
+            HRESULT hr = E_FAIL;
+            if (image->buffer_view)
+            {
+                const cgltf_buffer_view* view = image->buffer_view;
+                const auto* bytes = static_cast<const uint8_t*>(view->buffer->data) + view->offset;
+                hr = CreateWICTextureFromMemoryEx(m_device, m_upload, bytes, view->size, 0,
+                                                  D3D12_RESOURCE_FLAG_NONE, kFlags,
+                                                  tex.resource.GetAddressOf());
+            }
+            else if (image->uri && std::strncmp(image->uri, "data:", 5) != 0)
+            {
+                std::string uri = image->uri;
+                cgltf_decode_uri(uri.data());
+                uri.resize(std::strlen(uri.c_str()));
+                hr = CreateWICTextureFromFileEx(m_device, m_upload, Widen(m_dir + uri).c_str(), 0,
+                                                D3D12_RESOURCE_FLAG_NONE, kFlags,
+                                                tex.resource.GetAddressOf());
+            }
+            if (FAILED(hr))
+                Fail(m_path, "texture load failed");
+
+            const size_t slot = m_pile.Allocate();
+            CreateShaderResourceView(m_device, tex.resource.Get(), m_pile.GetCpuHandle(slot));
+            tex.srv = m_pile.GetGpuHandle(slot);
+
+            const int index = static_cast<int>(m_out.size());
+            m_out.push_back(std::move(tex));
+            m_cache.emplace(image, index);
+            return index;
+        }
+
+    private:
+        ID3D12Device* m_device;
+        ResourceUploadBatch& m_upload;
+        DescriptorPile& m_pile;
+        const std::string& m_path;
+        std::string m_dir;
+        std::vector<Model::Texture>& m_out;
+        std::map<const cgltf_image*, int> m_cache;
+    };
 }
 
 std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQueue* queue,
-                                           const std::string& path)
+                                           DescriptorPile& srvPile, const std::string& path)
 {
+    // WIC decoding lives on COM; safe to call again if the thread already did it.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     cgltf_options options = {};
     cgltf_data* data = nullptr;
     if (cgltf_parse_file(&options, path.c_str(), &data) != cgltf_result_success)
@@ -55,9 +144,14 @@ std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQu
         Fail(path, "could not load buffers");
     }
 
+    auto model = std::make_unique<Model>();
     std::vector<ModelVertex> verts;
     std::vector<uint32_t> indices;
     std::vector<Part> parts;
+
+    ResourceUploadBatch upload(device);
+    upload.Begin();
+    TextureLoader textures(device, upload, srvPile, path, model->m_textures);
 
     for (cgltf_size n = 0; n < data->nodes_count; ++n)
     {
@@ -81,6 +175,7 @@ std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQu
             if (!posAcc)
                 continue;
             const cgltf_accessor* normAcc = FindAttribute(prim, cgltf_attribute_type_normal);
+            const cgltf_accessor* uvAcc = FindAttribute(prim, cgltf_attribute_type_texcoord);
 
             const uint32_t baseVertex = static_cast<uint32_t>(verts.size());
             for (cgltf_size v = 0; v < posAcc->count; ++v)
@@ -102,6 +197,9 @@ std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQu
                 ModelVertex mv;
                 XMStoreFloat3(&mv.position, pv);
                 XMStoreFloat3(&mv.normal, nv);
+                mv.textureCoordinate = { 0.0f, 0.0f };
+                if (uvAcc)
+                    cgltf_accessor_read_float(uvAcc, v, &mv.textureCoordinate.x, 2);
                 // glTF is right-handed; mirror z into our left-handed world.
                 mv.position.z = -mv.position.z;
                 mv.normal.z = -mv.normal.z;
@@ -124,10 +222,20 @@ std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQu
             part.indexCount = static_cast<uint32_t>(indices.size()) - part.indexStart;
 
             part.color = { 0.8f, 0.8f, 0.8f, 1.0f };
-            if (prim.material && prim.material->has_pbr_metallic_roughness)
+            if (prim.material)
             {
-                const float* c = prim.material->pbr_metallic_roughness.base_color_factor;
-                part.color = { c[0], c[1], c[2], c[3] };
+                if (prim.material->has_pbr_metallic_roughness)
+                {
+                    const cgltf_pbr_metallic_roughness& pbr =
+                        prim.material->pbr_metallic_roughness;
+                    const float* c = pbr.base_color_factor;
+                    part.color = { c[0], c[1], c[2], c[3] };
+                    // Textures only matter if the mesh has UVs to sample with.
+                    if (uvAcc)
+                        part.baseColorTex = textures.Load(pbr.base_color_texture.texture);
+                }
+                if (uvAcc && part.baseColorTex >= 0)
+                    part.normalTex = textures.Load(prim.material->normal_texture.texture);
             }
 
             // Flat normals for primitives that ship without them.
@@ -156,11 +264,8 @@ std::unique_ptr<Model> Model::LoadFromFile(ID3D12Device* device, ID3D12CommandQu
     if (verts.empty() || indices.empty())
         Fail(path, "no triangle geometry found");
 
-    auto model = std::make_unique<Model>();
     model->m_parts = std::move(parts);
 
-    ResourceUploadBatch upload(device);
-    upload.Begin();
     if (FAILED(CreateStaticBuffer(device, upload, verts.data(), verts.size(), sizeof(ModelVertex),
                                   D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
                                   model->m_vertexBuffer.GetAddressOf())))
