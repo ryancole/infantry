@@ -865,7 +865,11 @@ void Game::Render(Renderer& renderer)
 
         // Health bar: a thin slab that shrinks toward its left edge and shifts
         // green -> red, so weapon damage is readable per hit. Stays a
-        // vertex-color cube: it's a readout, not a lit object.
+        // vertex-color cube: it's a readout, not a lit object. Undamaged
+        // soldiers show no bar at all, so a full row of them reads as clean
+        // silhouettes and any bar on screen means something took a hit.
+        if (npc.hp >= kMaxHealth)
+            continue;
         const float frac = std::max(npc.hp, 0.0f) / kMaxHealth;
         const float barW = 0.9f * frac;
         const XMFLOAT4 barColor = { 0.9f * (1.0f - frac), 0.8f * frac, 0.1f, 1.0f };
