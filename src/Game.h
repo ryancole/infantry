@@ -99,7 +99,11 @@ private:
         float yaw;
     };
 
-    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team);
+    // Fires cls's projectile from `from` along `dir`. Bullets always fly at
+    // full speed; lobbed shots (grenades) shorten their toss to come down
+    // `targetDist` away, up to the class's max range.
+    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team,
+                   float targetDist);
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
@@ -110,6 +114,12 @@ private:
     // Effect + sound for a projectile dying on `hitUnit` or world geometry.
     void ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit);
     void UpdateParticles(float dt);
+    // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
+    // against the colliders and the ground; returns the horizontal distance
+    // from `from` at which the shot stops. When outArc is given, fills it
+    // with the sampled trajectory (muzzle to stop). Powers the aim indicator.
+    float PredictShotStop(const ClassDef& cls, const Vector3& from, const Vector3& dir,
+                          float targetDist, std::vector<Vector3>* outArc = nullptr) const;
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     // Positional one-shot SFX: panned and attenuated relative to the player.
@@ -133,6 +143,7 @@ private:
     int m_team = 0;
     Vector3 m_playerPos;
     Vector3 m_aimDir = Vector3::UnitX;
+    float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
     float m_playerHp = kMaxHealth;
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
@@ -152,4 +163,5 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
     std::vector<Vertex> m_scratch;     // reused per draw
+    std::vector<Vector3> m_aimArc;     // aim indicator trajectory, reused per frame
 };
