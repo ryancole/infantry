@@ -9,7 +9,7 @@ include(FetchContent)
 # DirectXTK12: effects (built-in shaders), primitive batches, sprite/font
 # rendering, texture loading, audio — the reusable layer above raw D3D12.
 set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(BUILD_XAUDIO_WIN10 OFF CACHE BOOL "" FORCE) # flip on when audio lands
+set(BUILD_XAUDIO_WIN10 ON CACHE BOOL "" FORCE) # XAudio 2.9 backend for Sound.cpp
 FetchContent_Declare(DirectXTK12
     GIT_REPOSITORY https://github.com/microsoft/DirectXTK12.git
     GIT_TAG may2026
@@ -56,6 +56,7 @@ add_executable(infantry WIN32
     src/Level.cpp
     src/Model.cpp
     src/Physics.cpp
+    src/Sound.cpp
     src/Visibility.cpp
 )
 
@@ -74,6 +75,7 @@ target_link_libraries(infantry PRIVATE
     d3d12
     dxgi
     user32
+    xaudio2
 )
 
 # Ship models next to the exe so they can be loaded at runtime.
