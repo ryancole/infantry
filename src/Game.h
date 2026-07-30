@@ -89,7 +89,7 @@ private:
     void UpdateProjectiles(float dt);
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(DirectX::XMFLOAT3& pos) const;
-    // One-shot SFX attenuated by distance from the player's ear.
+    // Positional one-shot SFX: panned and attenuated relative to the player.
     void PlaySoundAt(const std::string& name, const DirectX::XMFLOAT3& pos, float pitch = 0.0f);
     float Rand(float lo, float hi);
     void AppendFog(std::vector<Vertex>& out) const;

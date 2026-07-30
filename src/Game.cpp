@@ -25,9 +25,6 @@ namespace
     // Line of sight is computed at eye level: colliders whose box doesn't
     // reach this height (low crates, curbs) can be seen and shot over.
     constexpr float kEyeHeight = 0.6f;
-    // SFX heard from farther than this are dropped; volume falls off linearly
-    // up to it. Wider than the fog so unseen fights are still audible.
-    constexpr float kSoundRange = 45.0f;
     constexpr float kFogHeight = 0.02f; // just above the floor grid lines
     constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
 
@@ -206,6 +203,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
     ResolveObstacles(m_playerPos);
 
+    // The ear follows the player; orienting it to the screen's up direction
+    // makes stereo panning line up with what's on screen.
+    m_sound.SetListener(m_playerPos, upG);
+
     // --- Aim: mouse cursor projected onto the ground plane ---
     const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
     float ax = aimPoint.x - m_playerPos.x;
@@ -263,12 +264,11 @@ void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& 
 
 void Game::PlaySoundAt(const std::string& name, const XMFLOAT3& pos, float pitch)
 {
+    // Past kRange the voice would be silent anyway; skip spawning it.
     const float dx = pos.x - m_playerPos.x;
     const float dz = pos.z - m_playerPos.z;
-    const float dist = std::sqrt(dx * dx + dz * dz);
-    const float volume = 1.0f - dist / kSoundRange;
-    if (volume > 0.0f)
-        m_sound.Play(name, volume, pitch);
+    if (dx * dx + dz * dz < Sound::kRange * Sound::kRange)
+        m_sound.Play3D(name, pos, pitch);
 }
 
 float Game::Rand(float lo, float hi)
