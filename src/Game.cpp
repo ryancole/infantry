@@ -17,6 +17,12 @@ namespace
     constexpr float kMuzzleOffset = 0.7f; // shots start this far ahead of the shooter
     constexpr float kGravity = 9.81f;     // must match Jolt's default gravity magnitude
 
+    // Default bindings. Keys are still hardcoded per action (there's no
+    // rebinding UI or config file yet); naming them keeps the defaults in one
+    // place for when there is one.
+    constexpr int kGrenadeKey = 'F';
+    constexpr int kSpawnNpcKey = 'N';
+
     // NPC combat tuning. Engage range is intentionally shorter than what the
     // player can see, so NPCs can be picked at from a distance.
     constexpr float kNpcEngageRange = 22.0f;    // sight radius for entering combat
@@ -47,15 +53,31 @@ namespace
 
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
+    // Below this speed a bouncing grenade's contacts are a roll, not a bounce,
+    // and stay silent — otherwise a grenade resting on the floor reports a
+    // contact every frame and chatters.
+    constexpr float kBounceSoundSpeed = 2.5f; // units per second
+
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
     constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kObstacleColor = { 0.35f, 0.40f, 0.50f, 1.0f };
     constexpr XMFLOAT4 kProjectileColor = { 1.00f, 0.80f, 0.20f, 1.0f };
+    // A live grenade reads as a blinking casing rather than a tracer, so it
+    // can't be mistaken for a bullet while it bounces.
+    constexpr XMFLOAT4 kGrenadeLiveColor = { 1.00f, 0.30f, 0.12f, 1.0f };
+    constexpr XMFLOAT4 kGrenadeCasingColor = { 0.32f, 0.30f, 0.28f, 1.0f };
+    constexpr float kGrenadeBlinkPeriod = 0.24f; // seconds per on/off cycle
+    constexpr float kGrenadeFlashLife = 0.4f;    // fuse left when it goes solid bright
     // The aim indicator is alpha-blended; the shaft dims via alpha rather
     // than darker RGB so whatever it crosses still shows through.
     constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 0.55f };
     constexpr XMFLOAT4 kAimDimColor = { 0.95f, 0.95f, 0.40f, 0.22f };
+    // The grenade's ring is orange, so it never reads as part of the primary's
+    // yellow aim line.
+    constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
+    constexpr float kAimRingHeight = 0.05f;    // above the fog quads, so it isn't dimmed
+    constexpr float kGrenadeMarkRadius = 0.5f; // first-bounce marker, not the blast size
     constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
@@ -92,6 +114,37 @@ namespace
             const int tris[6] = { idx[0], idx[1], idx[2], idx[0], idx[2], idx[3] };
             for (int i : tris)
                 out.push_back({ p[i], col });
+        }
+    }
+
+    // How a projectile in flight is drawn: tracers are a steady bright dot,
+    // while a fused grenade blinks its casing and then holds bright for the
+    // last moment before it goes off, so anyone watching can time it. Phase
+    // comes from the fuse itself, so there's no clock to keep per grenade.
+    XMFLOAT4 ProjectileColor(float life, bool fused)
+    {
+        if (!fused)
+            return kProjectileColor;
+        if (life <= kGrenadeFlashLife)
+            return kGrenadeLiveColor;
+        return std::fmod(life, kGrenadeBlinkPeriod) > kGrenadeBlinkPeriod * 0.5f
+                   ? kGrenadeLiveColor
+                   : kGrenadeCasingColor;
+    }
+
+    // A horizontal ring of line segments, for the aim indicator's landing marks.
+    void AppendCircle(std::vector<Vertex>& out, const Vector3& center, float radius,
+                      const XMFLOAT4& color)
+    {
+        constexpr int kSegments = 24;
+        for (int i = 0; i < kSegments; ++i)
+        {
+            const float a0 = XM_2PI * i / kSegments;
+            const float a1 = XM_2PI * (i + 1) / kSegments;
+            out.push_back({ XMFLOAT3{ center.x + std::cos(a0) * radius, center.y,
+                                      center.z + std::sin(a0) * radius }, color });
+            out.push_back({ XMFLOAT3{ center.x + std::cos(a1) * radius, center.y,
+                                      center.z + std::sin(a1) * radius }, color });
         }
     }
 
@@ -215,15 +268,15 @@ namespace
              visor);
     }
 
-    // Horizontal muzzle speed for cls's shot aimed to come down targetDist
-    // away: bullets always fire at full speed; lobbed shots slow their toss to
-    // drop on the aim point, capped at the class's muzzle speed.
-    float ShotSpeed(const ClassDef& cls, float targetDist)
+    // Horizontal muzzle speed for a shot aimed to come down targetDist away:
+    // bullets always fire at full speed; lobbed shots slow their toss to drop
+    // on the aim point, capped at the weapon's muzzle speed.
+    float ShotSpeed(const WeaponDef& weapon, float targetDist)
     {
-        float speed = cls.projectileSpeed;
-        if (cls.lobVelocity > 0.0f)
+        float speed = weapon.projectileSpeed;
+        if (weapon.lobVelocity > 0.0f)
         {
-            const float vy = cls.lobVelocity;
+            const float vy = weapon.lobVelocity;
             const float flightTime =
                 (vy + std::sqrt(vy * vy + 2.0f * kGravity * kMuzzleHeight)) / kGravity;
             const float d = std::max(targetDist - kMuzzleOffset, 0.2f);
@@ -396,18 +449,30 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- Firing ---
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
     m_fireCooldown -= dt;
     if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
          input.pad.triggers.right > 0.5f) &&
         m_fireCooldown <= 0.0f)
     {
-        SpawnShot(*m_class, m_playerPos, m_aimDir, m_team, m_aimDist);
-        m_fireCooldown = m_class->fireInterval;
+        SpawnShot(m_class->primary, m_playerPos, m_aimDir, m_team, m_aimDist);
+        m_fireCooldown = m_class->primary.fireInterval;
+    }
+
+    // --- Grenade: same for every class, lobbed onto the aim point, then left
+    // to bounce until its fuse runs out (UpdateProjectiles). One per life, so
+    // there's no cooldown to run down — spending it is the whole cost. Thrown
+    // on the key's press edge, which with a single grenade also stops a held
+    // key from throwing it before the player means to ---
+    if ((input.KeyPressed(kGrenadeKey) || input.padEvents.leftShoulder == PadTracker::PRESSED) &&
+        m_grenades > 0)
+    {
+        SpawnShot(kGrenade, m_playerPos, m_aimDir, m_team, m_aimDist);
+        --m_grenades;
     }
 
     // --- NPCs: debug spawning and AI ---
-    using PadTracker = DirectX::GamePad::ButtonStateTracker;
-    if (input.KeyPressed('N') || input.padEvents.y == PadTracker::PRESSED)
+    if (input.KeyPressed(kSpawnNpcKey) || input.padEvents.y == PadTracker::PRESSED)
         SpawnNpc();
     UpdateNpcs(dt);
 
@@ -421,6 +486,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerDied = false;
         m_playerHp = kMaxHealth;
         m_playerPos = m_teamSpawns[m_team];
+        m_grenades = kGrenadesPerLife; // respawn is a fresh loadout
         m_deathFlashTime = 0.6f; // brief grayscale flash while respawning
         camera.SetTarget(m_playerPos);
         camera.SnapToTarget();
@@ -430,7 +496,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     camera.SetTarget(m_playerPos);
 }
 
-void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team,
+void Game::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
                      float targetDist)
 {
     Vector3 pos = from + dir * kMuzzleOffset;
@@ -440,23 +506,24 @@ void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& di
     // time) and vary horizontal speed to land on the aim point; bullets fire
     // level at full speed, so max range comes from gravity.
     const Vector3 vel =
-        dir * ShotSpeed(cls, targetDist) + Vector3(0.0f, cls.lobVelocity, 0.0f);
-    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
-                                                        cls.projectileMass),
-                              cls.projectileLife, pos, team, cls.damage, cls.projectileRadius,
-                              cls.explodes });
+        dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
+    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
+                                                        weapon.projectileMass, weapon.bounce),
+                              weapon.projectileLife, pos, team, weapon.damage,
+                              weapon.projectileRadius, weapon.blastRadius,
+                              weapon.bounce > 0.0f, weapon.explodes });
 
     // One shared fire sample; heavier weapons play deeper. A little random
     // detune keeps rapid fire from sounding like a loop.
-    const float pitch = 0.25f - cls.damage / 120.0f + Rand(-0.05f, 0.05f);
+    const float pitch = 0.25f - weapon.damage / 120.0f + Rand(-0.05f, 0.05f);
     PlaySoundAt("fire", from, pitch);
 }
 
-float Game::PredictShotStop(const ClassDef& cls, const Vector3& from, const Vector3& dir,
+float Game::PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
                             float targetDist, std::vector<Vector3>* outArc) const
 {
-    const float speed = ShotSpeed(cls, targetDist);
-    const float radius = cls.projectileRadius;
+    const float speed = ShotSpeed(weapon, targetDist);
+    const float radius = weapon.projectileRadius;
     if (outArc)
     {
         outArc->clear();
@@ -466,10 +533,10 @@ float Game::PredictShotStop(const ClassDef& cls, const Vector3& from, const Vect
     // Coarser than the physics tick, but the arc is smooth and the boxes are
     // fat relative to per-step travel, so the indicator lands within a step.
     constexpr float kStep = 1.0f / 120.0f;
-    for (float t = kStep; t < cls.projectileLife; t += kStep)
+    for (float t = kStep; t < weapon.projectileLife; t += kStep)
     {
         const float ht = kMuzzleOffset + speed * t;
-        const float y = kMuzzleHeight + cls.lobVelocity * t - 0.5f * kGravity * t * t;
+        const float y = kMuzzleHeight + weapon.lobVelocity * t - 0.5f * kGravity * t * t;
         if (outArc)
             outArc->push_back({ from.x + dir.x * ht, std::max(y, radius),
                                 from.z + dir.z * ht });
@@ -483,7 +550,7 @@ float Game::PredictShotStop(const ClassDef& cls, const Vector3& from, const Vect
                 std::abs(p.z - c.center.z) <= c.size.z * 0.5f + radius)
                 return ht;
     }
-    return kMuzzleOffset + speed * cls.projectileLife;
+    return kMuzzleOffset + speed * weapon.projectileLife;
 }
 
 void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
@@ -568,6 +635,7 @@ void Game::UpdateNpcs(float dt)
 
         Vector3 move;
         float speed = npc.cls->moveSpeed;
+        const WeaponDef& weapon = npc.cls->primary;
         if (engaged)
         {
             toPlayer /= dist;
@@ -594,8 +662,8 @@ void Game::UpdateNpcs(float dt)
                 const int npcTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
                 // NPCs "aim" at the player's feet, so a grenadier's lob comes
                 // down on the player instead of sailing to max range.
-                SpawnShot(*npc.cls, npc.pos, dir, npcTeam, dist);
-                npc.fireCooldown = npc.cls->fireInterval;
+                SpawnShot(weapon, npc.pos, dir, npcTeam, dist);
+                npc.fireCooldown = weapon.fireInterval;
             }
         }
         else
@@ -685,8 +753,53 @@ void Game::SpawnExplosion(const Vector3& pos)
     }
 }
 
-void Game::ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit)
+void Game::ApplyBlast(const Vector3& center, float radius, float damage, int team)
 {
+    // Linear falloff from full damage at the center to nothing at the rim,
+    // measured to the body's middle so a blast overhead still counts. A wall
+    // between the two eats it: same sight test the fog of war and NPC AI use,
+    // so what stops a bullet stops the shrapnel.
+    const auto splash = [&](const Vector3& target) {
+        if (!Visibility::IsPointVisible({ center.x, center.z }, { target.x, target.z },
+                                        m_occluders))
+            return 0.0f;
+        const float d = (target - center).Length();
+        return d >= radius ? 0.0f : damage * (1.0f - d / radius);
+    };
+
+    // Like direct hits, a blast only hurts the other side.
+    if (team == m_team)
+    {
+        for (Npc& npc : m_npcs)
+        {
+            if (npc.hp <= 0.0f) // already killed this frame, by the direct hit or an earlier blast
+                continue;
+            const float dmg = splash({ npc.pos.x, kPlayerHalf, npc.pos.z });
+            if (dmg <= 0.0f)
+                continue;
+            npc.hp -= dmg;
+            PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
+        }
+    }
+    else
+    {
+        const float dmg = splash({ m_playerPos.x, kPlayerHalf, m_playerPos.z });
+        if (dmg > 0.0f && m_playerHp > 0.0f)
+        {
+            m_playerHp -= dmg;
+            m_rumbleTime = 0.25f;
+            if (m_playerHp <= 0.0f)
+                m_playerDied = true;
+            m_sound.Play(m_playerDied ? "death" : "hit");
+        }
+    }
+}
+
+void Game::Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit)
+{
+    if (shot.blastRadius > 0.0f)
+        ApplyBlast(pos, shot.blastRadius, shot.damage, shot.team);
+
     if (shot.explodes)
     {
         SpawnExplosion(pos);
@@ -726,10 +839,23 @@ void Game::UpdateProjectiles(float dt)
     {
         shot.life -= dt;
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
+        // Out of the arena: gone quietly, no impact and no detonation, even for
+        // a live fuse. Skips the rest so a fused shot doesn't blow up out there.
         if (pos.x < -m_arenaHalf || pos.x > m_arenaHalf ||
             pos.z < -m_arenaHalf || pos.z > m_arenaHalf)
+        {
             shot.life = 0.0f;
+            shot.prevPos = pos;
+            continue;
+        }
 
+        bool detonated = false;
+
+        // An explosive's damage comes entirely from its blast, so a body shot
+        // only ends its flight: Detonate hands out the damage (and the
+        // hit/death sound) from the impact point, which spares the target no
+        // damage but stops a direct hit from being counted twice.
+        const bool blast = shot.blastRadius > 0.0f;
         const XMFLOAT3 bodyHalf = { kPlayerHalf, kPlayerHalf, kPlayerHalf };
         if (shot.life > 0.0f && shot.team == m_team)
         {
@@ -739,10 +865,14 @@ void Game::UpdateProjectiles(float dt)
                 if (npc.hp > 0.0f &&
                     SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
                 {
-                    npc.hp -= shot.damage;
-                    PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
+                    if (!blast)
+                    {
+                        npc.hp -= shot.damage;
+                        PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
+                    }
                     shot.life = 0.0f;
-                    ImpactEffect(shot, pos, true);
+                    Detonate(shot, pos, true);
+                    detonated = true;
                     break;
                 }
             }
@@ -752,24 +882,47 @@ void Game::UpdateProjectiles(float dt)
             const XMFLOAT3 center = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
             if (SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
             {
-                m_playerHp -= shot.damage;
-                m_rumbleTime = 0.25f;
-                if (m_playerHp <= 0.0f)
-                    m_playerDied = true;
-                m_sound.Play(m_playerDied ? "death" : "hit");
+                if (!blast)
+                {
+                    m_playerHp -= shot.damage;
+                    m_rumbleTime = 0.25f;
+                    if (m_playerHp <= 0.0f)
+                        m_playerDied = true;
+                    m_sound.Play(m_playerDied ? "death" : "hit");
+                }
                 shot.life = 0.0f;
-                ImpactEffect(shot, pos, true);
+                Detonate(shot, pos, true);
+                detonated = true;
             }
         }
 
-        // Projectiles stop where they land: first touch of world geometry
+        // Most projectiles stop where they land: first touch of world geometry
         // (walls, floor) removes them. Checked after the unit sweeps so a shot
         // that clips a target on its impact tick still deals its damage.
+        // A fused grenade instead rides the bounce out — Jolt has already
+        // deflected it — and only a knock hard enough to hear gets a sound: it
+        // reports contact every frame once it settles into a roll.
         if (shot.life > 0.0f && m_physics.HadContact(shot.body))
         {
-            shot.life = 0.0f;
-            ImpactEffect(shot, pos, false);
+            if (shot.fused)
+            {
+                const Vector3 travel(pos.x - shot.prevPos.x, pos.y - shot.prevPos.y,
+                                     pos.z - shot.prevPos.z);
+                if (travel.Length() > kBounceSoundSpeed * dt)
+                    PlaySoundAt("thud", pos, Rand(0.35f, 0.55f));
+            }
+            else
+            {
+                shot.life = 0.0f;
+                Detonate(shot, pos, false);
+                detonated = true;
+            }
         }
+
+        // Fuse ran out: for a grenade that's the whole point, so it goes off
+        // wherever it has bounced to rather than being quietly collected.
+        if (shot.life <= 0.0f && shot.fused && !detonated)
+            Detonate(shot, pos, false);
 
         shot.prevPos = pos;
     }
@@ -881,11 +1034,13 @@ void Game::Render(Renderer& renderer)
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
         if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
         {
-            const float d = m_class->projectileRadius * 2.0f;
+            // Per-shot radius, not the class's: a thrown grenade is a fatter
+            // projectile than most primaries fire.
+            const float d = shot.radius * 2.0f;
             renderer.DrawShape(Shape::Sphere,
                                XMMatrixScaling(d, d, d) *
                                    XMMatrixTranslation(pos.x, pos.y, pos.z),
-                               kProjectileColor);
+                               ProjectileColor(shot.life, shot.fused));
         }
     }
 
@@ -919,11 +1074,11 @@ void Game::Render(Renderer& renderer)
     // Aim indicator: the shot's actual trajectory as a dim 3D polyline — an
     // arch for the grenade's lob, a near-level line with droop for bullets —
     // ending where the shot really stops (max range, the first wall the arc
-    // can't clear, or the ground). A bright tick crosses the end point, and
-    // lobbed weapons get a landing circle. Drawn after the fog pass so it
-    // stays bright.
+    // can't clear, or the ground). A bright tick crosses the end point, lobbed
+    // weapons get a landing circle, and the grenade gets a marker where the
+    // throw touches down. Drawn after the fog pass so it stays bright.
     {
-        PredictShotStop(*m_class, m_playerPos, m_aimDir, m_aimDist, &m_aimArc);
+        PredictShotStop(m_class->primary, m_playerPos, m_aimDir, m_aimDist, &m_aimArc);
 
         m_scratch.clear();
         for (size_t i = 1; i < m_aimArc.size(); ++i)
@@ -939,20 +1094,24 @@ void Game::Render(Renderer& renderer)
         m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, kAimColor });
         m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, kAimColor });
 
-        if (m_class->lobVelocity > 0.0f)
+        if (m_class->primary.lobVelocity > 0.0f)
+            AppendCircle(m_scratch, end, 0.4f, kAimColor);
+
+        // Grenade marker: where the throw first touches down. Deliberately not
+        // the blast radius — the grenade bounces and rolls on from here before
+        // its fuse ends it, so a ring sized to the blast would promise a
+        // detonation point nothing can predict. What it does show honestly is
+        // the throw's reach, so a lob falling short of the cursor is visible
+        // before it leaves the hand. Gone for good once the grenade is spent,
+        // which is the in-world half of the HUD's count.
+        if (m_grenades > 0)
         {
-            constexpr int kSegments = 20;
-            constexpr float kRadius = 0.4f;
-            for (int i = 0; i < kSegments; ++i)
-            {
-                const float a0 = XM_2PI * i / kSegments;
-                const float a1 = XM_2PI * (i + 1) / kSegments;
-                m_scratch.push_back({ { end.x + std::cos(a0) * kRadius, end.y,
-                                        end.z + std::sin(a0) * kRadius }, kAimColor });
-                m_scratch.push_back({ { end.x + std::cos(a1) * kRadius, end.y,
-                                        end.z + std::sin(a1) * kRadius }, kAimColor });
-            }
+            const float dist = PredictShotStop(kGrenade, m_playerPos, m_aimDir, m_aimDist);
+            const Vector3 land(m_playerPos.x + m_aimDir.x * dist, kAimRingHeight,
+                               m_playerPos.z + m_aimDir.z * dist);
+            AppendCircle(m_scratch, land, kGrenadeMarkRadius, kGrenadeAimColor);
         }
+
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                 identity);
     }
@@ -960,14 +1119,18 @@ void Game::Render(Renderer& renderer)
     RenderHud(renderer);
 }
 
-// Screen-space overlay: player health, NPC count, perf counters, spawn hint.
+// Screen-space overlay: player health, grenade state, NPC count, perf counters,
+// control hints.
 void Game::RenderHud(Renderer& renderer)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
     const float size = h * 0.024f;
     const float y = h - size * 2.0f;
+    // Grenades read as a count, not a timer: there's nothing to wait out, so
+    // what matters is whether one is left.
     const std::string status = "HP " + std::to_string(static_cast<int>(std::ceil(m_playerHp))) +
+                               "   NADES " + std::to_string(m_grenades) +
                                "   NPCS " + std::to_string(m_npcs.size());
     renderer.DrawScreenText(status, size, y, size, kHudColor);
 
@@ -982,7 +1145,7 @@ void Game::RenderHud(Renderer& renderer)
                   renderer.CpuFrameMs(), renderer.LastDrawCalls());
     renderer.DrawScreenText(perf, size, size, perfSize, kHudHintColor);
 
-    const std::string hint = "N - SPAWN NPC";
+    const std::string hint = "F - GRENADE   N - SPAWN NPC";
     renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,
                             kHudHintColor);
 }

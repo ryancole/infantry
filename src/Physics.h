@@ -21,10 +21,12 @@ public:
     void AddStaticBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& size);
 
     // Dynamic sphere under gravity; uses continuous collision so fast shots
-    // don't tunnel through thin geometry. Zero restitution: projectiles stop
-    // dead where they land instead of bouncing.
+    // don't tunnel through thin geometry. `restitution` is the fraction of
+    // impact speed a bounce keeps: 0 stops the body dead where it lands (shots
+    // that die on their first contact), while a grenade rebounds off walls and
+    // floor until its fuse runs out.
     BodyHandle SpawnProjectile(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT3& vel,
-                               float radius, float mass);
+                               float radius, float mass, float restitution = 0.0f);
 
     void RemoveBody(BodyHandle handle);
     DirectX::XMFLOAT3 GetPosition(BodyHandle handle) const;

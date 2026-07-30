@@ -118,6 +118,10 @@ void ClassSelect::Render(Renderer& renderer)
     DrawCentered(renderer, "CHOOSE YOUR CLASS", w * 0.5f, h * 0.14f, h * 0.05f, kTitleColor);
     DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
                  kHintColor);
+    // The grenade isn't on any card because it isn't a class trait: every
+    // soldier gets the same one, so it's called out once, here.
+    DrawCentered(renderer, "ONE GRENADE PER LIFE - F TO THROW", w * 0.5f, h * 0.82f, h * 0.022f,
+                 kHintColor);
 
     for (size_t i = 0; i < kClassCount; ++i)
     {
@@ -146,8 +150,8 @@ void ClassSelect::Render(Renderer& renderer)
         };
         const Bar bars[3] = {
             { "SPD", def.moveSpeed / kMaxMoveSpeed },
-            { "ROF", (1.0f / def.fireInterval) / kMaxFireRate },
-            { "RNG", def.projectileSpeed / kMaxProjectileSpeed },
+            { "ROF", (1.0f / def.primary.fireInterval) / kMaxFireRate },
+            { "RNG", def.primary.projectileSpeed / kMaxProjectileSpeed },
         };
         const float rowH = r.h * 0.10f;
         const float labelSize = rowH * 0.55f;

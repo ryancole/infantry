@@ -162,7 +162,7 @@ void Physics::AddStaticBox(const XMFLOAT3& center, const XMFLOAT3& size)
 }
 
 Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3& vel,
-                                             float radius, float mass)
+                                             float radius, float mass, float restitution)
 {
     JPH::BodyCreationSettings settings(
         new JPH::SphereShape(radius),
@@ -170,9 +170,10 @@ Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3
         JPH::EMotionType::Dynamic, ObjLayers::MOVING);
     settings.mLinearVelocity = JPH::Vec3(vel.x, vel.y, vel.z);
     settings.mMotionQuality = JPH::EMotionQuality::LinearCast;
-    // Projectiles die on their first contact (see HadContact), so zero
-    // restitution keeps them from visibly rebounding during the impact frame.
-    settings.mRestitution = 0.0f;
+    // Shots that die on their first contact (see HadContact) pass 0 here, so
+    // they never visibly rebound during the impact frame; a live grenade passes
+    // a real restitution and keeps ricocheting until its fuse ends it.
+    settings.mRestitution = restitution;
     settings.mFriction = 0.4f;
     settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     settings.mMassPropertiesOverride.mMass = mass;
