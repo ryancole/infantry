@@ -106,6 +106,11 @@ namespace
 
 void Game::LoadContent(Renderer& renderer)
 {
+    m_sound.Init();
+    m_sound.Load("fire");
+    m_sound.Load("hit");
+    m_sound.Load("death");
+
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
     m_arenaHalf = level.arenaHalf;
     for (const LevelData::Spawn& spawn : level.spawns)
@@ -160,6 +165,8 @@ void Game::LoadContent(Renderer& renderer)
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
+    m_sound.Update();
+
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -195,6 +202,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerPos.z += dz * m_class->moveSpeed * dt;
     }
     ResolveObstacles(m_playerPos);
+
+    // The ear follows the player; orienting it to the screen's up direction
+    // makes stereo panning line up with what's on screen.
+    m_sound.SetListener(m_playerPos, upG);
 
     // --- Aim: mouse cursor projected onto the ground plane ---
     const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
@@ -244,6 +255,20 @@ void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& 
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
                                                         cls.projectileMass),
                               cls.projectileLife, pos, team, cls.damage, cls.projectileRadius });
+
+    // One shared fire sample; heavier weapons play deeper. A little random
+    // detune keeps rapid fire from sounding like a loop.
+    const float pitch = 0.25f - cls.damage / 120.0f + Rand(-0.05f, 0.05f);
+    PlaySoundAt("fire", from, pitch);
+}
+
+void Game::PlaySoundAt(const std::string& name, const XMFLOAT3& pos, float pitch)
+{
+    // Past kRange the voice would be silent anyway; skip spawning it.
+    const float dx = pos.x - m_playerPos.x;
+    const float dz = pos.z - m_playerPos.z;
+    if (dx * dx + dz * dz < Sound::kRange * Sound::kRange)
+        m_sound.Play3D(name, pos, pitch);
 }
 
 float Game::Rand(float lo, float hi)
@@ -420,6 +445,7 @@ void Game::UpdateProjectiles(float dt)
                     SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
                 {
                     npc.hp -= shot.damage;
+                    PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
                     shot.life = 0.0f;
                     break;
                 }
@@ -433,6 +459,7 @@ void Game::UpdateProjectiles(float dt)
                 m_playerHp -= shot.damage;
                 if (m_playerHp <= 0.0f)
                     m_playerDied = true;
+                m_sound.Play(m_playerDied ? "death" : "hit");
                 shot.life = 0.0f;
             }
         }
