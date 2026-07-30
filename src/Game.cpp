@@ -37,8 +37,9 @@ namespace
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
 
-    // Appends a solid cube with per-face shading (fakes lighting until a real
-    // lit pipeline exists).
+    // Appends a solid cube with fixed per-face shading. Units and obstacles
+    // moved to the renderer's lit shapes; this remains for overlay-style
+    // readouts (NPC health bars) that shouldn't respond to scene lighting.
     void AppendCube(std::vector<Vertex>& out, const XMFLOAT3& center, const XMFLOAT3& size,
                     const XMFLOAT4& color)
     {
@@ -546,38 +547,44 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
 
-    m_scratch.clear();
     for (const Collider& c : m_colliders)
         if (c.debugDraw)
-            AppendCube(m_scratch, c.center, c.size, kObstacleColor);
+            renderer.DrawShape(Shape::Box,
+                               XMMatrixScaling(c.size.x, c.size.y, c.size.z) *
+                                   XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
+                               kObstacleColor);
 
-    // Player body plus a small "turret" cap, tinted by class.
-    const XMFLOAT3 body = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
-    AppendCube(m_scratch, body, { kPlayerHalf * 2.0f, kPlayerHalf * 2.0f, kPlayerHalf * 2.0f },
-               m_class->color);
-    AppendCube(m_scratch, { body.x, kPlayerHalf * 2.2f, body.z },
-               { 0.35f, 0.35f, 0.35f }, m_class->color);
+    // Units are a cylinder body with a sphere "head" cap, tinted by class.
+    auto drawUnit = [&](const XMFLOAT3& pos, const XMFLOAT4& color) {
+        const float bodySize = kPlayerHalf * 2.0f;
+        renderer.DrawShape(Shape::Cylinder,
+                           XMMatrixScaling(bodySize, bodySize, bodySize) *
+                               XMMatrixTranslation(pos.x, kPlayerHalf, pos.z),
+                           color);
+        renderer.DrawShape(Shape::Sphere,
+                           XMMatrixScaling(0.4f, 0.4f, 0.4f) *
+                               XMMatrixTranslation(pos.x, kPlayerHalf * 2.35f, pos.z),
+                           color);
+    };
+    drawUnit(m_playerPos, m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
     // a wall disappears until it re-emerges.
+    m_scratch.clear();
     const XMFLOAT2 eye = { m_playerPos.x, m_playerPos.z };
     for (const Npc& npc : m_npcs)
     {
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
-        const XMFLOAT3 nb = { npc.pos.x, kPlayerHalf, npc.pos.z };
-        AppendCube(m_scratch, nb,
-                   { kPlayerHalf * 2.0f, kPlayerHalf * 2.0f, kPlayerHalf * 2.0f },
-                   npc.cls->color);
-        AppendCube(m_scratch, { nb.x, kPlayerHalf * 2.2f, nb.z }, { 0.35f, 0.35f, 0.35f },
-                   npc.cls->color);
+        drawUnit(npc.pos, npc.cls->color);
 
         // Health bar: a thin slab that shrinks toward its left edge and shifts
-        // green -> red, so weapon damage is readable per hit.
+        // green -> red, so weapon damage is readable per hit. Stays a
+        // vertex-color cube: it's a readout, not a lit object.
         const float frac = std::max(npc.hp, 0.0f) / kMaxHealth;
         const float barW = 0.9f * frac;
         const XMFLOAT4 barColor = { 0.9f * (1.0f - frac), 0.8f * frac, 0.1f, 1.0f };
-        AppendCube(m_scratch, { nb.x - (0.9f - barW) * 0.5f, kPlayerHalf * 3.0f, nb.z },
+        AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kPlayerHalf * 3.0f, npc.pos.z },
                    { barW, 0.08f, 0.08f }, barColor);
     }
     for (const Projectile& shot : m_projectiles)
@@ -586,7 +593,10 @@ void Game::Render(Renderer& renderer)
         if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
         {
             const float d = m_class->projectileRadius * 2.0f;
-            AppendCube(m_scratch, pos, { d, d, d }, kProjectileColor);
+            renderer.DrawShape(Shape::Sphere,
+                               XMMatrixScaling(d, d, d) *
+                                   XMMatrixTranslation(pos.x, pos.y, pos.z),
+                               kProjectileColor);
         }
     }
 
@@ -609,8 +619,10 @@ void Game::Render(Renderer& renderer)
 
     // Aim indicator line.
     const Vertex aimLine[2] = {
-        { XMFLOAT3{ body.x + m_aimDir.x * 0.6f, 0.45f, body.z + m_aimDir.z * 0.6f }, kAimColor },
-        { XMFLOAT3{ body.x + m_aimDir.x * 1.6f, 0.45f, body.z + m_aimDir.z * 1.6f }, kAimColor },
+        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 0.6f, 0.45f,
+                    m_playerPos.z + m_aimDir.z * 0.6f }, kAimColor },
+        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 1.6f, 0.45f,
+                    m_playerPos.z + m_aimDir.z * 1.6f }, kAimColor },
     };
     renderer.DrawLines(aimLine, 2, identity);
 

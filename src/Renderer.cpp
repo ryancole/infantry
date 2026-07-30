@@ -112,6 +112,7 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
     CreateFlatNormalTexture();
     CreateEffects();
     CreateSpriteResources();
+    CreateShapePrimitives();
 }
 
 void Renderer::Shutdown()
@@ -121,6 +122,8 @@ void Renderer::Shutdown()
     WaitForGpu();
     m_font.reset();
     m_spriteBatch.reset();
+    for (auto& shape : m_shapes)
+        shape.reset();
     m_batch.reset();
     m_triEffect.reset();
     m_lineEffect.reset();
@@ -292,6 +295,34 @@ void Renderer::CreateSpriteResources()
     const SpriteFont::Glyph* cap = m_font->FindGlyph(L'X');
     m_fontCapHeight = static_cast<float>(cap->Subrect.bottom - cap->Subrect.top);
     m_fontCapOffsetY = cap->YOffset;
+}
+
+// Unit primitives with GPU-resident buffers; DrawShape scales them into place.
+void Renderer::CreateShapePrimitives()
+{
+    // rhcoords = false: our world is left-handed.
+    m_shapes[static_cast<size_t>(Shape::Box)] =
+        GeometricPrimitive::CreateCube(1.0f, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::Sphere)] =
+        GeometricPrimitive::CreateSphere(1.0f, 16, false, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::Cylinder)] =
+        GeometricPrimitive::CreateCylinder(1.0f, 1.0f, 24, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::Cone)] =
+        GeometricPrimitive::CreateCone(1.0f, 1.0f, 24, false, m_device.Get());
+
+    ResourceUploadBatch upload(m_device.Get());
+    upload.Begin();
+    for (auto& shape : m_shapes)
+        shape->LoadStaticBuffers(m_device.Get(), upload);
+    upload.End(m_queue.Get()).wait();
+}
+
+void Renderer::DrawShape(Shape shape, const XMMATRIX& world, const XMFLOAT4& color)
+{
+    m_modelEffect->SetMatrices(world, XMMatrixIdentity(), m_viewProj);
+    m_modelEffect->SetDiffuseColor(XMLoadFloat4(&color));
+    m_modelEffect->Apply(m_cmdList.Get());
+    m_shapes[static_cast<size_t>(shape)]->Draw(m_cmdList.Get());
 }
 
 void Renderer::DrawScreenText(std::string_view text, float x, float y, float size,

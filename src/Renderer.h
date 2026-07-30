@@ -12,6 +12,7 @@
 #include <CommonStates.h>
 #include <DescriptorHeap.h>
 #include <Effects.h>
+#include <GeometricPrimitive.h>
 #include <GraphicsMemory.h>
 #include <PrimitiveBatch.h>
 #include <SpriteBatch.h>
@@ -25,6 +26,17 @@
 
 // Dynamic debug/gameplay geometry vertex (position + color).
 using Vertex = DirectX::VertexPositionColor;
+
+// Unit-sized lit primitives drawn via Renderer::DrawShape; size and place
+// them with the world matrix.
+enum class Shape
+{
+    Box,      // 1x1x1, centered on the origin
+    Sphere,   // diameter 1
+    Cylinder, // height 1 along y, diameter 1
+    Cone,     // height 1 along y, base diameter 1
+    Count
+};
 
 // D3D12 renderer built on DirectXTK12: the toolkit supplies shaders/PSOs
 // (BasicEffect), per-frame dynamic memory (GraphicsMemory), and dynamic
@@ -55,6 +67,10 @@ public:
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
 
+    // Draws a lit unit primitive transformed by `world` and tinted `color`.
+    void DrawShape(Shape shape, const DirectX::XMMATRIX& world,
+                   const DirectX::XMFLOAT4& color);
+
     // Queues screen-space text, drawn on top of everything else at EndFrame
     // via SpriteBatch/SpriteFont. (x, y) is the top-left of a capital letter
     // and `size` its pixel height, matching the old DebugText metrics.
@@ -74,6 +90,7 @@ private:
     void CreateEffects();
     void CreateFlatNormalTexture();
     void CreateSpriteResources();
+    void CreateShapePrimitives();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
     void DrawBatch(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
@@ -102,6 +119,7 @@ private:
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
     std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;
+    std::unique_ptr<DirectX::GeometricPrimitive> m_shapes[static_cast<size_t>(Shape::Count)];
 
     // 1x1 (0.5, 0.5, 1) normal map bound for textured parts whose material
     // ships no normal texture (NormalMapEffect requires one).
