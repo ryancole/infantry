@@ -1,7 +1,5 @@
 #include "ClassSelect.h"
 
-#include "DebugText.h"
-
 #include <algorithm>
 #include <string>
 
@@ -62,11 +60,11 @@ namespace
         }
     }
 
-    void AppendCentered(std::vector<Vertex>& out, std::string_view text, float centerX, float y,
-                        float size, const XMFLOAT4& color)
+    void DrawCentered(Renderer& renderer, std::string_view text, float centerX, float y,
+                      float size, const XMFLOAT4& color)
     {
-        DebugText::Append(out, text, centerX - DebugText::Measure(text, size) * 0.5f, y, size,
-                          color, kZText);
+        renderer.DrawScreenText(text, centerX - renderer.MeasureScreenText(text, size) * 0.5f, y,
+                                size, color);
     }
 }
 
@@ -83,6 +81,14 @@ std::optional<ClassId> ClassSelect::Update(const Input& input, uint32_t width, u
 {
     for (size_t i = 0; i < kClassCount; ++i)
         if (input.KeyPressed('1' + static_cast<int>(i)))
+            return static_cast<ClassId>(i);
+
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
+    const PadTracker::ButtonState padButtons[kClassCount] = {
+        input.padEvents.a, input.padEvents.b, input.padEvents.x, input.padEvents.y
+    };
+    for (size_t i = 0; i < kClassCount; ++i)
+        if (padButtons[i] == PadTracker::PRESSED)
             return static_cast<ClassId>(i);
 
     m_hover = -1;
@@ -109,9 +115,9 @@ void ClassSelect::Render(Renderer& renderer)
     m_tris.clear();
     m_lines.clear();
 
-    AppendCentered(m_lines, "CHOOSE YOUR CLASS", w * 0.5f, h * 0.14f, h * 0.05f, kTitleColor);
-    AppendCentered(m_lines, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
-                   kHintColor);
+    DrawCentered(renderer, "CHOOSE YOUR CLASS", w * 0.5f, h * 0.14f, h * 0.05f, kTitleColor);
+    DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
+                 kHintColor);
 
     for (size_t i = 0; i < kClassCount; ++i)
     {
@@ -125,12 +131,12 @@ void ClassSelect::Render(Renderer& renderer)
                       hover ? def.color : Dim(def.color, 0.45f));
 
         const std::string key = std::to_string(i + 1);
-        DebugText::Append(m_lines, key, r.x + pad, r.y + pad, r.h * 0.06f, kHintColor, kZText);
+        renderer.DrawScreenText(key, r.x + pad, r.y + pad, r.h * 0.06f, kHintColor);
 
-        AppendCentered(m_lines, def.name, r.x + r.w * 0.5f, r.y + r.h * 0.20f, r.w * 0.095f,
-                       def.color);
-        AppendCentered(m_lines, def.blurb, r.x + r.w * 0.5f, r.y + r.h * 0.36f, r.w * 0.042f,
-                       kHintColor);
+        DrawCentered(renderer, def.name, r.x + r.w * 0.5f, r.y + r.h * 0.20f, r.w * 0.095f,
+                     def.color);
+        DrawCentered(renderer, def.blurb, r.x + r.w * 0.5f, r.y + r.h * 0.36f, r.w * 0.042f,
+                     kHintColor);
 
         // Stat bars: label + background + class-colored fill.
         struct Bar
@@ -150,8 +156,7 @@ void ClassSelect::Render(Renderer& renderer)
         for (int b = 0; b < 3; ++b)
         {
             const float rowY = r.y + r.h * 0.56f + b * rowH * 1.35f;
-            DebugText::Append(m_lines, bars[b].label, r.x + pad, rowY, labelSize, kHintColor,
-                              kZText);
+            renderer.DrawScreenText(bars[b].label, r.x + pad, rowY, labelSize, kHintColor);
             AppendQuad(m_tris, barX, rowY, barW, labelSize, kZBar, kBarBg);
             AppendQuad(m_tris, barX, rowY, barW * std::clamp(bars[b].fraction, 0.0f, 1.0f),
                        labelSize, kZBar - 0.02f, def.color);

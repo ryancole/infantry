@@ -4,10 +4,10 @@
 #include <cmath>
 
 using namespace DirectX;
+using namespace DirectX::SimpleMath;
 
 namespace
 {
-    constexpr float kYaw = XM_PIDIV4;          // 45 degrees
     constexpr float kPitch = 0.61547971f;      // atan(1/sqrt(2)) ~ 35.26 degrees
     constexpr float kFollowRate = 8.0f;
 
@@ -29,11 +29,7 @@ void IsoCamera::SetViewport(uint32_t width, uint32_t height)
 void IsoCamera::Update(float dt)
 {
     // Exponential smoothing toward the target, framerate independent.
-    const float t = 1.0f - std::exp(-kFollowRate * dt);
-    m_focus.x += (m_target.x - m_focus.x) * t;
-    m_focus.y += (m_target.y - m_focus.y) * t;
-    m_focus.z += (m_target.z - m_focus.z) * t;
-
+    m_focus = Vector3::Lerp(m_focus, m_target, 1.0f - std::exp(-kFollowRate * dt));
     m_zoom += (m_zoomTarget - m_zoom) * (1.0f - std::exp(-kZoomRate * dt));
 }
 
@@ -55,8 +51,8 @@ void IsoCamera::ComputeMatrices(XMMATRIX& view, XMMATRIX& proj) const
     const float eyeDistance = depthReach + 60.0f;
 
     const XMVECTOR focus = XMVectorSet(m_focus.x, 0.0f, m_focus.z, 1.0f);
-    const XMVECTOR toEye = XMVectorSet(std::sin(kYaw) * std::cos(kPitch), std::sin(kPitch),
-                                       std::cos(kYaw) * std::cos(kPitch), 0.0f);
+    const XMVECTOR toEye = XMVectorSet(std::sin(m_yaw) * std::cos(kPitch), std::sin(kPitch),
+                                       std::cos(m_yaw) * std::cos(kPitch), 0.0f);
     const XMVECTOR eye = XMVectorAdd(focus, XMVectorScale(toEye, eyeDistance));
     view = XMMatrixLookAtLH(eye, focus, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
 
@@ -70,42 +66,41 @@ XMMATRIX IsoCamera::ViewProj() const
     return view * proj;
 }
 
-XMFLOAT3 IsoCamera::ScreenToGround(float screenX, float screenY) const
+Vector3 IsoCamera::ScreenToGround(float screenX, float screenY) const
 {
     XMMATRIX view, proj;
     ComputeMatrices(view, proj);
 
-    const XMVECTOR nearPt = XMVector3Unproject(
+    const Vector3 nearPt = XMVector3Unproject(
         XMVectorSet(screenX, screenY, 0.0f, 0.0f), 0.0f, 0.0f,
         static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f,
         proj, view, XMMatrixIdentity());
-    const XMVECTOR farPt = XMVector3Unproject(
+    const Vector3 farPt = XMVector3Unproject(
         XMVectorSet(screenX, screenY, 1.0f, 0.0f), 0.0f, 0.0f,
         static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f,
         proj, view, XMMatrixIdentity());
 
-    const XMVECTOR dir = XMVectorSubtract(farPt, nearPt);
-    const float dirY = XMVectorGetY(dir);
-    if (std::fabs(dirY) < 1e-6f)
+    Vector3 dir = farPt - nearPt;
+    dir.Normalize();
+
+    float dist = 0.0f;
+    const Ray ray(nearPt, dir);
+    if (!ray.Intersects(Plane(Vector3::UnitY, 0.0f), dist))
         return m_focus;
 
-    const float t = -XMVectorGetY(nearPt) / dirY;
-    const XMVECTOR hit = XMVectorAdd(nearPt, XMVectorScale(dir, t));
-
-    XMFLOAT3 result;
-    XMStoreFloat3(&result, hit);
-    result.y = 0.0f;
-    return result;
+    Vector3 hit = ray.position + ray.direction * dist;
+    hit.y = 0.0f;
+    return hit;
 }
 
-XMFLOAT3 IsoCamera::ScreenUpOnGround() const
+Vector3 IsoCamera::ScreenUpOnGround() const
 {
     // Camera looks along -toEye; projected onto the ground plane and
     // normalized, that is simply the negated yaw direction.
-    return { -std::sin(kYaw), 0.0f, -std::cos(kYaw) };
+    return { -std::sin(m_yaw), 0.0f, -std::cos(m_yaw) };
 }
 
-XMFLOAT3 IsoCamera::ScreenRightOnGround() const
+Vector3 IsoCamera::ScreenRightOnGround() const
 {
-    return { -std::cos(kYaw), 0.0f, std::sin(kYaw) };
+    return { -std::cos(m_yaw), 0.0f, std::sin(m_yaw) };
 }

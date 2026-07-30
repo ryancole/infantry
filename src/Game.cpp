@@ -1,6 +1,5 @@
 #include "Game.h"
 
-#include "DebugText.h"
 #include "Level.h"
 
 #include <algorithm>
@@ -8,6 +7,7 @@
 #include <string>
 
 using namespace DirectX;
+using namespace DirectX::SimpleMath;
 
 namespace
 {
@@ -38,8 +38,9 @@ namespace
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
 
-    // Appends a solid cube with per-face shading (fakes lighting until a real
-    // lit pipeline exists).
+    // Appends a solid cube with fixed per-face shading. Units and obstacles
+    // moved to the renderer's lit shapes; this remains for overlay-style
+    // readouts (NPC health bars) that shouldn't respond to scene lighting.
     void AppendCube(std::vector<Vertex>& out, const XMFLOAT3& center, const XMFLOAT3& size,
                     const XMFLOAT4& color)
     {
@@ -106,10 +107,7 @@ namespace
 
 void Game::LoadContent(Renderer& renderer)
 {
-    m_sound.Init();
-    m_sound.Load("fire");
-    m_sound.Load("hit");
-    m_sound.Load("death");
+    m_sound.Init(); // loads the wave bank and starts the ambience
 
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
     m_arenaHalf = level.arenaHalf;
@@ -167,6 +165,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
     m_sound.Update();
 
+    // Short rumble pulse while the damage timer runs (no-op without a pad).
+    m_rumbleTime = std::max(0.0f, m_rumbleTime - dt);
+    const float rumble = m_rumbleTime > 0.0f ? 0.6f : 0.0f;
+    DirectX::GamePad::Get().SetVibration(0, rumble, rumble);
+
+    m_deathFlashTime = std::max(0.0f, m_deathFlashTime - dt);
+
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -182,24 +187,22 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- Movement: WASD relative to the screen ---
-    const XMFLOAT3 upG = camera.ScreenUpOnGround();
-    const XMFLOAT3 rightG = camera.ScreenRightOnGround();
+    const Vector3 upG = camera.ScreenUpOnGround();
+    const Vector3 rightG = camera.ScreenRightOnGround();
 
     float moveUp = 0.0f, moveRight = 0.0f;
     if (input.Key('W')) moveUp += 1.0f;
     if (input.Key('S')) moveUp -= 1.0f;
     if (input.Key('D')) moveRight += 1.0f;
     if (input.Key('A')) moveRight -= 1.0f;
+    moveUp += input.pad.thumbSticks.leftY;
+    moveRight += input.pad.thumbSticks.leftX;
 
-    float dx = upG.x * moveUp + rightG.x * moveRight;
-    float dz = upG.z * moveUp + rightG.z * moveRight;
-    const float len = std::sqrt(dx * dx + dz * dz);
-    if (len > 1e-5f)
+    Vector3 move = upG * moveUp + rightG * moveRight;
+    if (move.LengthSquared() > 1e-10f)
     {
-        dx /= len;
-        dz /= len;
-        m_playerPos.x += dx * m_class->moveSpeed * dt;
-        m_playerPos.z += dz * m_class->moveSpeed * dt;
+        move.Normalize();
+        m_playerPos += move * (m_class->moveSpeed * dt);
     }
     ResolveObstacles(m_playerPos);
 
@@ -207,17 +210,23 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // makes stereo panning line up with what's on screen.
     m_sound.SetListener(m_playerPos, upG);
 
-    // --- Aim: mouse cursor projected onto the ground plane ---
-    const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
-    float ax = aimPoint.x - m_playerPos.x;
-    float az = aimPoint.z - m_playerPos.z;
-    const float alen = std::sqrt(ax * ax + az * az);
-    if (alen > 1e-4f)
-        m_aimDir = { ax / alen, 0.0f, az / alen };
+    // --- Aim: mouse cursor projected onto the ground plane, or the right
+    // stick as a screen-relative direction when deflected ---
+    Vector3 aim = camera.ScreenToGround(input.mouseX, input.mouseY) - m_playerPos;
+    const Vector2 stick(input.pad.thumbSticks.rightX, input.pad.thumbSticks.rightY);
+    if (stick.LengthSquared() > 0.1f)
+        aim = upG * stick.y + rightG * stick.x;
+    aim.y = 0.0f;
+    if (aim.LengthSquared() > 1e-8f)
+    {
+        aim.Normalize();
+        m_aimDir = aim;
+    }
 
     // --- Firing ---
     m_fireCooldown -= dt;
-    if ((input.mouseDown[0] || input.MousePressed(0) || input.Key(VK_SPACE)) &&
+    if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
+         input.pad.triggers.right > 0.5f) &&
         m_fireCooldown <= 0.0f)
     {
         SpawnShot(*m_class, m_playerPos, m_aimDir, m_team);
@@ -225,7 +234,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- NPCs: debug spawning and AI ---
-    if (input.KeyPressed('N'))
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
+    if (input.KeyPressed('N') || input.padEvents.y == PadTracker::PRESSED)
         SpawnNpc();
     UpdateNpcs(dt);
 
@@ -238,6 +248,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerDied = false;
         m_playerHp = kMaxHealth;
         m_playerPos = m_teamSpawns[m_team];
+        m_deathFlashTime = 0.6f; // brief grayscale flash while respawning
         camera.SetTarget(m_playerPos);
         camera.SnapToTarget();
         return;
@@ -246,12 +257,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     camera.SetTarget(m_playerPos);
 }
 
-void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& dir, int team)
+void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team)
 {
-    const XMFLOAT3 pos = { from.x + dir.x * 0.7f, kMuzzleHeight, from.z + dir.z * 0.7f };
+    Vector3 pos = from + dir * 0.7f;
+    pos.y = kMuzzleHeight;
     // lobVelocity arcs the shot (grenades); flat-shooting classes fire level.
-    const XMFLOAT3 vel = { dir.x * cls.projectileSpeed, cls.lobVelocity,
-                           dir.z * cls.projectileSpeed };
+    const Vector3 vel = dir * cls.projectileSpeed + Vector3(0.0f, cls.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
                                                         cls.projectileMass),
                               cls.projectileLife, pos, team, cls.damage, cls.projectileRadius });
@@ -262,12 +273,11 @@ void Game::SpawnShot(const ClassDef& cls, const XMFLOAT3& from, const XMFLOAT3& 
     PlaySoundAt("fire", from, pitch);
 }
 
-void Game::PlaySoundAt(const std::string& name, const XMFLOAT3& pos, float pitch)
+void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
 {
     // Past kRange the voice would be silent anyway; skip spawning it.
-    const float dx = pos.x - m_playerPos.x;
-    const float dz = pos.z - m_playerPos.z;
-    if (dx * dx + dz * dz < Sound::kRange * Sound::kRange)
+    if (Vector2(pos.x - m_playerPos.x, pos.z - m_playerPos.z).LengthSquared() <
+        Sound::kRange * Sound::kRange)
         m_sound.Play3D(name, pos, pitch);
 }
 
@@ -276,7 +286,7 @@ float Game::Rand(float lo, float hi)
     return std::uniform_real_distribution<float>(lo, hi)(m_rng);
 }
 
-void Game::ResolveObstacles(XMFLOAT3& pos) const
+void Game::ResolveObstacles(Vector3& pos) const
 {
     const float limit = m_arenaHalf - kPlayerHalf;
     pos.x = std::clamp(pos.x, -limit, limit);
@@ -327,27 +337,26 @@ void Game::SpawnNpc()
 
 void Game::UpdateNpcs(float dt)
 {
-    const XMFLOAT2 playerXZ = { m_playerPos.x, m_playerPos.z };
+    const Vector2 playerXZ = { m_playerPos.x, m_playerPos.z };
     for (Npc& npc : m_npcs)
     {
         npc.fireCooldown -= dt;
 
-        float toPx = m_playerPos.x - npc.pos.x;
-        float toPz = m_playerPos.z - npc.pos.z;
-        const float dist = std::sqrt(toPx * toPx + toPz * toPz);
+        Vector3 toPlayer = m_playerPos - npc.pos;
+        toPlayer.y = 0.0f;
+        const float dist = toPlayer.Length();
         // NPCs obey the same sight rules as the player's fog of war, so they
         // can't shoot through walls the player can't see through either.
         const bool engaged = dist < kNpcEngageRange && dist > 1e-3f &&
                              Visibility::IsPointVisible({ npc.pos.x, npc.pos.z }, playerXZ,
                                                         m_occluders);
 
-        float moveX = 0.0f, moveZ = 0.0f;
+        Vector3 move;
         float speed = npc.cls->moveSpeed;
         if (engaged)
         {
-            toPx /= dist;
-            toPz /= dist;
-            npc.aimDir = { toPx, 0.0f, toPz };
+            toPlayer /= dist;
+            npc.aimDir = toPlayer;
 
             npc.strafeTimer -= dt;
             if (npc.strafeTimer <= 0.0f)
@@ -356,25 +365,17 @@ void Game::UpdateNpcs(float dt)
                 npc.strafeTimer = Rand(1.0f, 2.5f);
             }
             if (dist > kNpcPreferredRange)
-            {
-                moveX = toPx;
-                moveZ = toPz;
-            }
+                move = toPlayer;
             else
-            {
-                moveX = -toPz * npc.strafeSign;
-                moveZ = toPx * npc.strafeSign;
-            }
+                move = Vector3(-toPlayer.z, 0.0f, toPlayer.x) * npc.strafeSign;
             speed *= kNpcCombatSpeed;
 
             if (npc.fireCooldown <= 0.0f)
             {
                 // A touch of angular spread keeps NPCs beatable up close and
                 // makes long-range sniper duels survivable.
-                const float jitter = Rand(-kNpcAimJitter, kNpcAimJitter);
-                const float s = std::sin(jitter), c = std::cos(jitter);
-                const XMFLOAT3 dir = { npc.aimDir.x * c - npc.aimDir.z * s, 0.0f,
-                                       npc.aimDir.x * s + npc.aimDir.z * c };
+                const Vector3 dir = Vector3::Transform(
+                    npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
                 const int npcTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
                 SpawnShot(*npc.cls, npc.pos, dir, npcTeam);
                 npc.fireCooldown = npc.cls->fireInterval;
@@ -383,9 +384,8 @@ void Game::UpdateNpcs(float dt)
         else
         {
             npc.repickTimer -= dt;
-            const float wx = npc.wanderTarget.x - npc.pos.x;
-            const float wz = npc.wanderTarget.z - npc.pos.z;
-            const float wlen = std::sqrt(wx * wx + wz * wz);
+            const Vector3 toTarget = npc.wanderTarget - npc.pos;
+            const float wlen = toTarget.Length();
             if (wlen < 1.0f || npc.repickTimer <= 0.0f)
             {
                 const float margin = m_arenaHalf - 2.0f;
@@ -394,15 +394,13 @@ void Game::UpdateNpcs(float dt)
             }
             else
             {
-                moveX = wx / wlen;
-                moveZ = wz / wlen;
-                npc.aimDir = { moveX, 0.0f, moveZ };
+                move = toTarget / wlen;
+                npc.aimDir = move;
             }
             speed *= kNpcWanderSpeed;
         }
 
-        npc.pos.x += moveX * speed * dt;
-        npc.pos.z += moveZ * speed * dt;
+        npc.pos += move * (speed * dt);
         ResolveObstacles(npc.pos);
     }
 
@@ -410,18 +408,14 @@ void Game::UpdateNpcs(float dt)
     for (size_t i = 0; i < m_npcs.size(); ++i)
         for (size_t j = i + 1; j < m_npcs.size(); ++j)
         {
-            const float dx = m_npcs[j].pos.x - m_npcs[i].pos.x;
-            const float dz = m_npcs[j].pos.z - m_npcs[i].pos.z;
-            const float len = std::sqrt(dx * dx + dz * dz);
+            const Vector3 between = m_npcs[j].pos - m_npcs[i].pos;
+            const float len = between.Length();
             const float minDist = kPlayerHalf * 2.0f;
             if (len >= minDist || len < 1e-5f)
                 continue;
-            const float push = (minDist - len) * 0.5f;
-            const float nx = dx / len, nz = dz / len;
-            m_npcs[i].pos.x -= nx * push;
-            m_npcs[i].pos.z -= nz * push;
-            m_npcs[j].pos.x += nx * push;
-            m_npcs[j].pos.z += nz * push;
+            const Vector3 push = between * ((minDist - len) * 0.5f / len);
+            m_npcs[i].pos -= push;
+            m_npcs[j].pos += push;
         }
 }
 
@@ -457,6 +451,7 @@ void Game::UpdateProjectiles(float dt)
             if (SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
             {
                 m_playerHp -= shot.damage;
+                m_rumbleTime = 0.25f;
                 if (m_playerHp <= 0.0f)
                     m_playerDied = true;
                 m_sound.Play(m_playerDied ? "death" : "hit");
@@ -480,28 +475,27 @@ void Game::UpdateProjectiles(float dt)
 // semi-transparent quads never overlap and nothing double-darkens.
 void Game::AppendFog(std::vector<Vertex>& out) const
 {
-    const XMFLOAT2 viewer = { m_playerPos.x, m_playerPos.z };
+    const Vector2 viewer = { m_playerPos.x, m_playerPos.z };
     const std::vector<XMFLOAT2> poly =
         Visibility::ComputePolygon(viewer, m_occluders, m_arenaHalf);
     if (poly.size() < 2)
         return;
 
     const float farDist = m_arenaHalf * kFogFar;
-    const auto extrude = [&](const XMFLOAT2& v) -> XMFLOAT2 {
-        const float dx = v.x - viewer.x;
-        const float dz = v.y - viewer.y;
-        const float len = std::sqrt(dx * dx + dz * dz);
+    const auto extrude = [&](const Vector2& v) -> Vector2 {
+        const Vector2 d = v - viewer;
+        const float len = d.Length();
         if (len < 1e-5f)
             return v;
-        return { viewer.x + dx / len * farDist, viewer.y + dz / len * farDist };
+        return viewer + d * (farDist / len);
     };
 
     for (size_t i = 0; i < poly.size(); ++i)
     {
-        const XMFLOAT2& a = poly[i];
-        const XMFLOAT2& b = poly[(i + 1) % poly.size()];
-        const XMFLOAT2 af = extrude(a);
-        const XMFLOAT2 bf = extrude(b);
+        const Vector2 a = poly[i];
+        const Vector2 b = poly[(i + 1) % poly.size()];
+        const Vector2 af = extrude(a);
+        const Vector2 bf = extrude(b);
         const Vertex quad[4] = {
             { XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor },
             { XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor },
@@ -519,6 +513,8 @@ void Game::AppendFog(std::vector<Vertex>& out) const
 
 void Game::Render(Renderer& renderer)
 {
+    renderer.SetMonochrome(m_deathFlashTime > 0.0f);
+
     if (m_phase == Phase::ClassSelect)
     {
         m_classSelect.Render(renderer);
@@ -529,38 +525,44 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
 
-    m_scratch.clear();
     for (const Collider& c : m_colliders)
         if (c.debugDraw)
-            AppendCube(m_scratch, c.center, c.size, kObstacleColor);
+            renderer.DrawShape(Shape::Box,
+                               XMMatrixScaling(c.size.x, c.size.y, c.size.z) *
+                                   XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
+                               kObstacleColor);
 
-    // Player body plus a small "turret" cap, tinted by class.
-    const XMFLOAT3 body = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
-    AppendCube(m_scratch, body, { kPlayerHalf * 2.0f, kPlayerHalf * 2.0f, kPlayerHalf * 2.0f },
-               m_class->color);
-    AppendCube(m_scratch, { body.x, kPlayerHalf * 2.2f, body.z },
-               { 0.35f, 0.35f, 0.35f }, m_class->color);
+    // Units are a cylinder body with a sphere "head" cap, tinted by class.
+    auto drawUnit = [&](const XMFLOAT3& pos, const XMFLOAT4& color) {
+        const float bodySize = kPlayerHalf * 2.0f;
+        renderer.DrawShape(Shape::Cylinder,
+                           XMMatrixScaling(bodySize, bodySize, bodySize) *
+                               XMMatrixTranslation(pos.x, kPlayerHalf, pos.z),
+                           color);
+        renderer.DrawShape(Shape::Sphere,
+                           XMMatrixScaling(0.4f, 0.4f, 0.4f) *
+                               XMMatrixTranslation(pos.x, kPlayerHalf * 2.35f, pos.z),
+                           color);
+    };
+    drawUnit(m_playerPos, m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
     // a wall disappears until it re-emerges.
+    m_scratch.clear();
     const XMFLOAT2 eye = { m_playerPos.x, m_playerPos.z };
     for (const Npc& npc : m_npcs)
     {
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
-        const XMFLOAT3 nb = { npc.pos.x, kPlayerHalf, npc.pos.z };
-        AppendCube(m_scratch, nb,
-                   { kPlayerHalf * 2.0f, kPlayerHalf * 2.0f, kPlayerHalf * 2.0f },
-                   npc.cls->color);
-        AppendCube(m_scratch, { nb.x, kPlayerHalf * 2.2f, nb.z }, { 0.35f, 0.35f, 0.35f },
-                   npc.cls->color);
+        drawUnit(npc.pos, npc.cls->color);
 
         // Health bar: a thin slab that shrinks toward its left edge and shifts
-        // green -> red, so weapon damage is readable per hit.
+        // green -> red, so weapon damage is readable per hit. Stays a
+        // vertex-color cube: it's a readout, not a lit object.
         const float frac = std::max(npc.hp, 0.0f) / kMaxHealth;
         const float barW = 0.9f * frac;
         const XMFLOAT4 barColor = { 0.9f * (1.0f - frac), 0.8f * frac, 0.1f, 1.0f };
-        AppendCube(m_scratch, { nb.x - (0.9f - barW) * 0.5f, kPlayerHalf * 3.0f, nb.z },
+        AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kPlayerHalf * 3.0f, npc.pos.z },
                    { barW, 0.08f, 0.08f }, barColor);
     }
     for (const Projectile& shot : m_projectiles)
@@ -569,7 +571,10 @@ void Game::Render(Renderer& renderer)
         if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
         {
             const float d = m_class->projectileRadius * 2.0f;
-            AppendCube(m_scratch, pos, { d, d, d }, kProjectileColor);
+            renderer.DrawShape(Shape::Sphere,
+                               XMMatrixScaling(d, d, d) *
+                                   XMMatrixTranslation(pos.x, pos.y, pos.z),
+                               kProjectileColor);
         }
     }
 
@@ -592,32 +597,28 @@ void Game::Render(Renderer& renderer)
 
     // Aim indicator line.
     const Vertex aimLine[2] = {
-        { XMFLOAT3{ body.x + m_aimDir.x * 0.6f, 0.45f, body.z + m_aimDir.z * 0.6f }, kAimColor },
-        { XMFLOAT3{ body.x + m_aimDir.x * 1.6f, 0.45f, body.z + m_aimDir.z * 1.6f }, kAimColor },
+        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 0.6f, 0.45f,
+                    m_playerPos.z + m_aimDir.z * 0.6f }, kAimColor },
+        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 1.6f, 0.45f,
+                    m_playerPos.z + m_aimDir.z * 1.6f }, kAimColor },
     };
     renderer.DrawLines(aimLine, 2, identity);
 
     RenderHud(renderer);
 }
 
-// Screen-space overlay: player health, NPC count, and the spawn hint. Uses
-// its own ortho projection; main.cpp restores the world view-proj next frame.
+// Screen-space overlay: player health, NPC count, and the spawn hint.
 void Game::RenderHud(Renderer& renderer)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
-    renderer.SetViewProj(XMMatrixOrthographicOffCenterLH(0.0f, w, h, 0.0f, 0.0f, 1.0f));
-
-    m_hudVerts.clear();
     const float size = h * 0.024f;
     const float y = h - size * 2.0f;
     const std::string status = "HP " + std::to_string(static_cast<int>(std::ceil(m_playerHp))) +
                                "   NPCS " + std::to_string(m_npcs.size());
-    DebugText::Append(m_hudVerts, status, size, y, size, kHudColor);
+    renderer.DrawScreenText(status, size, y, size, kHudColor);
 
     const std::string hint = "N - SPAWN NPC";
-    DebugText::Append(m_hudVerts, hint, w - DebugText::Measure(hint, size) - size, y, size,
-                      kHudHintColor);
-    renderer.DrawLines(m_hudVerts.data(), static_cast<uint32_t>(m_hudVerts.size()),
-                       XMMatrixIdentity());
+    renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,
+                            kHudHintColor);
 }
