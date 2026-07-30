@@ -150,6 +150,7 @@ private:
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;
+    float m_frameMs = 0.0f;        // smoothed wall-clock frame time, for the HUD
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
     float m_deathFlashTime = 0.0f; // grayscale post flash after dying
     bool m_playerDied = false;     // set by projectile hits, handled in Update

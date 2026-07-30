@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 using namespace DirectX;
@@ -36,6 +37,15 @@ namespace
     constexpr float kStrideRate = 2.2f;
     constexpr float kMoveBlendRate = 8.0f;
     constexpr float kHealthBarY = 1.42f; // clears the helmet and antenna tip
+
+    // Bounding sphere used to skip soldiers that fall outside the viewport.
+    // Generous on purpose: it has to cover the model at full stride and the
+    // health bar floating above the helmet, and popping in at the screen edge
+    // is far worse than submitting a few extra draws.
+    constexpr float kSoldierBoundsY = 0.7f;
+    constexpr float kSoldierBoundsRadius = 1.2f;
+
+    constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
@@ -123,7 +133,7 @@ namespace
                 axis.Normalize();
                 rot = XMMatrixRotationAxis(XMLoadFloat3(&axis), std::acos(dot));
             }
-            part(Shape::Cylinder,
+            part(Shape::CylinderLow,
                  XMMatrixScaling(thick, len, thick) * rot *
                      XMMatrixTranslation(mid.x, mid.y, mid.z),
                  col);
@@ -159,17 +169,17 @@ namespace
         part(Shape::Box, // backpack / life support
              XMMatrixScaling(0.26f, 0.30f, 0.14f) * XMMatrixTranslation(0.0f, 0.80f + bob, -0.21f),
              plateDark);
-        part(Shape::Cylinder, // antenna
+        part(Shape::CylinderLow, // antenna
              XMMatrixScaling(0.025f, 0.30f, 0.025f) *
                  XMMatrixTranslation(-0.09f, 1.02f + bob, -0.22f),
              metal);
-        part(Shape::Sphere, // antenna tip, catches the bloom like the visor
+        part(Shape::SphereLow, // antenna tip, catches the bloom like the visor
              XMMatrixScaling(0.05f, 0.05f, 0.05f) *
                  XMMatrixTranslation(-0.09f, 1.18f + bob, -0.22f),
              visor);
 
         for (float side : { -1.0f, 1.0f }) // shoulder pauldrons
-            part(Shape::Sphere,
+            part(Shape::SphereMed,
                  XMMatrixScaling(0.19f, 0.19f, 0.19f) *
                      XMMatrixTranslation(side * 0.25f, 0.90f + bob, 0.01f),
                  plate);
@@ -181,7 +191,7 @@ namespace
         limb(Vector3(0.25f, 0.88f + bob, 0.02f), gripR, 0.10f, suit);
         limb(Vector3(-0.25f, 0.88f + bob, 0.02f), gripL, 0.10f, suit);
         for (const Vector3& hand : { gripR, gripL })
-            part(Shape::Sphere,
+            part(Shape::SphereLow,
                  XMMatrixScaling(0.11f, 0.11f, 0.11f) *
                      XMMatrixTranslation(hand.x, hand.y, hand.z),
                  metal);
@@ -189,18 +199,18 @@ namespace
         part(Shape::Box, // rifle body
              XMMatrixScaling(0.07f, 0.10f, 0.42f) * XMMatrixTranslation(0.11f, 0.77f + bob, 0.26f),
              metal);
-        part(Shape::Cylinder, // barrel, ending near the muzzle spawn point
+        part(Shape::CylinderLow, // barrel, ending near the muzzle spawn point
              XMMatrixScaling(0.045f, 0.28f, 0.045f) * XMMatrixRotationX(XM_PIDIV2) *
                  XMMatrixTranslation(0.11f, 0.79f + bob, 0.58f),
              metal);
 
-        part(Shape::Cylinder, // neck seal
+        part(Shape::CylinderLow, // neck seal
              XMMatrixScaling(0.11f, 0.08f, 0.11f) * XMMatrixTranslation(0.0f, 0.95f + bob, 0.01f),
              suit);
-        part(Shape::Sphere, // helmet
+        part(Shape::SphereMed, // helmet
              XMMatrixScaling(0.27f, 0.27f, 0.27f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.01f),
              plate);
-        part(Shape::Sphere, // visor, bulging out of the helmet's front
+        part(Shape::SphereLow, // visor, bulging out of the helmet's front
              XMMatrixScaling(0.17f, 0.10f, 0.12f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.10f),
              visor);
     }
@@ -313,6 +323,10 @@ void Game::LoadContent(Renderer& renderer)
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
     m_sound.Update();
+
+    // Smoothed so the HUD is readable; raw frame times jitter far too much to
+    // compare by eye. Same exponential form as the camera's follow.
+    m_frameMs += (dt * 1000.0f - m_frameMs) * (1.0f - std::exp(-kPerfSmoothRate * dt));
 
     // Short rumble pulse while the damage timer runs (no-op without a pad).
     m_rumbleTime = std::max(0.0f, m_rumbleTime - dt);
@@ -834,11 +848,17 @@ void Game::Render(Renderer& renderer)
     DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
-    // a wall disappears until it re-emerges.
+    // a wall disappears until it re-emerges. The player's own soldier needs no
+    // viewport test: the camera follows them, so they are always on screen.
     m_scratch.clear();
     const XMFLOAT2 eye = { m_playerPos.x, m_playerPos.z };
     for (const Npc& npc : m_npcs)
     {
+        // Cheapest rejection first: the arena is far wider than the view, so
+        // most of a large squad is usually off screen entirely.
+        if (!renderer.IsSphereVisible({ npc.pos.x, kSoldierBoundsY, npc.pos.z },
+                                      kSoldierBoundsRadius))
+            continue;
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
         DrawSoldier(renderer, npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color);
@@ -936,7 +956,7 @@ void Game::Render(Renderer& renderer)
     RenderHud(renderer);
 }
 
-// Screen-space overlay: player health, NPC count, and the spawn hint.
+// Screen-space overlay: player health, NPC count, perf counters, spawn hint.
 void Game::RenderHud(Renderer& renderer)
 {
     const float w = static_cast<float>(renderer.Width());
@@ -946,6 +966,17 @@ void Game::RenderHud(Renderer& renderer)
     const std::string status = "HP " + std::to_string(static_cast<int>(std::ceil(m_playerHp))) +
                                "   NPCS " + std::to_string(m_npcs.size());
     renderer.DrawScreenText(status, size, y, size, kHudColor);
+
+    // Perf counters in the top-left corner, clear of the gameplay HUD. FRAME is
+    // wall clock and pins to the refresh rate while there's headroom; CPU
+    // (command recording) and the draw count respond to render-side changes.
+    // Half the gameplay HUD's size: it's a debug readout, not something to read
+    // mid-fight, so it stays legible without competing for attention.
+    const float perfSize = size * 0.5f;
+    char perf[96];
+    std::snprintf(perf, sizeof(perf), "FRAME %.1fMS  CPU %.2fMS  DRAWS %u", m_frameMs,
+                  renderer.CpuFrameMs(), renderer.LastDrawCalls());
+    renderer.DrawScreenText(perf, size, size, perfSize, kHudHintColor);
 
     const std::string hint = "N - SPAWN NPC";
     renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,

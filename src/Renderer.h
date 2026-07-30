@@ -30,12 +30,21 @@ using Vertex = DirectX::VertexPositionColor;
 
 // Unit-sized lit primitives drawn via Renderer::DrawShape; size and place
 // them with the world matrix.
+//
+// Curved shapes come in tessellation tiers. A sphere at the default tier is
+// 1056 triangles, which is wasted on the soldier model's parts: at gameplay
+// zoom a helmet covers ~13 pixels and a hand ~5, so the coarse tiers are
+// visually identical there and cut the triangle count several-fold. Pick the
+// tier from a part's on-screen size, not its role.
 enum class Shape
 {
-    Box,      // 1x1x1, centered on the origin
-    Sphere,   // diameter 1
-    Cylinder, // height 1 along y, diameter 1
-    Cone,     // height 1 along y, base diameter 1
+    Box,         // 1x1x1, centered on the origin
+    Sphere,      // diameter 1
+    SphereMed,   // diameter 1, for features ~10px across
+    SphereLow,   // diameter 1, for features a few px across
+    Cylinder,    // height 1 along y, diameter 1
+    CylinderLow, // height 1 along y, diameter 1, for thin limb-sized parts
+    Cone,        // height 1 along y, base diameter 1
     Count
 };
 
@@ -80,8 +89,22 @@ public:
     void DrawShape(Shape shape, const DirectX::XMMATRIX& world,
                    const DirectX::XMFLOAT4& color);
 
+    // Conservative test of whether a world-space sphere can touch the viewport,
+    // against the matrix given to SetViewProj. Cheap enough to call per object
+    // and worth it for anything that costs more than a few draws to submit.
+    bool IsSphereVisible(const DirectX::XMFLOAT3& center, float radius) const;
+
     // Renders the frame in grayscale while enabled (death/spectator flash).
     void SetMonochrome(bool enabled) { m_monochrome = enabled; }
+
+    // Command-recording cost (smoothed) from BeginFrame to the last command
+    // written, and the draw calls recorded last frame. Present is synced to
+    // vblank, so wall-clock frame time sits at the refresh interval and hides
+    // this; these are the numbers that move when draw submission gets cheaper.
+    // Both lag by a frame — the current one is still recording while game code
+    // is asking.
+    float CpuFrameMs() const { return m_cpuFrameMs; }
+    uint32_t LastDrawCalls() const { return m_lastDrawCalls; }
 
     // Queues screen-space text, drawn on top of everything else at EndFrame
     // via SpriteBatch/SpriteFont. (x, y) is the top-left of a capital letter
@@ -175,6 +198,13 @@ private:
     // Metrics of the baked 'X' glyph, so `size` maps to capital height.
     float m_fontCapHeight = 1.0f;
     float m_fontCapOffsetY = 0.0f;
+
+    // Frame instrumentation (see CpuFrameMs / LastDrawCalls).
+    LARGE_INTEGER m_qpcFreq = {};
+    LARGE_INTEGER m_frameStart = {};
+    float m_cpuFrameMs = 0.0f;
+    uint32_t m_drawCalls = 0;
+    uint32_t m_lastDrawCalls = 0;
 
     HANDLE m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;

@@ -5,6 +5,7 @@
 #include <RenderTargetState.h>
 #include <ResourceUploadBatch.h>
 
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,8 @@ namespace
     // Post-process tuning. The extract threshold is high enough that only
     // genuinely bright pixels (projectiles, aim line, vivid class colors)
     // bloom, not the whole scene.
+    constexpr float kPerfSmoothWeight = 0.05f; // HUD timing smoothing, ~20 frames
+
     constexpr float kBloomThreshold = 0.7f;
     constexpr float kBloomBlurSize = 3.0f;
     constexpr float kBloomIntensity = 1.2f;
@@ -47,6 +50,7 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
 {
     m_width = width;
     m_height = height;
+    QueryPerformanceFrequency(&m_qpcFreq);
 
 #ifdef _DEBUG
     {
@@ -323,6 +327,8 @@ void Renderer::CreateSpriteResources()
 }
 
 // Unit primitives with GPU-resident buffers; DrawShape scales them into place.
+// Sphere tessellation halves per tier, for 1056 / 272 / 72 triangles; the
+// cylinder tiers are 94 and 30. See the Shape enum for how to pick one.
 void Renderer::CreateShapePrimitives()
 {
     // rhcoords = false: our world is left-handed.
@@ -330,8 +336,14 @@ void Renderer::CreateShapePrimitives()
         GeometricPrimitive::CreateCube(1.0f, false, m_device.Get());
     m_shapes[static_cast<size_t>(Shape::Sphere)] =
         GeometricPrimitive::CreateSphere(1.0f, 16, false, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::SphereMed)] =
+        GeometricPrimitive::CreateSphere(1.0f, 8, false, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::SphereLow)] =
+        GeometricPrimitive::CreateSphere(1.0f, 4, false, false, m_device.Get());
     m_shapes[static_cast<size_t>(Shape::Cylinder)] =
         GeometricPrimitive::CreateCylinder(1.0f, 1.0f, 24, false, m_device.Get());
+    m_shapes[static_cast<size_t>(Shape::CylinderLow)] =
+        GeometricPrimitive::CreateCylinder(1.0f, 1.0f, 8, false, m_device.Get());
     m_shapes[static_cast<size_t>(Shape::Cone)] =
         GeometricPrimitive::CreateCone(1.0f, 1.0f, 24, false, m_device.Get());
 
@@ -348,6 +360,25 @@ void Renderer::DrawShape(Shape shape, const XMMATRIX& world, const XMFLOAT4& col
     m_modelEffect->SetDiffuseColor(XMLoadFloat4(&color));
     m_modelEffect->Apply(m_cmdList.Get());
     m_shapes[static_cast<size_t>(shape)]->Draw(m_cmdList.Get());
+    ++m_drawCalls;
+}
+
+// The camera is orthographic, so a sphere's projected size doesn't vary with
+// depth: transform the center to NDC and widen the [-1, 1] bounds by the
+// radius. Columns 0 and 1 of the combined matrix map a world offset into clip
+// x and y, so their lengths give the largest extent the radius can cover.
+// Depth isn't tested — the iso camera's near/far bracket the whole arena.
+bool Renderer::IsSphereVisible(const XMFLOAT3& center, float radius) const
+{
+    XMFLOAT4 ndc;
+    XMStoreFloat4(&ndc, XMVector3Transform(XMLoadFloat3(&center), m_viewProj));
+
+    XMFLOAT4X4 m;
+    XMStoreFloat4x4(&m, m_viewProj);
+    const float rx = radius * std::sqrt(m._11 * m._11 + m._21 * m._21 + m._31 * m._31);
+    const float ry = radius * std::sqrt(m._12 * m._12 + m._22 * m._22 + m._32 * m._32);
+
+    return std::abs(ndc.x) <= 1.0f + rx && std::abs(ndc.y) <= 1.0f + ry;
 }
 
 void Renderer::CreatePostProcess()
@@ -505,6 +536,10 @@ float Renderer::MeasureScreenText(std::string_view text, float size) const
 
 void Renderer::BeginFrame(const float clearColor[4])
 {
+    QueryPerformanceCounter(&m_frameStart);
+    m_lastDrawCalls = m_drawCalls; // hold the completed count for the HUD
+    m_drawCalls = 0;
+
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     HR(m_cmdAlloc->Reset(), "Command allocator Reset");
     HR(m_cmdList->Reset(m_cmdAlloc.Get(), nullptr), "Command list Reset");
@@ -548,6 +583,15 @@ void Renderer::EndFrame()
                D3D12_RESOURCE_STATE_PRESENT);
     HR(m_cmdList->Close(), "Command list Close");
 
+    // Sampled here, before the queue submit: everything after this point is
+    // GPU execution and the wait for vblank, neither of which is CPU cost.
+    // Smoothed with a fixed weight — a raw per-frame number is unreadable.
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    const float raw = 1000.0f * static_cast<float>(now.QuadPart - m_frameStart.QuadPart) /
+                      static_cast<float>(m_qpcFreq.QuadPart);
+    m_cpuFrameMs += (raw - m_cpuFrameMs) * kPerfSmoothWeight;
+
     ID3D12CommandList* lists[] = { m_cmdList.Get() };
     m_queue->ExecuteCommandLists(1, lists);
     HR(m_swapChain->Present(1, 0), "Present");
@@ -586,6 +630,7 @@ void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& wo
     m_batch->Begin(m_cmdList.Get());
     m_batch->Draw(topology, verts, count);
     m_batch->End();
+    ++m_drawCalls;
 }
 
 std::unique_ptr<Model> Renderer::LoadModel(const std::string& path)
@@ -623,6 +668,7 @@ void Renderer::DrawModel(const Model& model, const XMMATRIX& world)
             m_modelEffect->Apply(m_cmdList.Get());
         }
         m_cmdList->DrawIndexedInstanced(part.indexCount, 1, part.indexStart, 0, 0);
+        ++m_drawCalls;
     }
 }
 
