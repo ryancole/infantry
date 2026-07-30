@@ -107,10 +107,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
     RECT rect = { 0, 0, static_cast<LONG>(kInitialWidth), static_cast<LONG>(kInitialHeight) };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    const LONG windowWidth = rect.right - rect.left;
+    const LONG windowHeight = rect.bottom - rect.top;
+
+    // Center on the primary monitor's work area so the frame clears the taskbar.
+    RECT work = {};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0))
+        work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    const int windowX = work.left + (work.right - work.left - windowWidth) / 2;
+    const int windowY = work.top + (work.bottom - work.top - windowHeight) / 2;
 
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Infantry", WS_OVERLAPPEDWINDOW,
-                                CW_USEDEFAULT, CW_USEDEFAULT,
-                                rect.right - rect.left, rect.bottom - rect.top,
+                                windowX, windowY,
+                                windowWidth, windowHeight,
                                 nullptr, nullptr, hInstance, &app);
     if (!hwnd)
         return 1;
