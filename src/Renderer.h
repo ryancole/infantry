@@ -69,6 +69,9 @@ public:
     // Draw these after all opaque geometry.
     void DrawTrianglesAlpha(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
 
+    // Same blend/depth states with line topology (translucent indicators).
+    void DrawLinesAlpha(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
+
     // Loads a glTF model (path relative to the exe dir or the repo root).
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
@@ -128,6 +131,7 @@ private:
     std::unique_ptr<DirectX::BasicEffect> m_triEffect;
     std::unique_ptr<DirectX::BasicEffect> m_lineEffect;
     std::unique_ptr<DirectX::BasicEffect> m_alphaEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_alphaLineEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
     std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;

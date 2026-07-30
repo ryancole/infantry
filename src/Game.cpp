@@ -13,6 +13,8 @@ namespace
 {
     constexpr float kPlayerHalf = 0.4f;
     constexpr float kMuzzleHeight = 0.6f;
+    constexpr float kMuzzleOffset = 0.7f; // shots start this far ahead of the shooter
+    constexpr float kGravity = 9.81f;     // must match Jolt's default gravity magnitude
 
     // NPC combat tuning. Engage range is intentionally shorter than what the
     // player can see, so NPCs can be picked at from a distance.
@@ -33,7 +35,10 @@ namespace
     constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kObstacleColor = { 0.35f, 0.40f, 0.50f, 1.0f };
     constexpr XMFLOAT4 kProjectileColor = { 1.00f, 0.80f, 0.20f, 1.0f };
-    constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 1.0f };
+    // The aim indicator is alpha-blended; the shaft dims via alpha rather
+    // than darker RGB so whatever it crosses still shows through.
+    constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 0.55f };
+    constexpr XMFLOAT4 kAimDimColor = { 0.95f, 0.95f, 0.40f, 0.22f };
     constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
@@ -71,6 +76,23 @@ namespace
             for (int i : tris)
                 out.push_back({ p[i], col });
         }
+    }
+
+    // Horizontal muzzle speed for cls's shot aimed to come down targetDist
+    // away: bullets always fire at full speed; lobbed shots slow their toss to
+    // drop on the aim point, capped at the class's muzzle speed.
+    float ShotSpeed(const ClassDef& cls, float targetDist)
+    {
+        float speed = cls.projectileSpeed;
+        if (cls.lobVelocity > 0.0f)
+        {
+            const float vy = cls.lobVelocity;
+            const float flightTime =
+                (vy + std::sqrt(vy * vy + 2.0f * kGravity * kMuzzleHeight)) / kGravity;
+            const float d = std::max(targetDist - kMuzzleOffset, 0.2f);
+            speed = std::min(d / flightTime, speed);
+        }
+        return speed;
     }
 
     // True if the segment a->b passes within `pad` of the axis-aligned box at
@@ -130,8 +152,8 @@ void Game::LoadContent(Renderer& renderer)
         m_gridVerts.push_back({ XMFLOAT3{ m_arenaHalf, 0.0f, f }, col });
     }
 
-    // Arena floor. Projectiles are dynamic bodies, so gravity, bounces, and
-    // ricochets come from Jolt.
+    // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
+    // despawn on their first contact with anything solid.
     m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
                            { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
 
@@ -219,6 +241,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     aim.y = 0.0f;
     if (aim.LengthSquared() > 1e-8f)
     {
+        // The stick gives a direction but no point to land on; lobbed shots
+        // fall back to full range, like aiming past max range with the mouse.
+        m_aimDist = stick.LengthSquared() > 0.1f ? 1e9f : aim.Length();
         aim.Normalize();
         m_aimDir = aim;
     }
@@ -229,7 +254,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
          input.pad.triggers.right > 0.5f) &&
         m_fireCooldown <= 0.0f)
     {
-        SpawnShot(*m_class, m_playerPos, m_aimDir, m_team);
+        SpawnShot(*m_class, m_playerPos, m_aimDir, m_team, m_aimDist);
         m_fireCooldown = m_class->fireInterval;
     }
 
@@ -242,6 +267,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // --- Projectiles (simulated by Jolt) ---
     m_physics.Step(dt);
     UpdateProjectiles(dt);
+    UpdateParticles(dt);
 
     if (m_playerDied)
     {
@@ -257,20 +283,60 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     camera.SetTarget(m_playerPos);
 }
 
-void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team)
+void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team,
+                     float targetDist)
 {
-    Vector3 pos = from + dir * 0.7f;
+    Vector3 pos = from + dir * kMuzzleOffset;
     pos.y = kMuzzleHeight;
-    // lobVelocity arcs the shot (grenades); flat-shooting classes fire level.
-    const Vector3 vel = dir * cls.projectileSpeed + Vector3(0.0f, cls.lobVelocity, 0.0f);
+
+    // Grenades keep their fixed upward lob (constant arc height and flight
+    // time) and vary horizontal speed to land on the aim point; bullets fire
+    // level at full speed, so max range comes from gravity.
+    const Vector3 vel =
+        dir * ShotSpeed(cls, targetDist) + Vector3(0.0f, cls.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
                                                         cls.projectileMass),
-                              cls.projectileLife, pos, team, cls.damage, cls.projectileRadius });
+                              cls.projectileLife, pos, team, cls.damage, cls.projectileRadius,
+                              cls.explodes });
 
     // One shared fire sample; heavier weapons play deeper. A little random
     // detune keeps rapid fire from sounding like a loop.
     const float pitch = 0.25f - cls.damage / 120.0f + Rand(-0.05f, 0.05f);
     PlaySoundAt("fire", from, pitch);
+}
+
+float Game::PredictShotStop(const ClassDef& cls, const Vector3& from, const Vector3& dir,
+                            float targetDist, std::vector<Vector3>* outArc) const
+{
+    const float speed = ShotSpeed(cls, targetDist);
+    const float radius = cls.projectileRadius;
+    if (outArc)
+    {
+        outArc->clear();
+        outArc->push_back({ from.x + dir.x * kMuzzleOffset, kMuzzleHeight,
+                            from.z + dir.z * kMuzzleOffset });
+    }
+    // Coarser than the physics tick, but the arc is smooth and the boxes are
+    // fat relative to per-step travel, so the indicator lands within a step.
+    constexpr float kStep = 1.0f / 120.0f;
+    for (float t = kStep; t < cls.projectileLife; t += kStep)
+    {
+        const float ht = kMuzzleOffset + speed * t;
+        const float y = kMuzzleHeight + cls.lobVelocity * t - 0.5f * kGravity * t * t;
+        if (outArc)
+            outArc->push_back({ from.x + dir.x * ht, std::max(y, radius),
+                                from.z + dir.z * ht });
+        if (y <= radius) // came back down to the ground
+            return ht;
+
+        const Vector3 p(from.x + dir.x * ht, y, from.z + dir.z * ht);
+        for (const Collider& c : m_colliders)
+            if (std::abs(p.x - c.center.x) <= c.size.x * 0.5f + radius &&
+                std::abs(p.y - c.center.y) <= c.size.y * 0.5f + radius &&
+                std::abs(p.z - c.center.z) <= c.size.z * 0.5f + radius)
+                return ht;
+    }
+    return kMuzzleOffset + speed * cls.projectileLife;
 }
 
 void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
@@ -377,7 +443,9 @@ void Game::UpdateNpcs(float dt)
                 const Vector3 dir = Vector3::Transform(
                     npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
                 const int npcTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
-                SpawnShot(*npc.cls, npc.pos, dir, npcTeam);
+                // NPCs "aim" at the player's feet, so a grenadier's lob comes
+                // down on the player instead of sailing to max range.
+                SpawnShot(*npc.cls, npc.pos, dir, npcTeam, dist);
                 npc.fireCooldown = npc.cls->fireInterval;
             }
         }
@@ -419,6 +487,84 @@ void Game::UpdateNpcs(float dt)
         }
 }
 
+void Game::SpawnImpactBurst(const Vector3& pos, float scale)
+{
+    constexpr int kBurstCount = 12;
+    constexpr XMFLOAT4 kDustColor = { 0.45f, 0.48f, 0.55f, 1.0f };
+    for (int i = 0; i < kBurstCount; ++i)
+    {
+        const float yaw = Rand(0.0f, XM_2PI);
+        const float speed = Rand(1.5f, 4.5f);
+        Particle p;
+        p.pos = pos;
+        p.vel = { std::cos(yaw) * speed, Rand(1.0f, 4.5f), std::sin(yaw) * speed };
+        p.maxLife = p.life = Rand(0.2f, 0.45f);
+        p.size = scale * Rand(0.35f, 0.7f);
+        // Roughly half glowing sparks in the tracer color, half neutral dust.
+        p.color = (i % 2 == 0) ? kProjectileColor : kDustColor;
+        m_particles.push_back(p);
+    }
+}
+
+void Game::SpawnExplosion(const Vector3& pos)
+{
+    // Core flash: one big, very short-lived bright cube the bloom pass turns
+    // into a glow. Zero velocity — it just pops and shrinks away.
+    m_particles.push_back({ pos, Vector3::Zero, 0.09f, 0.09f, 1.4f, { 1.0f, 0.95f, 0.6f, 1.0f } });
+
+    constexpr XMFLOAT4 kFireColor = { 1.0f, 0.55f, 0.15f, 1.0f };
+    constexpr XMFLOAT4 kSmokeColor = { 0.30f, 0.30f, 0.33f, 1.0f };
+    constexpr int kExplosionCount = 26;
+    for (int i = 0; i < kExplosionCount; ++i)
+    {
+        const float yaw = Rand(0.0f, XM_2PI);
+        const float speed = Rand(2.0f, 8.0f);
+        Particle p;
+        p.pos = pos;
+        p.vel = { std::cos(yaw) * speed, Rand(2.0f, 7.0f), std::sin(yaw) * speed };
+        p.maxLife = p.life = Rand(0.35f, 0.8f);
+        p.size = Rand(0.12f, 0.3f);
+        // A mix of embers (tracer yellow), fire, and lingering smoke.
+        p.color = i % 3 == 0 ? kSmokeColor : (i % 3 == 1 ? kFireColor : kProjectileColor);
+        m_particles.push_back(p);
+    }
+}
+
+void Game::ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit)
+{
+    if (shot.explodes)
+    {
+        SpawnExplosion(pos);
+        PlaySoundAt("explode", pos, Rand(-0.06f, 0.06f));
+    }
+    else
+    {
+        SpawnImpactBurst(pos, shot.radius);
+        // Unit hits already play their own hit/death sound; the thud is only
+        // for shots stopping in the ground or a wall.
+        if (!hitUnit)
+            PlaySoundAt("thud", pos, Rand(-0.15f, 0.15f));
+    }
+}
+
+void Game::UpdateParticles(float dt)
+{
+    for (Particle& p : m_particles)
+    {
+        p.life -= dt;
+        p.vel.y -= 18.0f * dt;
+        p.pos += p.vel * dt;
+        // Settle on the floor instead of sinking through it.
+        const float half = p.size * 0.5f;
+        if (p.pos.y < half)
+        {
+            p.pos.y = half;
+            p.vel = { p.vel.x * 0.6f, 0.0f, p.vel.z * 0.6f };
+        }
+    }
+    std::erase_if(m_particles, [](const Particle& p) { return p.life <= 0.0f; });
+}
+
 void Game::UpdateProjectiles(float dt)
 {
     for (auto& shot : m_projectiles)
@@ -441,6 +587,7 @@ void Game::UpdateProjectiles(float dt)
                     npc.hp -= shot.damage;
                     PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
                     shot.life = 0.0f;
+                    ImpactEffect(shot, pos, true);
                     break;
                 }
             }
@@ -456,8 +603,19 @@ void Game::UpdateProjectiles(float dt)
                     m_playerDied = true;
                 m_sound.Play(m_playerDied ? "death" : "hit");
                 shot.life = 0.0f;
+                ImpactEffect(shot, pos, true);
             }
         }
+
+        // Projectiles stop where they land: first touch of world geometry
+        // (walls, floor) removes them. Checked after the unit sweeps so a shot
+        // that clips a target on its impact tick still deals its damage.
+        if (shot.life > 0.0f && m_physics.HadContact(shot.body))
+        {
+            shot.life = 0.0f;
+            ImpactEffect(shot, pos, false);
+        }
+
         shot.prevPos = pos;
     }
 
@@ -578,6 +736,16 @@ void Game::Render(Renderer& renderer)
         }
     }
 
+    // Impact debris shrinks out over its lifetime. Same visibility rule as
+    // projectiles: a burst behind a wall stays hidden.
+    for (const Particle& p : m_particles)
+    {
+        if (!Visibility::IsPointVisible(eye, { p.pos.x, p.pos.z }, m_occluders))
+            continue;
+        const float s = p.size * (p.life / p.maxLife);
+        AppendCube(m_scratch, p.pos, { s, s, s }, p.color);
+    }
+
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
     for (const Prop& prop : m_props)
@@ -595,14 +763,46 @@ void Game::Render(Renderer& renderer)
     renderer.DrawTrianglesAlpha(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
                                 identity);
 
-    // Aim indicator line.
-    const Vertex aimLine[2] = {
-        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 0.6f, 0.45f,
-                    m_playerPos.z + m_aimDir.z * 0.6f }, kAimColor },
-        { XMFLOAT3{ m_playerPos.x + m_aimDir.x * 1.6f, 0.45f,
-                    m_playerPos.z + m_aimDir.z * 1.6f }, kAimColor },
-    };
-    renderer.DrawLines(aimLine, 2, identity);
+    // Aim indicator: the shot's actual trajectory as a dim 3D polyline — an
+    // arch for the grenade's lob, a near-level line with droop for bullets —
+    // ending where the shot really stops (max range, the first wall the arc
+    // can't clear, or the ground). A bright tick crosses the end point, and
+    // lobbed weapons get a landing circle. Drawn after the fog pass so it
+    // stays bright.
+    {
+        PredictShotStop(*m_class, m_playerPos, m_aimDir, m_aimDist, &m_aimArc);
+
+        m_scratch.clear();
+        for (size_t i = 1; i < m_aimArc.size(); ++i)
+        {
+            m_scratch.push_back({ m_aimArc[i - 1], kAimDimColor });
+            m_scratch.push_back({ m_aimArc[i], kAimDimColor });
+        }
+
+        // End-of-flight tick, perpendicular to the aim direction, at the
+        // height of the impact (on a wall it floats at the hit point).
+        const Vector3 end = m_aimArc.back();
+        const float px = -m_aimDir.z * 0.45f, pz = m_aimDir.x * 0.45f;
+        m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, kAimColor });
+        m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, kAimColor });
+
+        if (m_class->lobVelocity > 0.0f)
+        {
+            constexpr int kSegments = 20;
+            constexpr float kRadius = 0.4f;
+            for (int i = 0; i < kSegments; ++i)
+            {
+                const float a0 = XM_2PI * i / kSegments;
+                const float a1 = XM_2PI * (i + 1) / kSegments;
+                m_scratch.push_back({ { end.x + std::cos(a0) * kRadius, end.y,
+                                        end.z + std::sin(a0) * kRadius }, kAimColor });
+                m_scratch.push_back({ { end.x + std::cos(a1) * kRadius, end.y,
+                                        end.z + std::sin(a1) * kRadius }, kAimColor });
+            }
+        }
+        renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
+                                identity);
+    }
 
     RenderHud(renderer);
 }

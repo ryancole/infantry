@@ -50,6 +50,19 @@ private:
         int team;        // whose shot this is; it only hurts the other side
         float damage;
         float radius;
+        bool explodes;   // grenade: impact gets the big fireball, not a puff
+    };
+
+    // A short-lived debris cube from a projectile impact: flies out under
+    // gravity and shrinks to nothing over its lifetime.
+    struct Particle
+    {
+        Vector3 pos;
+        Vector3 vel;
+        float life;    // seconds remaining
+        float maxLife; // spawn value of life, for the shrink fraction
+        float size;    // edge length at full life
+        DirectX::XMFLOAT4 color;
     };
 
     // A computer-controlled enemy soldier. NPCs share the player's class
@@ -86,10 +99,27 @@ private:
         float yaw;
     };
 
-    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team);
+    // Fires cls's projectile from `from` along `dir`. Bullets always fly at
+    // full speed; lobbed shots (grenades) shorten their toss to come down
+    // `targetDist` away, up to the class's max range.
+    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team,
+                   float targetDist);
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
+    // Debris burst where a projectile dies; `scale` is the projectile radius.
+    void SpawnImpactBurst(const Vector3& pos, float scale);
+    // Grenade detonation: core flash plus a wide fire/smoke burst.
+    void SpawnExplosion(const Vector3& pos);
+    // Effect + sound for a projectile dying on `hitUnit` or world geometry.
+    void ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit);
+    void UpdateParticles(float dt);
+    // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
+    // against the colliders and the ground; returns the horizontal distance
+    // from `from` at which the shot stops. When outArc is given, fills it
+    // with the sampled trajectory (muzzle to stop). Powers the aim indicator.
+    float PredictShotStop(const ClassDef& cls, const Vector3& from, const Vector3& dir,
+                          float targetDist, std::vector<Vector3>* outArc = nullptr) const;
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     // Positional one-shot SFX: panned and attenuated relative to the player.
@@ -113,6 +143,7 @@ private:
     int m_team = 0;
     Vector3 m_playerPos;
     Vector3 m_aimDir = Vector3::UnitX;
+    float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
     float m_playerHp = kMaxHealth;
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
@@ -124,6 +155,7 @@ private:
     std::mt19937 m_rng{ std::random_device{}() };
 
     std::vector<Projectile> m_projectiles;
+    std::vector<Particle> m_particles;
     std::vector<Collider> m_colliders;
     std::vector<Visibility::Rect> m_occluders; // footprints of sight-blockers
     std::vector<Vertex> m_fogVerts; // reused per frame
@@ -131,4 +163,5 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
     std::vector<Vertex> m_scratch;     // reused per draw
+    std::vector<Vector3> m_aimArc;     // aim indicator trajectory, reused per frame
 };

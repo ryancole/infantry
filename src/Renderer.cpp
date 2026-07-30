@@ -145,6 +145,7 @@ void Renderer::Shutdown()
     m_triEffect.reset();
     m_lineEffect.reset();
     m_alphaEffect.reset();
+    m_alphaLineEffect.reset();
     m_modelEffect.reset();
     m_texModelEffect.reset();
     m_flatNormalTex.Reset();
@@ -235,6 +236,12 @@ void Renderer::CreateEffects()
         CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     m_alphaEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
                                                   alphaDesc);
+
+    const EffectPipelineStateDescription alphaLineDesc(
+        &Vertex::InputLayout, CommonStates::AlphaBlend, CommonStates::DepthRead,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+    m_alphaLineEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                      alphaLineDesc);
 
     const EffectPipelineStateDescription modelDesc(
         &VertexPositionNormalTexture::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
@@ -561,6 +568,11 @@ void Renderer::DrawLines(const Vertex* verts, uint32_t count, const XMMATRIX& wo
 void Renderer::DrawTrianglesAlpha(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
     DrawBatch(verts, count, world, m_alphaEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void Renderer::DrawLinesAlpha(const Vertex* verts, uint32_t count, const XMMATRIX& world)
+{
+    DrawBatch(verts, count, world, m_alphaLineEffect.get(), D3D_PRIMITIVE_TOPOLOGY_LINELIST);
 }
 
 void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& world,
