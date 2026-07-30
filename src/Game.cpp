@@ -30,6 +30,13 @@ namespace
     constexpr float kFogHeight = 0.02f; // just above the floor grid lines
     constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
 
+    // Soldier model walk cycle: phase advances with distance covered (radians
+    // per unit moved) so stride length stays constant across class speeds; the
+    // blend rate eases the walking pose in/out over ~1/8th of a second.
+    constexpr float kStrideRate = 2.2f;
+    constexpr float kMoveBlendRate = 8.0f;
+    constexpr float kHealthBarY = 1.42f; // clears the helmet and antenna tip
+
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
     constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
@@ -76,6 +83,126 @@ namespace
             for (int i : tris)
                 out.push_back({ p[i], col });
         }
+    }
+
+    // Draws one soldier in space armor, assembled from the renderer's lit
+    // primitives: class-tinted plating over a dark undersuit, a helmet with a
+    // glowing visor, backpack + antenna, and a rifle held two-handed toward
+    // `aimDir`. `walkPhase`/`moveBlend` drive the leg swing and torso bob.
+    void DrawSoldier(Renderer& renderer, const Vector3& pos, const Vector3& aimDir,
+                     float walkPhase, float moveBlend, const XMFLOAT4& color)
+    {
+        const float yaw = std::atan2(aimDir.x, aimDir.z);
+        const XMMATRIX base = XMMatrixRotationY(yaw) * XMMatrixTranslation(pos.x, pos.y, pos.z);
+
+        const XMFLOAT4 plate = color;
+        const XMFLOAT4 plateDark = { color.x * 0.55f, color.y * 0.55f, color.z * 0.55f, 1.0f };
+        const XMFLOAT4 suit = { 0.15f, 0.16f, 0.19f, 1.0f };
+        const XMFLOAT4 metal = { 0.09f, 0.10f, 0.12f, 1.0f };
+        const XMFLOAT4 visor = { 0.35f, 0.95f, 1.00f, 1.0f };
+
+        // Parts are laid out in local space (facing +Z, feet at y=0) and
+        // placed through `base`.
+        auto part = [&](Shape shape, const XMMATRIX& local, const XMFLOAT4& col) {
+            renderer.DrawShape(shape, local * base, col);
+        };
+        // A limb is a cylinder stretched between two local-space points.
+        auto limb = [&](const Vector3& a, const Vector3& b, float thick, const XMFLOAT4& col) {
+            const Vector3 d = b - a;
+            const float len = d.Length();
+            if (len < 1e-5f)
+                return;
+            const Vector3 mid = (a + b) * 0.5f;
+            const float dot = std::clamp(d.y / len, -1.0f, 1.0f);
+            Vector3 axis = Vector3::UnitY.Cross(d / len);
+            XMMATRIX rot;
+            if (axis.LengthSquared() < 1e-8f)
+                rot = dot > 0.0f ? XMMatrixIdentity() : XMMatrixRotationX(XM_PI);
+            else
+            {
+                axis.Normalize();
+                rot = XMMatrixRotationAxis(XMLoadFloat3(&axis), std::acos(dot));
+            }
+            part(Shape::Cylinder,
+                 XMMatrixScaling(thick, len, thick) * rot *
+                     XMMatrixTranslation(mid.x, mid.y, mid.z),
+                 col);
+        };
+
+        // Legs stride along the facing axis; the torso dips a touch at full
+        // stride spread so the walk reads even from the isometric camera.
+        const float swing = std::sin(walkPhase) * 0.6f * moveBlend;
+        const float bob = 0.03f * moveBlend * std::cos(walkPhase * 2.0f);
+
+        constexpr float kLegLen = 0.43f;
+        for (float side : { -1.0f, 1.0f })
+        {
+            const float s = swing * side;
+            const Vector3 hip(side * 0.10f, 0.50f, 0.02f);
+            const Vector3 foot = hip + Vector3(0.0f, -std::cos(s), std::sin(s)) * kLegLen;
+            limb(hip, foot, 0.13f, suit);
+            part(Shape::Box, // armored boot
+                 XMMatrixScaling(0.15f, 0.10f, 0.24f) *
+                     XMMatrixTranslation(foot.x, foot.y - 0.02f, foot.z + 0.05f),
+                 plateDark);
+        }
+
+        part(Shape::Box, // pelvis girdle
+             XMMatrixScaling(0.30f, 0.16f, 0.22f) * XMMatrixTranslation(0.0f, 0.55f + bob, 0.0f),
+             plateDark);
+        part(Shape::Box, // undersuit torso, mostly hidden by the chest plate
+             XMMatrixScaling(0.26f, 0.30f, 0.18f) * XMMatrixTranslation(0.0f, 0.72f + bob, 0.0f),
+             suit);
+        part(Shape::Box, // chest plate
+             XMMatrixScaling(0.36f, 0.26f, 0.28f) * XMMatrixTranslation(0.0f, 0.79f + bob, 0.01f),
+             plate);
+        part(Shape::Box, // backpack / life support
+             XMMatrixScaling(0.26f, 0.30f, 0.14f) * XMMatrixTranslation(0.0f, 0.80f + bob, -0.21f),
+             plateDark);
+        part(Shape::Cylinder, // antenna
+             XMMatrixScaling(0.025f, 0.30f, 0.025f) *
+                 XMMatrixTranslation(-0.09f, 1.02f + bob, -0.22f),
+             metal);
+        part(Shape::Sphere, // antenna tip, catches the bloom like the visor
+             XMMatrixScaling(0.05f, 0.05f, 0.05f) *
+                 XMMatrixTranslation(-0.09f, 1.18f + bob, -0.22f),
+             visor);
+
+        for (float side : { -1.0f, 1.0f }) // shoulder pauldrons
+            part(Shape::Sphere,
+                 XMMatrixScaling(0.19f, 0.19f, 0.19f) *
+                     XMMatrixTranslation(side * 0.25f, 0.90f + bob, 0.01f),
+                 plate);
+
+        // Arms reach from the pauldrons to a two-handed rifle grip: right hand
+        // on the trigger, left hand crossed to the forestock.
+        const Vector3 gripR(0.12f, 0.74f + bob, 0.20f);
+        const Vector3 gripL(0.10f, 0.77f + bob, 0.38f);
+        limb(Vector3(0.25f, 0.88f + bob, 0.02f), gripR, 0.10f, suit);
+        limb(Vector3(-0.25f, 0.88f + bob, 0.02f), gripL, 0.10f, suit);
+        for (const Vector3& hand : { gripR, gripL })
+            part(Shape::Sphere,
+                 XMMatrixScaling(0.11f, 0.11f, 0.11f) *
+                     XMMatrixTranslation(hand.x, hand.y, hand.z),
+                 metal);
+
+        part(Shape::Box, // rifle body
+             XMMatrixScaling(0.07f, 0.10f, 0.42f) * XMMatrixTranslation(0.11f, 0.77f + bob, 0.26f),
+             metal);
+        part(Shape::Cylinder, // barrel, ending near the muzzle spawn point
+             XMMatrixScaling(0.045f, 0.28f, 0.045f) * XMMatrixRotationX(XM_PIDIV2) *
+                 XMMatrixTranslation(0.11f, 0.79f + bob, 0.58f),
+             metal);
+
+        part(Shape::Cylinder, // neck seal
+             XMMatrixScaling(0.11f, 0.08f, 0.11f) * XMMatrixTranslation(0.0f, 0.95f + bob, 0.01f),
+             suit);
+        part(Shape::Sphere, // helmet
+             XMMatrixScaling(0.27f, 0.27f, 0.27f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.01f),
+             plate);
+        part(Shape::Sphere, // visor, bulging out of the helmet's front
+             XMMatrixScaling(0.17f, 0.10f, 0.12f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.10f),
+             visor);
     }
 
     // Horizontal muzzle speed for cls's shot aimed to come down targetDist
@@ -221,12 +348,18 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveRight += input.pad.thumbSticks.leftX;
 
     Vector3 move = upG * moveUp + rightG * moveRight;
-    if (move.LengthSquared() > 1e-10f)
+    const bool moving = move.LengthSquared() > 1e-10f;
+    if (moving)
     {
         move.Normalize();
         m_playerPos += move * (m_class->moveSpeed * dt);
     }
     ResolveObstacles(m_playerPos);
+
+    if (moving)
+        m_walkPhase += m_class->moveSpeed * kStrideRate * dt;
+    m_moveBlend = std::clamp(m_moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
+                             0.0f, 1.0f);
 
     // The ear follows the player; orienting it to the screen's up direction
     // makes stereo panning line up with what's on screen.
@@ -398,6 +531,8 @@ void Game::SpawnNpc()
     npc.repickTimer = 0.0f; // picks a real wander target on the first tick
     npc.strafeSign = (Rand(0.0f, 1.0f) < 0.5f) ? -1.0f : 1.0f;
     npc.strafeTimer = Rand(1.0f, 2.5f);
+    npc.walkPhase = Rand(0.0f, XM_2PI); // desync strides across the squad
+    npc.moveBlend = 0.0f;
     m_npcs.push_back(npc);
 }
 
@@ -467,6 +602,12 @@ void Game::UpdateNpcs(float dt)
             }
             speed *= kNpcWanderSpeed;
         }
+
+        const bool moving = move.LengthSquared() > 1e-6f;
+        if (moving)
+            npc.walkPhase += speed * kStrideRate * dt;
+        npc.moveBlend = std::clamp(npc.moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
+                                   0.0f, 1.0f);
 
         npc.pos += move * (speed * dt);
         ResolveObstacles(npc.pos);
@@ -690,19 +831,7 @@ void Game::Render(Renderer& renderer)
                                    XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
                                kObstacleColor);
 
-    // Units are a cylinder body with a sphere "head" cap, tinted by class.
-    auto drawUnit = [&](const XMFLOAT3& pos, const XMFLOAT4& color) {
-        const float bodySize = kPlayerHalf * 2.0f;
-        renderer.DrawShape(Shape::Cylinder,
-                           XMMatrixScaling(bodySize, bodySize, bodySize) *
-                               XMMatrixTranslation(pos.x, kPlayerHalf, pos.z),
-                           color);
-        renderer.DrawShape(Shape::Sphere,
-                           XMMatrixScaling(0.4f, 0.4f, 0.4f) *
-                               XMMatrixTranslation(pos.x, kPlayerHalf * 2.35f, pos.z),
-                           color);
-    };
-    drawUnit(m_playerPos, m_class->color);
+    DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
     // a wall disappears until it re-emerges.
@@ -712,7 +841,7 @@ void Game::Render(Renderer& renderer)
     {
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
-        drawUnit(npc.pos, npc.cls->color);
+        DrawSoldier(renderer, npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color);
 
         // Health bar: a thin slab that shrinks toward its left edge and shifts
         // green -> red, so weapon damage is readable per hit. Stays a
@@ -720,7 +849,7 @@ void Game::Render(Renderer& renderer)
         const float frac = std::max(npc.hp, 0.0f) / kMaxHealth;
         const float barW = 0.9f * frac;
         const XMFLOAT4 barColor = { 0.9f * (1.0f - frac), 0.8f * frac, 0.1f, 1.0f };
-        AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kPlayerHalf * 3.0f, npc.pos.z },
+        AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kHealthBarY, npc.pos.z },
                    { barW, 0.08f, 0.08f }, barColor);
     }
     for (const Projectile& shot : m_projectiles)
