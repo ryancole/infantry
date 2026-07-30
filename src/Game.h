@@ -112,6 +112,7 @@ private:
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
     float m_fireCooldown = 0.0f;
     float m_playerHp = kMaxHealth;
+    float m_rumbleTime = 0.0f; // gamepad vibration left on a damage pulse
     bool m_playerDied = false; // set by projectile hits, handled in Update
 
     std::vector<Npc> m_npcs;

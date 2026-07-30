@@ -83,6 +83,14 @@ std::optional<ClassId> ClassSelect::Update(const Input& input, uint32_t width, u
         if (input.KeyPressed('1' + static_cast<int>(i)))
             return static_cast<ClassId>(i);
 
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
+    const PadTracker::ButtonState padButtons[kClassCount] = {
+        input.padEvents.a, input.padEvents.b, input.padEvents.x, input.padEvents.y
+    };
+    for (size_t i = 0; i < kClassCount; ++i)
+        if (padButtons[i] == PadTracker::PRESSED)
+            return static_cast<ClassId>(i);
+
     m_hover = -1;
     const float w = static_cast<float>(width);
     const float h = static_cast<float>(height);

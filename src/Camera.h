@@ -3,7 +3,7 @@
 #include <DirectXMath.h>
 #include <cstdint>
 
-// Fixed-angle isometric camera (45° yaw, classic ~35.26° isometric pitch)
+// Isometric camera (classic ~35.26° pitch, orbitable yaw starting at 45°)
 // with an orthographic projection and smoothed target following.
 class IsoCamera
 {
@@ -15,6 +15,9 @@ public:
 
     // Scroll-wheel zoom: positive notches zoom in, negative zoom out.
     void AddZoom(float notches);
+
+    // Orbits around the focus point (middle-mouse drag).
+    void AddYaw(float radians) { m_yaw += radians; }
 
     DirectX::XMMATRIX ViewProj() const;
 
@@ -33,6 +36,7 @@ private:
 
     DirectX::XMFLOAT3 m_focus = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_target = { 0.0f, 0.0f, 0.0f };
+    float m_yaw = DirectX::XM_PIDIV4;
     float m_zoom = 26.0f;       // visible world units across the viewport width
     float m_zoomTarget = 26.0f;
     uint32_t m_width = 1280;

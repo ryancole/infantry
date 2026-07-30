@@ -166,6 +166,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
     m_sound.Update();
 
+    // Short rumble pulse while the damage timer runs (no-op without a pad).
+    m_rumbleTime = std::max(0.0f, m_rumbleTime - dt);
+    const float rumble = m_rumbleTime > 0.0f ? 0.6f : 0.0f;
+    DirectX::GamePad::Get().SetVibration(0, rumble, rumble);
+
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -189,6 +194,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     if (input.Key('S')) moveUp -= 1.0f;
     if (input.Key('D')) moveRight += 1.0f;
     if (input.Key('A')) moveRight -= 1.0f;
+    moveUp += input.pad.thumbSticks.leftY;
+    moveRight += input.pad.thumbSticks.leftX;
 
     float dx = upG.x * moveUp + rightG.x * moveRight;
     float dz = upG.z * moveUp + rightG.z * moveRight;
@@ -206,17 +213,26 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // makes stereo panning line up with what's on screen.
     m_sound.SetListener(m_playerPos, upG);
 
-    // --- Aim: mouse cursor projected onto the ground plane ---
+    // --- Aim: mouse cursor projected onto the ground plane, or the right
+    // stick as a screen-relative direction when deflected ---
     const XMFLOAT3 aimPoint = camera.ScreenToGround(input.mouseX, input.mouseY);
     float ax = aimPoint.x - m_playerPos.x;
     float az = aimPoint.z - m_playerPos.z;
+    const float rsx = input.pad.thumbSticks.rightX;
+    const float rsy = input.pad.thumbSticks.rightY;
+    if (rsx * rsx + rsy * rsy > 0.1f)
+    {
+        ax = upG.x * rsy + rightG.x * rsx;
+        az = upG.z * rsy + rightG.z * rsx;
+    }
     const float alen = std::sqrt(ax * ax + az * az);
     if (alen > 1e-4f)
         m_aimDir = { ax / alen, 0.0f, az / alen };
 
     // --- Firing ---
     m_fireCooldown -= dt;
-    if ((input.mouseDown[0] || input.MousePressed(0) || input.Key(VK_SPACE)) &&
+    if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
+         input.pad.triggers.right > 0.5f) &&
         m_fireCooldown <= 0.0f)
     {
         SpawnShot(*m_class, m_playerPos, m_aimDir, m_team);
@@ -224,7 +240,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- NPCs: debug spawning and AI ---
-    if (input.KeyPressed('N'))
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
+    if (input.KeyPressed('N') || input.padEvents.y == PadTracker::PRESSED)
         SpawnNpc();
     UpdateNpcs(dt);
 
@@ -456,6 +473,7 @@ void Game::UpdateProjectiles(float dt)
             if (SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
             {
                 m_playerHp -= shot.damage;
+                m_rumbleTime = 0.25f;
                 if (m_playerHp <= 0.0f)
                     m_playerDied = true;
                 m_sound.Play(m_playerDied ? "death" : "hit");

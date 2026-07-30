@@ -7,7 +7,6 @@ using namespace DirectX;
 
 namespace
 {
-    constexpr float kYaw = XM_PIDIV4;          // 45 degrees
     constexpr float kPitch = 0.61547971f;      // atan(1/sqrt(2)) ~ 35.26 degrees
     constexpr float kFollowRate = 8.0f;
 
@@ -55,8 +54,8 @@ void IsoCamera::ComputeMatrices(XMMATRIX& view, XMMATRIX& proj) const
     const float eyeDistance = depthReach + 60.0f;
 
     const XMVECTOR focus = XMVectorSet(m_focus.x, 0.0f, m_focus.z, 1.0f);
-    const XMVECTOR toEye = XMVectorSet(std::sin(kYaw) * std::cos(kPitch), std::sin(kPitch),
-                                       std::cos(kYaw) * std::cos(kPitch), 0.0f);
+    const XMVECTOR toEye = XMVectorSet(std::sin(m_yaw) * std::cos(kPitch), std::sin(kPitch),
+                                       std::cos(m_yaw) * std::cos(kPitch), 0.0f);
     const XMVECTOR eye = XMVectorAdd(focus, XMVectorScale(toEye, eyeDistance));
     view = XMMatrixLookAtLH(eye, focus, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
 
@@ -102,10 +101,10 @@ XMFLOAT3 IsoCamera::ScreenUpOnGround() const
 {
     // Camera looks along -toEye; projected onto the ground plane and
     // normalized, that is simply the negated yaw direction.
-    return { -std::sin(kYaw), 0.0f, -std::cos(kYaw) };
+    return { -std::sin(m_yaw), 0.0f, -std::cos(m_yaw) };
 }
 
 XMFLOAT3 IsoCamera::ScreenRightOnGround() const
 {
-    return { -std::cos(kYaw), 0.0f, std::sin(kYaw) };
+    return { -std::cos(m_yaw), 0.0f, std::sin(m_yaw) };
 }

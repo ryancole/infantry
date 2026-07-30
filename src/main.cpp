@@ -4,15 +4,17 @@
 #include "Renderer.h"
 
 #include <windows.h>
-#include <windowsx.h>
+#include <objbase.h>
 #include <algorithm>
 #include <exception>
+#include <memory>
 
 namespace
 {
     constexpr uint32_t kInitialWidth = 1280;
     constexpr uint32_t kInitialHeight = 720;
     constexpr float kClearColor[4] = { 0.030f, 0.038f, 0.055f, 1.0f };
+    constexpr float kOrbitSensitivity = 0.008f; // radians per relative mouse count
 
     struct App
     {
@@ -20,6 +22,9 @@ namespace
         IsoCamera camera;
         Game game;
         Input input;
+        std::unique_ptr<DirectX::Keyboard> keyboard;
+        std::unique_ptr<DirectX::Mouse> mouse;
+        std::unique_ptr<DirectX::GamePad> gamepad;
         bool rendererReady = false;
     };
 
@@ -43,52 +48,34 @@ namespace
                 app->camera.SetViewport(LOWORD(lParam), HIWORD(lParam));
             }
             return 0;
+        case WM_ACTIVATE:
+        case WM_ACTIVATEAPP:
+            // The toolkit resets held state here, so keys can't stick when
+            // focus is lost.
+            DirectX::Keyboard::ProcessMessage(msg, wParam, lParam);
+            DirectX::Mouse::ProcessMessage(msg, wParam, lParam);
+            break;
         case WM_KEYDOWN:
-            if (app)
-            {
-                app->input.keys[wParam & 0xFF] = true;
-                if (!(lParam & (1 << 30))) // ignore auto-repeat
-                    app->input.keyPressEvents[wParam & 0xFF] = true;
-            }
-            if (wParam == VK_ESCAPE)
+        case WM_SYSKEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            DirectX::Keyboard::ProcessMessage(msg, wParam, lParam);
+            if (msg == WM_KEYDOWN && wParam == VK_ESCAPE)
                 DestroyWindow(hwnd);
             return 0;
-        case WM_KEYUP:
-            if (app)
-                app->input.keys[wParam & 0xFF] = false;
-            return 0;
+        case WM_INPUT:
         case WM_MOUSEMOVE:
-            if (app)
-            {
-                app->input.mouseX = static_cast<float>(GET_X_LPARAM(lParam));
-                app->input.mouseY = static_cast<float>(GET_Y_LPARAM(lParam));
-            }
-            return 0;
         case WM_LBUTTONDOWN:
-            if (app)
-            {
-                app->input.mouseDown[0] = true;
-                app->input.mousePressEvents[0] = true;
-            }
-            SetCapture(hwnd);
-            return 0;
         case WM_LBUTTONUP:
-            if (app) app->input.mouseDown[0] = false;
-            ReleaseCapture();
-            return 0;
         case WM_RBUTTONDOWN:
-            if (app) app->input.mouseDown[1] = true;
-            return 0;
         case WM_RBUTTONUP:
-            if (app) app->input.mouseDown[1] = false;
-            return 0;
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
         case WM_MOUSEWHEEL:
-            if (app)
-                app->input.wheel += static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
-            return 0;
-        case WM_KILLFOCUS:
-            if (app)
-                app->input = Input{}; // drop stuck keys when focus is lost
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+        case WM_MOUSEHOVER:
+            DirectX::Mouse::ProcessMessage(msg, wParam, lParam);
             return 0;
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -100,7 +87,14 @@ namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+    // GamePad's Windows.Gaming.Input backend activates WinRT factories, which
+    // needs COM initialized on this thread before the first GetState call.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     App app;
+    app.keyboard = std::make_unique<DirectX::Keyboard>();
+    app.mouse = std::make_unique<DirectX::Mouse>();
+    app.gamepad = std::make_unique<DirectX::GamePad>();
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -120,6 +114,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
                                 nullptr, nullptr, hInstance, &app);
     if (!hwnd)
         return 1;
+    app.mouse->SetWindow(hwnd);
 
     try
     {
@@ -161,6 +156,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
         prev = now;
         dt = std::min(dt, 0.1f); // avoid huge steps after stalls
 
+        app.input.Update();
+
+        // Hold middle mouse to orbit the camera: relative mode captures and
+        // hides the cursor and reports raw deltas until the button releases.
+        using MouseTracker = DirectX::Mouse::ButtonStateTracker;
+        if (app.input.mouseEvents.middleButton == MouseTracker::PRESSED)
+            app.mouse->SetMode(DirectX::Mouse::MODE_RELATIVE);
+        else if (app.input.mouseEvents.middleButton == MouseTracker::RELEASED)
+            app.mouse->SetMode(DirectX::Mouse::MODE_ABSOLUTE);
+        if (app.input.mouse.positionMode == DirectX::Mouse::MODE_RELATIVE)
+            app.camera.AddYaw(static_cast<float>(app.input.mouse.x) * kOrbitSensitivity);
+
         app.camera.AddZoom(app.input.wheel);
         app.game.Update(dt, app.input, app.camera);
         app.camera.Update(dt);
@@ -180,8 +187,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
                 running = false;
             }
         }
-
-        app.input.NextFrame();
     }
 
     app.rendererReady = false;
