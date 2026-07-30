@@ -11,6 +11,7 @@ Prototype scaffold with a working game loop:
 - Fixed-angle isometric camera (orthographic, smoothed follow, mouse-wheel zoom)
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
+- Per-class primary weapons plus one grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
 
 Dependencies are fetched and built automatically by CMake (`FetchContent`) on first configure.
 
@@ -21,6 +22,7 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | `W` `A` `S` `D` | Move (screen-relative) |
 | Mouse | Aim |
 | Left mouse / `Space` | Fire |
+| `F` | Throw grenade (every class, one per life) |
 | Mouse wheel | Zoom |
 | `Esc` | Quit |
 

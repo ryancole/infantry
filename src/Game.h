@@ -50,6 +50,9 @@ private:
         int team;        // whose shot this is; it only hurts the other side
         float damage;
         float radius;
+        float blastRadius; // > 0: splash damage on impact
+        bool fused;      // rides out `life` bouncing off the world instead of
+                         // dying on its first contact; the fuse detonates it
         bool explodes;   // grenade: impact gets the big fireball, not a puff
     };
 
@@ -101,10 +104,10 @@ private:
         float yaw;
     };
 
-    // Fires cls's projectile from `from` along `dir`. Bullets always fly at
-    // full speed; lobbed shots (grenades) shorten their toss to come down
-    // `targetDist` away, up to the class's max range.
-    void SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& dir, int team,
+    // Fires `weapon`'s projectile from `from` along `dir`. Bullets always fly
+    // at full speed; lobbed shots (grenades) shorten their toss to come down
+    // `targetDist` away, up to the weapon's max range.
+    void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
                    float targetDist);
     void SpawnNpc();
     void UpdateNpcs(float dt);
@@ -113,14 +116,19 @@ private:
     void SpawnImpactBurst(const Vector3& pos, float scale);
     // Grenade detonation: core flash plus a wide fire/smoke burst.
     void SpawnExplosion(const Vector3& pos);
-    // Effect + sound for a projectile dying on `hitUnit` or world geometry.
-    void ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit);
+    // Ends `shot` at `pos`: splash damage for explosives, then the impact
+    // effect and sound (which differ for a hit on `hitUnit` vs. world geometry).
+    void Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit);
+    // Splash damage around `center`, full strength at the middle and falling
+    // off to nothing at `radius`. Only the side opposing `team` is hurt, and
+    // only where the blast has line of sight, so cover still protects.
+    void ApplyBlast(const Vector3& center, float radius, float damage, int team);
     void UpdateParticles(float dt);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
     // against the colliders and the ground; returns the horizontal distance
     // from `from` at which the shot stops. When outArc is given, fills it
     // with the sampled trajectory (muzzle to stop). Powers the aim indicator.
-    float PredictShotStop(const ClassDef& cls, const Vector3& from, const Vector3& dir,
+    float PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
                           float targetDist, std::vector<Vector3>* outArc = nullptr) const;
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
@@ -131,6 +139,9 @@ private:
     void RenderHud(Renderer& renderer);
 
     static constexpr float kMaxHealth = 100.0f;
+    // Grenades are issued per life, not recharged: spend it and there isn't
+    // another until you respawn, which is what makes the throw a decision.
+    static constexpr int kGrenadesPerLife = 1;
 
     Physics m_physics;
     Sound m_sound;
@@ -147,6 +158,7 @@ private:
     Vector3 m_aimDir = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
+    int m_grenades = kGrenadesPerLife; // same issue for every class; refilled on respawn
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;
