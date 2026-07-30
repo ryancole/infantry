@@ -126,5 +126,4 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
     std::vector<Vertex> m_scratch;     // reused per draw
-    std::vector<Vertex> m_hudVerts;    // screen-space text, reused per frame
 };

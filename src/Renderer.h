@@ -14,7 +14,12 @@
 #include <Effects.h>
 #include <GraphicsMemory.h>
 #include <PrimitiveBatch.h>
+#include <SpriteBatch.h>
+#include <SpriteFont.h>
 #include <VertexTypes.h>
+
+#include <string_view>
+#include <vector>
 
 #include "Model.h"
 
@@ -50,6 +55,13 @@ public:
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
 
+    // Queues screen-space text, drawn on top of everything else at EndFrame
+    // via SpriteBatch/SpriteFont. (x, y) is the top-left of a capital letter
+    // and `size` its pixel height, matching the old DebugText metrics.
+    void DrawScreenText(std::string_view text, float x, float y, float size,
+                        const DirectX::XMFLOAT4& color);
+    float MeasureScreenText(std::string_view text, float size) const;
+
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
 
@@ -61,6 +73,7 @@ private:
     void CreateSizedResources();
     void CreateEffects();
     void CreateFlatNormalTexture();
+    void CreateSpriteResources();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
     void DrawBatch(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
@@ -94,6 +107,21 @@ private:
     // ships no normal texture (NormalMapEffect requires one).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_flatNormalTex;
     D3D12_GPU_DESCRIPTOR_HANDLE m_flatNormalSrv = {};
+
+    struct TextDraw
+    {
+        std::string text;
+        float x;
+        float y;
+        float scale;
+        DirectX::XMFLOAT4 color;
+    };
+    std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
+    std::unique_ptr<DirectX::SpriteFont> m_font;
+    std::vector<TextDraw> m_textDraws;
+    // Metrics of the baked 'X' glyph, so `size` maps to capital height.
+    float m_fontCapHeight = 1.0f;
+    float m_fontCapOffsetY = 0.0f;
 
     HANDLE m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;

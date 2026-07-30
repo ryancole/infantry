@@ -111,6 +111,7 @@ void Renderer::Init(HWND hwnd, uint32_t width, uint32_t height)
                                                        kBatchVertices);
     CreateFlatNormalTexture();
     CreateEffects();
+    CreateSpriteResources();
 }
 
 void Renderer::Shutdown()
@@ -118,6 +119,8 @@ void Renderer::Shutdown()
     if (!m_device)
         return;
     WaitForGpu();
+    m_font.reset();
+    m_spriteBatch.reset();
     m_batch.reset();
     m_triEffect.reset();
     m_lineEffect.reset();
@@ -150,6 +153,8 @@ void Renderer::Resize(uint32_t width, uint32_t height)
     HR(m_swapChain->ResizeBuffers(kFrameCount, width, height, kBackBufferFormat, 0),
        "ResizeBuffers");
     CreateSizedResources();
+    if (m_spriteBatch)
+        m_spriteBatch->SetViewport(m_viewport);
 }
 
 void Renderer::CreateSizedResources()
@@ -261,6 +266,49 @@ void Renderer::CreateFlatNormalTexture()
     m_flatNormalSrv = m_srvPile->GetGpuHandle(slot);
 }
 
+void Renderer::CreateSpriteResources()
+{
+    ResourceUploadBatch upload(m_device.Get());
+    upload.Begin();
+
+    const RenderTargetState rtState(kBackBufferFormat, kDepthFormat);
+    const SpriteBatchPipelineStateDescription spriteDesc(rtState);
+    m_spriteBatch = std::make_unique<SpriteBatch>(m_device.Get(), upload, spriteDesc);
+
+    // Same exe-dir-then-repo-root resolution as LoadModel.
+    std::string path = ExeDir() + "\\assets\\fonts\\hud.spritefont";
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+        path = "assets/fonts/hud.spritefont";
+    const std::wstring wpath(path.begin(), path.end());
+
+    const size_t slot = m_srvPile->Allocate();
+    m_font = std::make_unique<SpriteFont>(m_device.Get(), upload, wpath.c_str(),
+                                          m_srvPile->GetCpuHandle(slot),
+                                          m_srvPile->GetGpuHandle(slot));
+    upload.End(m_queue.Get()).wait();
+
+    m_spriteBatch->SetViewport(m_viewport);
+
+    const SpriteFont::Glyph* cap = m_font->FindGlyph(L'X');
+    m_fontCapHeight = static_cast<float>(cap->Subrect.bottom - cap->Subrect.top);
+    m_fontCapOffsetY = cap->YOffset;
+}
+
+void Renderer::DrawScreenText(std::string_view text, float x, float y, float size,
+                              const XMFLOAT4& color)
+{
+    const float scale = size / m_fontCapHeight;
+    // Shift so the capital's top lands on y (DrawString positions the top of
+    // the full line cell, which sits above the cap by the glyph Y offset).
+    m_textDraws.push_back({ std::string(text), x, y - m_fontCapOffsetY * scale, scale, color });
+}
+
+float Renderer::MeasureScreenText(std::string_view text, float size) const
+{
+    const std::string str(text);
+    return XMVectorGetX(m_font->MeasureString(str.c_str())) * (size / m_fontCapHeight);
+}
+
 void Renderer::BeginFrame(const float clearColor[4])
 {
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
@@ -286,6 +334,16 @@ void Renderer::BeginFrame(const float clearColor[4])
 
 void Renderer::EndFrame()
 {
+    if (!m_textDraws.empty())
+    {
+        m_spriteBatch->Begin(m_cmdList.Get());
+        for (const TextDraw& t : m_textDraws)
+            m_font->DrawString(m_spriteBatch.get(), t.text.c_str(), XMFLOAT2(t.x, t.y),
+                               XMLoadFloat4(&t.color), 0.0f, XMFLOAT2(0.0f, 0.0f), t.scale);
+        m_spriteBatch->End();
+        m_textDraws.clear();
+    }
+
     Transition(m_backBuffers[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
                D3D12_RESOURCE_STATE_PRESENT);
     HR(m_cmdList->Close(), "Command list Close");

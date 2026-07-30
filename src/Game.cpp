@@ -1,6 +1,5 @@
 #include "Game.h"
 
-#include "DebugText.h"
 #include "Level.h"
 
 #include <algorithm>
@@ -600,24 +599,18 @@ void Game::Render(Renderer& renderer)
     RenderHud(renderer);
 }
 
-// Screen-space overlay: player health, NPC count, and the spawn hint. Uses
-// its own ortho projection; main.cpp restores the world view-proj next frame.
+// Screen-space overlay: player health, NPC count, and the spawn hint.
 void Game::RenderHud(Renderer& renderer)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
-    renderer.SetViewProj(XMMatrixOrthographicOffCenterLH(0.0f, w, h, 0.0f, 0.0f, 1.0f));
-
-    m_hudVerts.clear();
     const float size = h * 0.024f;
     const float y = h - size * 2.0f;
     const std::string status = "HP " + std::to_string(static_cast<int>(std::ceil(m_playerHp))) +
                                "   NPCS " + std::to_string(m_npcs.size());
-    DebugText::Append(m_hudVerts, status, size, y, size, kHudColor);
+    renderer.DrawScreenText(status, size, y, size, kHudColor);
 
     const std::string hint = "N - SPAWN NPC";
-    DebugText::Append(m_hudVerts, hint, w - DebugText::Measure(hint, size) - size, y, size,
-                      kHudHintColor);
-    renderer.DrawLines(m_hudVerts.data(), static_cast<uint32_t>(m_hudVerts.size()),
-                       XMMatrixIdentity());
+    renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,
+                            kHudHintColor);
 }
