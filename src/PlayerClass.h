@@ -29,14 +29,15 @@ struct ClassDef
     float projectileMass;
     float lobVelocity;       // upward muzzle speed; > 0 arcs the shot under gravity
     float projectileLife;    // seconds before despawn
+    float damage;            // health removed per projectile hit
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
-    // name         blurb                 color                             move  fire   speed  radius mass   lob   life
-    { "MARINE",    "ALL ROUNDER",         { 0.25f, 0.85f, 0.35f, 1.0f },    9.0f, 0.12f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f },
-    { "MEDIC",     "FAST SUPPORT",        { 0.90f, 0.90f, 0.95f, 1.0f },   11.0f, 0.30f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f },
-    { "SNIPER",    "LONG RANGE",          { 0.30f, 0.60f, 0.95f, 1.0f },    7.0f, 1.10f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f },
-    { "GRENADIER", "BOUNCING GRENADES",   { 0.95f, 0.55f, 0.20f, 1.0f },    7.5f, 0.90f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f },
+    // name         blurb                 color                             move  fire   speed  radius mass   lob   life  dmg
+    { "MARINE",    "ALL ROUNDER",         { 0.25f, 0.85f, 0.35f, 1.0f },    9.0f, 0.12f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f },
+    { "MEDIC",     "FAST SUPPORT",        { 0.90f, 0.90f, 0.95f, 1.0f },   11.0f, 0.30f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f },
+    { "SNIPER",    "LONG RANGE",          { 0.30f, 0.60f, 0.95f, 1.0f },    7.0f, 1.10f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f },
+    { "GRENADIER", "BOUNCING GRENADES",   { 0.95f, 0.55f, 0.20f, 1.0f },    7.5f, 0.90f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f },
 };
 
 inline const ClassDef& GetClassDef(ClassId id)

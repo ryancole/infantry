@@ -10,6 +10,7 @@
 
 #include <DirectXMath.h>
 #include <memory>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +41,26 @@ private:
     {
         Physics::BodyHandle body;
         float life;
+        DirectX::XMFLOAT3 prevPos; // last frame's position, for swept hit tests
+        int team;                  // whose shot this is; it only hurts the other side
+        float damage;
+        float radius;
+    };
+
+    // A computer-controlled enemy soldier. NPCs share the player's class
+    // table, so every weapon can be tested from both ends: fired at them,
+    // and dodged when they fire it back.
+    struct Npc
+    {
+        const ClassDef* cls;
+        DirectX::XMFLOAT3 pos;
+        DirectX::XMFLOAT3 aimDir;
+        float hp;
+        float fireCooldown;
+        DirectX::XMFLOAT3 wanderTarget;
+        float repickTimer; // forces a fresh wander target even when stuck
+        float strafeSign;  // +1/-1: which way to circle while engaged
+        float strafeTimer; // time until the strafe direction flips
     };
 
     // Runtime halves of a level object: solid objects contribute a Collider
@@ -60,8 +81,18 @@ private:
         float yaw;
     };
 
-    void FireWeapon();
+    void SpawnShot(const ClassDef& cls, const DirectX::XMFLOAT3& from,
+                   const DirectX::XMFLOAT3& dir, int team);
+    void SpawnNpc();
+    void UpdateNpcs(float dt);
+    void UpdateProjectiles(float dt);
+    // Clamps pos to the arena and pushes it out of solid colliders.
+    void ResolveObstacles(DirectX::XMFLOAT3& pos) const;
+    float Rand(float lo, float hi);
     void AppendFog(std::vector<Vertex>& out) const;
+    void RenderHud(Renderer& renderer);
+
+    static constexpr float kMaxHealth = 100.0f;
 
     Physics m_physics;
     Phase m_phase = Phase::ClassSelect;
@@ -76,6 +107,12 @@ private:
     DirectX::XMFLOAT3 m_playerPos = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 m_aimDir = { 1.0f, 0.0f, 0.0f };
     float m_fireCooldown = 0.0f;
+    float m_playerHp = kMaxHealth;
+    bool m_playerDied = false; // set by projectile hits, handled in Update
+
+    std::vector<Npc> m_npcs;
+    int m_nextNpcClass = 0; // spawns cycle through the class table
+    std::mt19937 m_rng{ std::random_device{}() };
 
     std::vector<Projectile> m_projectiles;
     std::vector<Collider> m_colliders;
@@ -85,4 +122,5 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
     std::vector<Vertex> m_scratch;     // reused per draw
+    std::vector<Vertex> m_hudVerts;    // screen-space text, reused per frame
 };
