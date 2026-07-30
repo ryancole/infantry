@@ -5,8 +5,10 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/PhysicsSettings.h>
@@ -14,7 +16,9 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <algorithm>
+#include <mutex>
 #include <thread>
+#include <unordered_set>
 
 using namespace DirectX;
 
@@ -74,6 +78,38 @@ namespace
         }
     };
 
+    // Records which dynamic bodies touched anything during a step. Jolt calls
+    // this from its worker threads, hence the mutex.
+    class ContactRecorder final : public JPH::ContactListener
+    {
+    public:
+        void OnContactAdded(const JPH::Body& a, const JPH::Body& b,
+                            const JPH::ContactManifold&, JPH::ContactSettings&) override
+        {
+            std::lock_guard lock(m_mutex);
+            if (a.IsDynamic())
+                m_hits.insert(a.GetID().GetIndexAndSequenceNumber());
+            if (b.IsDynamic())
+                m_hits.insert(b.GetID().GetIndexAndSequenceNumber());
+        }
+
+        void Clear()
+        {
+            std::lock_guard lock(m_mutex);
+            m_hits.clear();
+        }
+
+        bool Contains(uint32_t handle) const
+        {
+            std::lock_guard lock(m_mutex);
+            return m_hits.contains(handle);
+        }
+
+    private:
+        mutable std::mutex m_mutex;
+        std::unordered_set<uint32_t> m_hits;
+    };
+
     // Process-wide Jolt setup (allocator, RTTI factory, shape registry).
     void InitJoltOnce()
     {
@@ -101,6 +137,7 @@ struct Physics::Impl
     ObjectVsBroadPhaseLayerFilterImpl objVsBpFilter;
     ObjectLayerPairFilterImpl objPairFilter;
     JPH::PhysicsSystem system;
+    ContactRecorder contacts;
     float accumulator = 0.0f;
 };
 
@@ -110,6 +147,7 @@ Physics::Physics()
     m_impl = std::make_unique<Impl>();
     m_impl->system.Init(kMaxBodies, 0, kMaxBodyPairs, kMaxContactConstraints,
                         m_impl->bpLayers, m_impl->objVsBpFilter, m_impl->objPairFilter);
+    m_impl->system.SetContactListener(&m_impl->contacts);
 }
 
 Physics::~Physics() = default;
@@ -132,7 +170,9 @@ Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3
         JPH::EMotionType::Dynamic, ObjLayers::MOVING);
     settings.mLinearVelocity = JPH::Vec3(vel.x, vel.y, vel.z);
     settings.mMotionQuality = JPH::EMotionQuality::LinearCast;
-    settings.mRestitution = 0.35f;
+    // Projectiles die on their first contact (see HadContact), so zero
+    // restitution keeps them from visibly rebounding during the impact frame.
+    settings.mRestitution = 0.0f;
     settings.mFriction = 0.4f;
     settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     settings.mMassPropertiesOverride.mMass = mass;
@@ -156,8 +196,14 @@ XMFLOAT3 Physics::GetPosition(BodyHandle handle) const
     return { p.GetX(), p.GetY(), p.GetZ() };
 }
 
+bool Physics::HadContact(BodyHandle handle) const
+{
+    return m_impl->contacts.Contains(handle);
+}
+
 void Physics::Step(float dt)
 {
+    m_impl->contacts.Clear();
     // Cap the backlog so a long stall doesn't trigger a catch-up death spiral.
     m_impl->accumulator = std::min(m_impl->accumulator + dt, 0.25f);
     while (m_impl->accumulator >= kFixedStep)

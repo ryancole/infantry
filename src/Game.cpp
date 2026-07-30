@@ -130,8 +130,8 @@ void Game::LoadContent(Renderer& renderer)
         m_gridVerts.push_back({ XMFLOAT3{ m_arenaHalf, 0.0f, f }, col });
     }
 
-    // Arena floor. Projectiles are dynamic bodies, so gravity, bounces, and
-    // ricochets come from Jolt.
+    // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
+    // despawn on their first contact with anything solid.
     m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
                            { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
 
@@ -242,6 +242,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // --- Projectiles (simulated by Jolt) ---
     m_physics.Step(dt);
     UpdateProjectiles(dt);
+    UpdateParticles(dt);
 
     if (m_playerDied)
     {
@@ -265,7 +266,8 @@ void Game::SpawnShot(const ClassDef& cls, const Vector3& from, const Vector3& di
     const Vector3 vel = dir * cls.projectileSpeed + Vector3(0.0f, cls.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, cls.projectileRadius,
                                                         cls.projectileMass),
-                              cls.projectileLife, pos, team, cls.damage, cls.projectileRadius });
+                              cls.projectileLife, pos, team, cls.damage, cls.projectileRadius,
+                              cls.explodes });
 
     // One shared fire sample; heavier weapons play deeper. A little random
     // detune keeps rapid fire from sounding like a loop.
@@ -419,6 +421,84 @@ void Game::UpdateNpcs(float dt)
         }
 }
 
+void Game::SpawnImpactBurst(const Vector3& pos, float scale)
+{
+    constexpr int kBurstCount = 12;
+    constexpr XMFLOAT4 kDustColor = { 0.45f, 0.48f, 0.55f, 1.0f };
+    for (int i = 0; i < kBurstCount; ++i)
+    {
+        const float yaw = Rand(0.0f, XM_2PI);
+        const float speed = Rand(1.5f, 4.5f);
+        Particle p;
+        p.pos = pos;
+        p.vel = { std::cos(yaw) * speed, Rand(1.0f, 4.5f), std::sin(yaw) * speed };
+        p.maxLife = p.life = Rand(0.2f, 0.45f);
+        p.size = scale * Rand(0.35f, 0.7f);
+        // Roughly half glowing sparks in the tracer color, half neutral dust.
+        p.color = (i % 2 == 0) ? kProjectileColor : kDustColor;
+        m_particles.push_back(p);
+    }
+}
+
+void Game::SpawnExplosion(const Vector3& pos)
+{
+    // Core flash: one big, very short-lived bright cube the bloom pass turns
+    // into a glow. Zero velocity — it just pops and shrinks away.
+    m_particles.push_back({ pos, Vector3::Zero, 0.09f, 0.09f, 1.4f, { 1.0f, 0.95f, 0.6f, 1.0f } });
+
+    constexpr XMFLOAT4 kFireColor = { 1.0f, 0.55f, 0.15f, 1.0f };
+    constexpr XMFLOAT4 kSmokeColor = { 0.30f, 0.30f, 0.33f, 1.0f };
+    constexpr int kExplosionCount = 26;
+    for (int i = 0; i < kExplosionCount; ++i)
+    {
+        const float yaw = Rand(0.0f, XM_2PI);
+        const float speed = Rand(2.0f, 8.0f);
+        Particle p;
+        p.pos = pos;
+        p.vel = { std::cos(yaw) * speed, Rand(2.0f, 7.0f), std::sin(yaw) * speed };
+        p.maxLife = p.life = Rand(0.35f, 0.8f);
+        p.size = Rand(0.12f, 0.3f);
+        // A mix of embers (tracer yellow), fire, and lingering smoke.
+        p.color = i % 3 == 0 ? kSmokeColor : (i % 3 == 1 ? kFireColor : kProjectileColor);
+        m_particles.push_back(p);
+    }
+}
+
+void Game::ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit)
+{
+    if (shot.explodes)
+    {
+        SpawnExplosion(pos);
+        PlaySoundAt("explode", pos, Rand(-0.06f, 0.06f));
+    }
+    else
+    {
+        SpawnImpactBurst(pos, shot.radius);
+        // Unit hits already play their own hit/death sound; the thud is only
+        // for shots stopping in the ground or a wall.
+        if (!hitUnit)
+            PlaySoundAt("thud", pos, Rand(-0.15f, 0.15f));
+    }
+}
+
+void Game::UpdateParticles(float dt)
+{
+    for (Particle& p : m_particles)
+    {
+        p.life -= dt;
+        p.vel.y -= 18.0f * dt;
+        p.pos += p.vel * dt;
+        // Settle on the floor instead of sinking through it.
+        const float half = p.size * 0.5f;
+        if (p.pos.y < half)
+        {
+            p.pos.y = half;
+            p.vel = { p.vel.x * 0.6f, 0.0f, p.vel.z * 0.6f };
+        }
+    }
+    std::erase_if(m_particles, [](const Particle& p) { return p.life <= 0.0f; });
+}
+
 void Game::UpdateProjectiles(float dt)
 {
     for (auto& shot : m_projectiles)
@@ -441,6 +521,7 @@ void Game::UpdateProjectiles(float dt)
                     npc.hp -= shot.damage;
                     PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
                     shot.life = 0.0f;
+                    ImpactEffect(shot, pos, true);
                     break;
                 }
             }
@@ -456,8 +537,19 @@ void Game::UpdateProjectiles(float dt)
                     m_playerDied = true;
                 m_sound.Play(m_playerDied ? "death" : "hit");
                 shot.life = 0.0f;
+                ImpactEffect(shot, pos, true);
             }
         }
+
+        // Projectiles stop where they land: first touch of world geometry
+        // (walls, floor) removes them. Checked after the unit sweeps so a shot
+        // that clips a target on its impact tick still deals its damage.
+        if (shot.life > 0.0f && m_physics.HadContact(shot.body))
+        {
+            shot.life = 0.0f;
+            ImpactEffect(shot, pos, false);
+        }
+
         shot.prevPos = pos;
     }
 
@@ -576,6 +668,16 @@ void Game::Render(Renderer& renderer)
                                    XMMatrixTranslation(pos.x, pos.y, pos.z),
                                kProjectileColor);
         }
+    }
+
+    // Impact debris shrinks out over its lifetime. Same visibility rule as
+    // projectiles: a burst behind a wall stays hidden.
+    for (const Particle& p : m_particles)
+    {
+        if (!Visibility::IsPointVisible(eye, { p.pos.x, p.pos.z }, m_occluders))
+            continue;
+        const float s = p.size * (p.life / p.maxLife);
+        AppendCube(m_scratch, p.pos, { s, s, s }, p.color);
     }
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);

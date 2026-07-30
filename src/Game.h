@@ -50,6 +50,19 @@ private:
         int team;        // whose shot this is; it only hurts the other side
         float damage;
         float radius;
+        bool explodes;   // grenade: impact gets the big fireball, not a puff
+    };
+
+    // A short-lived debris cube from a projectile impact: flies out under
+    // gravity and shrinks to nothing over its lifetime.
+    struct Particle
+    {
+        Vector3 pos;
+        Vector3 vel;
+        float life;    // seconds remaining
+        float maxLife; // spawn value of life, for the shrink fraction
+        float size;    // edge length at full life
+        DirectX::XMFLOAT4 color;
     };
 
     // A computer-controlled enemy soldier. NPCs share the player's class
@@ -90,6 +103,13 @@ private:
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
+    // Debris burst where a projectile dies; `scale` is the projectile radius.
+    void SpawnImpactBurst(const Vector3& pos, float scale);
+    // Grenade detonation: core flash plus a wide fire/smoke burst.
+    void SpawnExplosion(const Vector3& pos);
+    // Effect + sound for a projectile dying on `hitUnit` or world geometry.
+    void ImpactEffect(const Projectile& shot, const Vector3& pos, bool hitUnit);
+    void UpdateParticles(float dt);
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     // Positional one-shot SFX: panned and attenuated relative to the player.
@@ -124,6 +144,7 @@ private:
     std::mt19937 m_rng{ std::random_device{}() };
 
     std::vector<Projectile> m_projectiles;
+    std::vector<Particle> m_particles;
     std::vector<Collider> m_colliders;
     std::vector<Visibility::Rect> m_occluders; // footprints of sight-blockers
     std::vector<Vertex> m_fogVerts; // reused per frame

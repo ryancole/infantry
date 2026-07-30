@@ -21,12 +21,17 @@ public:
     void AddStaticBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& size);
 
     // Dynamic sphere under gravity; uses continuous collision so fast shots
-    // don't tunnel through thin geometry.
+    // don't tunnel through thin geometry. Zero restitution: projectiles stop
+    // dead where they land instead of bouncing.
     BodyHandle SpawnProjectile(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT3& vel,
                                float radius, float mass);
 
     void RemoveBody(BodyHandle handle);
     DirectX::XMFLOAT3 GetPosition(BodyHandle handle) const;
+
+    // True if the body touched anything during the most recent Step. Used to
+    // despawn projectiles on impact instead of letting them ricochet.
+    bool HadContact(BodyHandle handle) const;
 
     // Advances the simulation on a fixed 60 Hz tick (accumulates dt so render
     // rate and simulation rate stay decoupled).

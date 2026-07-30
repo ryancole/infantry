@@ -66,6 +66,37 @@ for ($i = 0; $i -lt $n; $i++) {
 }
 Write-Wav (Join-Path $OutDir "hit.wav") $hit
 
+# thud: a soft low bump for a bullet stopping in dirt or a wall. Quiet by
+# design (amplitude baked in) so a stream of misses doesn't drown the mix.
+$n = [int](0.09 * $SampleRate)
+$thud = [float[]]::new($n)
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $lp = 0.82 * $lp + 0.18 * (2.0 * $rng.NextDouble() - 1.0)
+    $noise = $lp * [Math]::Exp(-$t * 60.0)
+    $bump = 0.5 * [Math]::Sin(2.0 * [Math]::PI * 90.0 * $t) * [Math]::Exp(-$t * 45.0)
+    $thud[$i] = 0.35 * ($noise + $bump)
+}
+Write-Wav (Join-Path $OutDir "thud.wav") $thud
+
+# explode: grenade detonation. A heavy overdriven sine sweeping down into the
+# lows under a slow-decaying rumble of low-passed noise.
+$n = [int](0.6 * $SampleRate)
+$explode = [float[]]::new($n)
+$phase = 0.0
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $freq = 150.0 * [Math]::Exp(-$t * 6.0) + 35.0
+    $phase += 2.0 * [Math]::PI * $freq / $SampleRate
+    $boom = [Math]::Tanh(3.0 * [Math]::Sin($phase)) * [Math]::Exp(-$t * 7.0)
+    $lp = 0.88 * $lp + 0.12 * (2.0 * $rng.NextDouble() - 1.0)
+    $rumble = $lp * 2.2 * [Math]::Exp(-$t * 5.0)
+    $explode[$i] = 0.95 * $boom + 0.5 * $rumble
+}
+Write-Wav (Join-Path $OutDir "explode.wav") $explode
+
 # death: a longer descending tone, slightly overdriven so it stands out from
 # the hit sound even in a firefight.
 $n = [int](0.5 * $SampleRate)
