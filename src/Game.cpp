@@ -107,10 +107,7 @@ namespace
 
 void Game::LoadContent(Renderer& renderer)
 {
-    m_sound.Init();
-    m_sound.Load("fire");
-    m_sound.Load("hit");
-    m_sound.Load("death");
+    m_sound.Init(); // loads the wave bank and starts the ambience
 
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
     m_arenaHalf = level.arenaHalf;

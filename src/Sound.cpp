@@ -2,6 +2,8 @@
 
 #include <objbase.h>
 
+#include <cmath>
+
 using namespace DirectX;
 
 namespace
@@ -11,13 +13,27 @@ namespace
     // and would make the far-range cull in callers audible as a pop.
     X3DAUDIO_DISTANCE_CURVE_POINT kFalloffPoints[2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f } };
     X3DAUDIO_DISTANCE_CURVE kFalloffCurve = { kFalloffPoints, 2 };
+
+    constexpr int kWindRate = 22050;         // Hz, mono 16-bit
+    constexpr size_t kWindSamples = 4096;    // per generated buffer (~185 ms)
+    constexpr float kWindVolume = 0.08f;
 }
 
 void Sound::Init()
 {
     // XAudio2 lives on COM; safe to call again if the thread already did it.
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    m_engine = std::make_unique<AudioEngine>(AudioEngine_Default);
+    m_engine = std::make_unique<AudioEngine>(AudioEngine_EnvironmentalReverb |
+                                             AudioEngine_ReverbUseFilters);
+    // Open-air arena: a long, soft tail rather than a room echo.
+    m_engine->SetReverb(Reverb_Mountains);
+
+    m_bank = std::make_unique<WaveBank>(m_engine.get(), L"assets/sounds/sounds.xwb");
+
+    m_wind = std::make_unique<DynamicSoundEffectInstance>(
+        m_engine.get(), [this](DynamicSoundEffectInstance* i) { FeedWind(i); }, kWindRate, 1, 16);
+    m_wind->SetVolume(kWindVolume);
+    m_wind->Play();
 }
 
 void Sound::Update()
@@ -30,11 +46,28 @@ void Sound::Update()
     });
 }
 
-void Sound::Load(const std::string& name)
+// Keeps the wind voice fed: cascaded low-pass filtered white noise with a
+// slow gust swell. Runs from AudioEngine::Update when buffers run low.
+void Sound::FeedWind(DynamicSoundEffectInstance* instance)
 {
-    const std::wstring path =
-        L"assets/sounds/" + std::wstring(name.begin(), name.end()) + L".wav";
-    m_effects[name] = std::make_unique<SoundEffect>(m_engine.get(), path.c_str());
+    while (instance->GetPendingBufferCount() < static_cast<int>(m_windRing.size()) - 1)
+    {
+        std::vector<uint8_t>& buffer = m_windRing[m_windNext];
+        m_windNext = (m_windNext + 1) % m_windRing.size();
+        buffer.resize(kWindSamples * 2);
+
+        auto* samples = reinterpret_cast<int16_t*>(buffer.data());
+        std::uniform_real_distribution<float> white(-1.0f, 1.0f);
+        for (size_t i = 0; i < kWindSamples; ++i)
+        {
+            m_windLp1 += 0.045f * (white(m_windRng) - m_windLp1);
+            m_windLp2 += 0.045f * (m_windLp1 - m_windLp2);
+            m_windGust += 0.35f / kWindRate;
+            const float gust = 0.75f + 0.25f * std::sin(m_windGust * 6.2831853f);
+            samples[i] = static_cast<int16_t>(m_windLp2 * gust * 12000.0f);
+        }
+        instance->SubmitBuffer(buffer.data(), buffer.size());
+    }
 }
 
 void Sound::SetListener(const XMFLOAT3& pos, const XMFLOAT3& screenUp)
@@ -47,17 +80,18 @@ void Sound::SetListener(const XMFLOAT3& pos, const XMFLOAT3& screenUp)
 
 void Sound::Play(const std::string& name, float volume, float pitch)
 {
-    if (const auto it = m_effects.find(name); it != m_effects.end())
-        it->second->Play(volume, pitch, 0.0f);
+    if (m_bank)
+        m_bank->Play(name.c_str(), volume, pitch, 0.0f);
 }
 
 void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch)
 {
-    const auto it = m_effects.find(name);
-    if (it == m_effects.end())
+    if (!m_bank)
         return;
-
-    auto inst = it->second->CreateInstance(SoundEffectInstance_Use3D);
+    auto inst = m_bank->CreateInstance(name.c_str(), SoundEffectInstance_Use3D |
+                                                         SoundEffectInstance_ReverbUseFilters);
+    if (!inst)
+        return;
 
     AudioEmitter emitter;
     emitter.SetPosition(pos);
