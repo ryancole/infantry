@@ -316,8 +316,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     const float rumble = m_rumbleTime > 0.0f ? 0.6f : 0.0f;
     DirectX::GamePad::Get().SetVibration(0, rumble, rumble);
 
-    m_deathFlashTime = std::max(0.0f, m_deathFlashTime - dt);
-
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -435,7 +433,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
         m_respawnTimer = kRespawnDelay;
-        m_deathFlashTime = 0.6f; // brief grayscale flash on the way down
         return;
     }
 
@@ -1034,7 +1031,10 @@ void Game::AppendFog(std::vector<Vertex>& out) const
 
 void Game::Render(Renderer& renderer)
 {
-    renderer.SetMonochrome(m_deathFlashTime > 0.0f);
+    // Grayscale for as long as the player is dead, not a flash on the way
+    // down: the drained color is what separates watching the arena from
+    // playing in it, so it holds until the moment they're back in control.
+    renderer.SetMonochrome(m_phase == Phase::Dead);
 
     if (m_phase == Phase::ClassSelect)
     {

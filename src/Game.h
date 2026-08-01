@@ -202,9 +202,8 @@ private:
     float m_playerHp = kMaxHealth;
     float m_frameMs = 0.0f;        // smoothed wall-clock frame time, for the HUD
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
-    float m_deathFlashTime = 0.0f; // grayscale post flash after dying
-    float m_respawnTimer = 0.0f;   // seconds left of the wait, while Phase::Dead
-    bool m_playerDied = false;     // set by projectile hits, handled in Update
+    float m_respawnTimer = 0.0f; // seconds left of the wait, while Phase::Dead
+    bool m_playerDied = false;   // set by projectile hits, handled in Update
     Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 
     std::vector<Npc> m_npcs;
