@@ -61,8 +61,17 @@ namespace Soldier
                            const DirectX::SimpleMath::Vector3& aimDir);
 
     // Draws the model with each segment placed by its world matrix: space armor
-    // in the class color over a dark undersuit, a helmet with a glowing visor,
-    // backpack + antenna, and a rifle held two-handed.
+    // over a dark undersuit, a helmet with a glowing visor, backpack + antenna,
+    // and a rifle held two-handed.
+    //
+    // Two colors, because a soldier is two facts and they aren't equally
+    // urgent. `team` paints the armor — chest, pauldrons, pack, pelvis, boots —
+    // so which side someone is on is the shape you see from across the arena and
+    // through the fog. `cls` paints the helmet alone, which is a small mark you
+    // read once you're already looking at them, which is exactly when their
+    // class starts to matter. Getting that order wrong is what made a field of
+    // four class colors unreadable: it answered "what is that" everywhere and
+    // "whose is it" nowhere.
     void Draw(Renderer& renderer, const DirectX::XMMATRIX world[SegmentCount],
-              const DirectX::XMFLOAT4& color);
+              const DirectX::XMFLOAT4& team, const DirectX::XMFLOAT4& cls);
 }

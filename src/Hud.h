@@ -71,6 +71,13 @@ namespace Hud
         int allies;
         int enemies;
         int teamSize; // slots a side fields; how many pips a row draws
+        // What the two sides are wearing out on the field. Handed over rather
+        // than chosen here so the corner can't drift from the arena: the row
+        // marked as yours is your armor's color, whichever side the player ends
+        // up on. The HUD lightens them for a small icon on a dark panel, but it
+        // never picks them.
+        DirectX::XMFLOAT4 allyColor;
+        DirectX::XMFLOAT4 enemyColor;
 
         // The key-cap row above the panel, in draw order. It arrives whole
         // rather than being assembled here because half of it is now the
