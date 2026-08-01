@@ -118,6 +118,40 @@ inline constexpr WeaponDef kGrenade = {
        0.0f,  0,  0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 30.0f, 4.0f, 0.45f, true
 };
 
+// The blade every soldier carries, swung with the melee key. Standard issue
+// like the grenade, and for the same reason: it isn't what separates one class
+// from another, it's the thing all four of them fall back on.
+//
+// It is deliberately the worst weapon on the field at everything except the one
+// range nothing else covers. The reach barely clears the two bodies involved,
+// and at 20 a swing it takes five of them to end a soldier — so a melee that
+// wins a fight is a fight the primary had already lost. What it is for is the
+// moment the primary can't answer: a magazine out, or someone already inside
+// the distance the class was built to fight at.
+//
+// The three swings are there to be spent at once, and they all come back
+// together a fixed time after the last one — measured from when the swinging
+// stops, not from when the charges run out. Two swings and a step back costs
+// exactly what three would have, which is the point: a wait that only started
+// on the third swing would make hanging onto the last one strictly wrong, and
+// a player flicking out a swing they don't want just to start the clock isn't
+// playing anything. There's no key to bring them back early for the same
+// reason there's no decision in it.
+struct MeleeDef
+{
+    float reach;         // center-to-center distance that still connects
+    float arc;           // half-angle off the aim direction that still connects
+    float damage;
+    int charges;         // swings there are to spend
+    float recoverTime;   // seconds after the last swing before they all return
+    float swingInterval; // seconds between swings
+};
+
+inline constexpr MeleeDef kMelee = {
+    // reach  arc    dmg    charges recover swing
+       1.6f,  0.80f, 20.0f, 3,      2.0f,   0.45f
+};
+
 inline const ClassDef& GetClassDef(ClassId id)
 {
     return kClassDefs[static_cast<size_t>(id)];

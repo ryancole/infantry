@@ -22,6 +22,7 @@ namespace
     // rebinding UI or config file yet); naming them keeps the defaults in one
     // place for when there is one.
     constexpr int kGrenadeKey = 'F';
+    constexpr int kMeleeKey = 'V';
     constexpr int kReloadKey = 'R';
     constexpr int kSpawnNpcKey = 'N';
 
@@ -131,6 +132,12 @@ namespace
     constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
     constexpr float kAimRingHeight = 0.05f;    // above the fog quads, so it isn't dimmed
     constexpr float kGrenadeMarkRadius = 0.5f; // first-bounce marker, not the blast size
+    // The swing: a pale arc swept at the blade's real reach, fading out over an
+    // eighth of a second. It's drawn after the fact rather than as an aim
+    // indicator on purpose — a melee is a commitment, so what the player gets to
+    // see is where the blade went, not a standing promise of where it would go.
+    constexpr XMFLOAT4 kMeleeArcColor = { 0.82f, 0.90f, 1.00f, 0.85f };
+    constexpr float kMeleeFlashTime = 0.13f;
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -190,20 +197,28 @@ namespace
                    : kGrenadeCasingColor;
     }
 
-    // A horizontal ring of line segments, for the aim indicator's landing marks.
-    void AppendCircle(std::vector<Vertex>& out, const Vector3& center, float radius,
-                      const XMFLOAT4& color)
+    // A horizontal run of line segments on a circle, `sweep` radians wide from
+    // `start`. Angles are world headings: measured from +x toward +z, the same
+    // convention atan2(z, x) gives back.
+    void AppendArc(std::vector<Vertex>& out, const Vector3& center, float radius, float start,
+                   float sweep, int segments, const XMFLOAT4& color)
     {
-        constexpr int kSegments = 24;
-        for (int i = 0; i < kSegments; ++i)
+        for (int i = 0; i < segments; ++i)
         {
-            const float a0 = XM_2PI * i / kSegments;
-            const float a1 = XM_2PI * (i + 1) / kSegments;
+            const float a0 = start + sweep * i / segments;
+            const float a1 = start + sweep * (i + 1) / segments;
             out.push_back({ XMFLOAT3{ center.x + std::cos(a0) * radius, center.y,
                                       center.z + std::sin(a0) * radius }, color });
             out.push_back({ XMFLOAT3{ center.x + std::cos(a1) * radius, center.y,
                                       center.z + std::sin(a1) * radius }, color });
         }
+    }
+
+    // A full ring, for the aim indicator's landing marks.
+    void AppendCircle(std::vector<Vertex>& out, const Vector3& center, float radius,
+                      const XMFLOAT4& color)
+    {
+        AppendArc(out, center, radius, 0.0f, XM_2PI, 24, color);
     }
 
     // Draws a living soldier: the model's segments posed by the walk cycle and
@@ -366,6 +381,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_phase = Phase::Playing;
             m_ammo = m_class->primary.magazine;
             m_reloadTimer = 0.0f;
+            m_meleeCharges = kMelee.charges;
+            m_meleeRecover = 0.0f;
+            m_meleeCooldown = 0.0f;
             m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
@@ -382,6 +400,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         UpdateNpcs(dt);
         m_physics.Step(dt);
         UpdateProjectiles(dt);
+        ReapDead();
         UpdateParticles(dt);
         UpdateCorpses(dt);
         if (m_respawnTimer <= 0.0f)
@@ -486,6 +505,39 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         --m_grenades;
     }
 
+    // --- Melee: the blade, for the range the primary can't cover. Its charges
+    // and its recovery are entirely off the magazine, so — like the grenade —
+    // it's still in the player's hands mid-reload, which is most of why it's
+    // carried. The recovery runs on its own and takes no key: there's nothing
+    // to decide about it, so there's nothing to press.
+    //
+    // Held rather than tapped, like the trigger and unlike the grenade: the
+    // three swings are a burst, paced by swingInterval, and a player who wants
+    // all three wants them as fast as the arm will go. Rationing them by
+    // hand-speed would only be a test of the hand. Leaning on the key through
+    // the recovery does nothing — the charges come back and the swinging picks
+    // straight back up, which is the same deal the trigger offers.
+    //
+    // The recovery is a timer since the last swing, not a reload of an empty
+    // magazine, so it runs with swings still in hand and doesn't gate them:
+    // what stops a swing is having none left, and nothing else ---
+    m_meleeCooldown -= dt;
+    m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
+    if (m_meleeRecover > 0.0f)
+    {
+        m_meleeRecover -= dt;
+        if (m_meleeRecover <= 0.0f)
+        {
+            m_meleeRecover = 0.0f;
+            m_meleeCharges = kMelee.charges;
+        }
+    }
+    if ((input.Key(kMeleeKey) || input.pad.IsRightShoulderPressed()) &&
+        m_meleeCooldown <= 0.0f && m_meleeCharges > 0)
+    {
+        SwingMelee();
+    }
+
     // --- NPCs: debug spawning and AI ---
     if (input.KeyPressed(kSpawnNpcKey) || input.padEvents.y == PadTracker::PRESSED)
         SpawnNpc();
@@ -494,6 +546,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // --- Projectiles (simulated by Jolt) ---
     m_physics.Step(dt);
     UpdateProjectiles(dt);
+    ReapDead();
     UpdateParticles(dt);
     UpdateCorpses(dt);
 
@@ -502,8 +555,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerDied = false;
         // A reload dies with the soldier: nothing ticks it down during the
         // respawn wait, so leaving it running would hold the HUD on RELOADING
-        // for the whole countdown over a magazine no one is holding.
+        // for the whole countdown over a magazine no one is holding. The
+        // blade's recovery stops for the same reason, and the swing in progress
+        // goes with the arm that was making it.
         m_reloadTimer = 0.0f;
+        m_meleeRecover = 0.0f;
+        m_meleeFlash = 0.0f;
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
@@ -528,6 +585,60 @@ void Game::BeginReload()
     m_sound.Play("reload");
 }
 
+void Game::SwingMelee()
+{
+    // The charge goes with the swing, not with the hit: the arm travels the
+    // same arc either way, and a blade that only charged for connecting would
+    // be free to flail with from across the room.
+    --m_meleeCharges;
+    m_meleeCooldown = kMelee.swingInterval;
+    m_meleeFlash = kMeleeFlashTime;
+    m_meleeSwingDir = m_aimDir;
+    // Every swing restarts the recovery, spent or not, so what comes back is
+    // always the full three and the wait is always measured from the last thing
+    // the arm did. Swinging twice and stopping costs the same wait as swinging
+    // three times; the third swing is free to take or leave.
+    m_meleeRecover = kMelee.recoverTime;
+    PlaySoundAt("swing", m_playerPos, Rand(-0.1f, 0.1f));
+
+    // One edge, not a blast: of everyone standing in the arc only the nearest
+    // is struck. It gets no sight test, unlike a bullet or a blast — anything
+    // solid enough to be cover is wider than the reach and keeps the two of
+    // them apart by itself, and what's left is a tree trunk they're both
+    // already touching, which isn't worth stopping a swing over.
+    const float cosArc = std::cos(kMelee.arc);
+    Npc* target = nullptr;
+    float nearest = 0.0f;
+    for (Npc& npc : m_npcs)
+    {
+        if (npc.hp <= 0.0f)
+            continue;
+        Vector3 toward = npc.pos - m_playerPos;
+        toward.y = 0.0f;
+        const float dist = toward.Length();
+        if (dist > kMelee.reach || dist < 1e-4f)
+            continue;
+        if (toward.Dot(m_aimDir) / dist < cosArc)
+            continue;
+        if (!target || dist < nearest)
+        {
+            target = &npc;
+            nearest = dist;
+        }
+    }
+    if (!target)
+        return;
+
+    // From here it's a hit like any other: the same blood, thrown the way the
+    // blade was travelling, and the same knock on the corpse it may leave. The
+    // body itself is collected by ReapDead at the end of the frame.
+    target->hp -= kMelee.damage;
+    target->knock = CorpseKnock(m_aimDir, kCorpseKnock);
+    SpawnBlood({ target->pos.x, kPlayerHalf, target->pos.z }, m_aimDir, kMelee.damage,
+               target->hp <= 0.0f);
+    PlaySoundAt(target->hp <= 0.0f ? "death" : "hit", target->pos);
+}
+
 void Game::Respawn(IsoCamera& camera)
 {
     m_playerHp = kMaxHealth;
@@ -535,6 +646,9 @@ void Game::Respawn(IsoCamera& camera)
     m_grenades = kGrenadesPerLife;      // respawn is a fresh loadout: the grenade back,
     m_ammo = m_class->primary.magazine; // and a full magazine, however they died holding it
     m_reloadTimer = 0.0f;
+    m_meleeCharges = kMelee.charges;    // all three swings, likewise
+    m_meleeRecover = 0.0f;
+    m_meleeCooldown = 0.0f;
     m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
     m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
     m_phase = Phase::Playing;
@@ -1105,9 +1219,14 @@ void Game::UpdateProjectiles(float dt)
         if (shot.life <= 0.0f)
             m_physics.RemoveBody(shot.body);
     std::erase_if(m_projectiles, [](const Projectile& s) { return s.life <= 0.0f; });
+}
 
-    // The dead leave a ragdoll standing exactly where they fell before they
-    // come off the roster.
+// The dead leave a ragdoll standing exactly where they fell before they come
+// off the roster. This is deliberately nobody's private business: rounds,
+// blasts and the blade all just take health off, and whoever emptied it is
+// swept up here at the end of the frame rather than by the system that did it.
+void Game::ReapDead()
+{
     for (const Npc& npc : m_npcs)
         if (npc.hp <= 0.0f)
             SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color,
@@ -1410,6 +1529,20 @@ void Game::Render(Renderer& renderer)
             AppendCircle(m_scratch, land, kGrenadeMarkRadius, kGrenadeAimColor);
         }
 
+        // The swing that just happened: the blade's arc at its real reach,
+        // frozen where it was aimed and fading out over the flash. It's the
+        // only account of a melee there is — a miss makes no impact, spills no
+        // blood, and would otherwise leave nothing on screen to have missed.
+        if (m_meleeFlash > 0.0f)
+        {
+            const XMFLOAT4 color = { kMeleeArcColor.x, kMeleeArcColor.y, kMeleeArcColor.z,
+                                     kMeleeArcColor.w * (m_meleeFlash / kMeleeFlashTime) };
+            const float heading = std::atan2(m_meleeSwingDir.z, m_meleeSwingDir.x);
+            const Vector3 center(m_playerPos.x, kAimRingHeight, m_playerPos.z);
+            AppendArc(m_scratch, center, kMelee.reach, heading - kMelee.arc, kMelee.arc * 2.0f, 12,
+                      color);
+        }
+
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                 identity);
     }
@@ -1437,6 +1570,17 @@ void Game::RenderHud(Renderer& renderer)
     hud.reloadFraction =
         m_reloadTimer > 0.0f && m_class->primary.reloadTime > 0.0f
             ? 1.0f - m_reloadTimer / m_class->primary.reloadTime
+            : -1.0f;
+    hud.melee = m_meleeCharges;
+    hud.meleeCharges = kMelee.charges;
+    // The recovery runs after every swing, including the ones that leave
+    // charges in hand, but a refill the player can swing straight through isn't
+    // a wait and isn't worth a bar. What the pips say — how many swings are
+    // there right now — is the whole answer until there are none, and only then
+    // does the clock become the thing to read.
+    hud.meleeRecoverFraction =
+        m_meleeCharges == 0 && m_meleeRecover > 0.0f && kMelee.recoverTime > 0.0f
+            ? 1.0f - m_meleeRecover / kMelee.recoverTime
             : -1.0f;
     hud.grenades = m_grenades;
     hud.npcs = static_cast<int>(m_npcs.size());

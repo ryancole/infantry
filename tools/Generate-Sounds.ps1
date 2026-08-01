@@ -136,3 +136,28 @@ for ($i = 0; $i -lt $n; $i++) {
     $death[$i] = 0.8 * $tone * [Math]::Exp(-$t * 4.0)
 }
 Write-Wav (Join-Path $OutDir "death.wav") $death
+
+# swing: the pass of air off a melee swing. Band-passed noise under an envelope
+# that swells through the middle of the arc and dies with it, so it reads as
+# something travelling rather than something starting. There's no impact in it
+# on purpose: connecting plays the hit clip over the top, and a miss is meant to
+# sound like a miss.
+#
+# New clips go on the end of this file rather than beside a related one: every
+# generator draws from the same seeded RNG in the order it's written, so
+# inserting one in the middle silently rewrites every clip after it.
+$n = [int](0.18 * $SampleRate)
+$swing = [float[]]::new($n)
+$lp = 0.0
+$hp = 0.0
+$prev = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $white = 2.0 * $rng.NextDouble() - 1.0
+    $lp = 0.72 * $lp + 0.28 * $white   # off the top: hiss, not a cymbal
+    $hp = 0.85 * ($hp + $lp - $prev)   # off the bottom: air, not a thud
+    $prev = $lp
+    $env = [Math]::Sin([Math]::PI * $t / 0.18)
+    $swing[$i] = 1.1 * $hp * $env * $env
+}
+Write-Wav (Join-Path $OutDir "swing.wav") $swing

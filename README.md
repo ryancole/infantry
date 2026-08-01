@@ -13,6 +13,7 @@ Prototype scaffold with a working game loop:
 - Player movement, mouse aim, and projectile firing
 - Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
 - One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
+- A melee swing for every class, on three charges and a recovery of its own rather than the magazine's: barely more reach than the two bodies involved and five swings to kill, so it's what's left when a primary can't answer — caught mid-reload, or with someone already inside its range
 - Ragdoll corpses: the soldier model is built from seven jointed segments, so a killed soldier is handed to Jolt as a ragdoll that keeps the pose it died in, is thrown by the blow that killed it, and falls where it stood
 - Blood: a hit sprays drops along the blow, and each one stains the floor where it lands. The stains don't fade, so the ground ends up reading back where the fighting has been
 
@@ -27,6 +28,7 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | Left mouse / `Space` | Fire |
 | `R` | Reload (automatic when the magazine empties) |
 | `F` | Throw grenade (every class, one per life) |
+| `V` | Melee swing (every class, three charges then a recovery) |
 | Mouse wheel | Zoom |
 | `Esc` | Quit |
 
