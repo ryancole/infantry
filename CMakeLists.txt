@@ -52,6 +52,7 @@ add_executable(infantry WIN32
     src/Camera.cpp
     src/ClassSelect.cpp
     src/Game.cpp
+    src/Hud.cpp
     src/Level.cpp
     src/Model.cpp
     src/Physics.cpp
