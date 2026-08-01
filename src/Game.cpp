@@ -52,14 +52,18 @@ namespace
     constexpr float kMoveBlendRate = 8.0f;
 
     // A soldier carries their own weight: the walk chases the keys rather than
-    // being them, so starting takes a step to get going and stopping costs
-    // about half a body length of coast. The time constant is short enough
-    // that a dodge still answers on the frame it's asked for — what it buys is
-    // that a direction change reads as one, and that letting go looks like a
-    // man arriving somewhere instead of a switch being thrown. Below the floor
-    // speed the drift is snapped away, so a released key settles rather than
-    // creeping on forever.
-    constexpr float kMoveResponse = 20.0f;  // 1/s; ~0.05s to answer the keys
+    // being them, so getting under way takes a stride and letting go costs a
+    // coast. The two are not the same cost. Getting a body moving is work and
+    // the slower of the two, near a fifth of a second to most of the class
+    // speed and about a body length behind where a stepped-on key would have
+    // put them; a direction change pays it again, which is what stops a
+    // reversal from being free. Stopping is the body's own weight going the
+    // way it was already headed, and only takes the moment it takes — short
+    // enough that a dodge still answers on the frame it's asked for. Below the
+    // floor speed the drift is snapped away, so a released key settles rather
+    // than creeping on forever.
+    constexpr float kMoveAccelRate = 8.0f;  // 1/s; ~0.13s to answer the keys
+    constexpr float kMoveStopRate = 20.0f;  // 1/s; ~0.05s of coast on release
     constexpr float kMoveStopSpeed = 0.1f;  // units per second
 
     // Turning is not free: the soldier's facing chases the aim direction at a
@@ -469,15 +473,21 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     Vector3 move = upG * moveUp + rightG * moveRight;
     const float speed = m_class->moveSpeed * (steady ? kSteadyMoveScale : 1.0f);
-    if (move.LengthSquared() > 1e-10f)
+    const bool pushing = move.LengthSquared() > 1e-10f;
+    if (pushing)
         move.Normalize();
     else
         move = Vector3::Zero;
 
     // The keys ask for a velocity; the body eases onto it. Framed as a decay
     // toward the wanted velocity rather than a step of acceleration so the
-    // feel holds at any frame rate.
-    m_moveVel += (move * speed - m_moveVel) * (1.0f - std::exp(-kMoveResponse * dt));
+    // feel holds at any frame rate. Which rate it decays at is decided by
+    // whether anything is being asked for at all, not by whether the answer
+    // happens to be faster or slower: a soldier hauling themselves round onto
+    // a new heading is doing the work of starting, even though their speed
+    // never changed, and it should cost what starting costs.
+    const float response = pushing ? kMoveAccelRate : kMoveStopRate;
+    m_moveVel += (move * speed - m_moveVel) * (1.0f - std::exp(-response * dt));
     if (m_moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
         m_moveVel = Vector3::Zero;
     m_playerPos += m_moveVel * dt;
