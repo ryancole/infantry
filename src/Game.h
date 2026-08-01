@@ -258,13 +258,6 @@ private:
     // out of the world for the respawn wait, so bullets, blasts and NPC AI
     // all have nothing to aim at until they're back.
     bool PlayerOnField() const;
-    // The side the player isn't on. A two-team arena, so "the other team" is a
-    // single answer rather than a list; when it isn't, this is the one place
-    // that has to learn otherwise.
-    int EnemyTeam() const
-    {
-        return (m_team + 1) % static_cast<int>(m_teamSpawns.size());
-    }
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)

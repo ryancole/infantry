@@ -6,8 +6,15 @@
 #include <DirectXMath.h>
 #include <cstddef>
 
-// The heads-up display: one bottom-centered cluster of icon + value modules,
-// drawn in screen space over the finished frame.
+// The heads-up display: a bottom-centered cluster of icon + value modules for
+// what this soldier is carrying, and a roster in the top-right corner for how
+// the two sides are doing. Both drawn in screen space over the finished frame.
+//
+// They're apart because they answer different questions and are read at
+// different moments. The loadout is about you and is glanced at mid-fight; the
+// roster is about the match and is read between them — including, especially,
+// while dead. Putting the strength of both squads in the same row as the
+// magazine would have made the row wider without making either easier to find.
 //
 // It reads nothing but the snapshot below, which the game fills once a frame.
 // That keeps the layout free of gameplay entanglement — the numbers arrive
@@ -55,7 +62,16 @@ namespace Hud
         const Ability::Def* ability;
         float abilityFraction; // 0..1 through a use; < 0 when it isn't running
         float abilityCooldown; // seconds until it's ready again; 0 = now
-        int npcs;
+        // The roster, for the corner panel. Both counts include every soldier
+        // of that side standing — the player among their own — because the two
+        // rows are read against each other, and a friendly count that left the
+        // player out would say "outnumbered" every time it said "even". A side
+        // is short exactly when somebody on it is waiting to respawn, and that
+        // is the thing the panel is for.
+        int allies;
+        int enemies;
+        int teamSize; // slots a side fields; how many pips a row draws
+
         // The key-cap row above the panel, in draw order. It arrives whole
         // rather than being assembled here because half of it is now the
         // player's bindings and the other half — which of them are worth the

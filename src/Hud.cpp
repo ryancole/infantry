@@ -31,6 +31,17 @@ namespace
     constexpr int kMaxPips = 12;
     constexpr int kHealthSegments = 5; // 20 health each, so a chunk lost is a chunk gone
 
+    // The roster panel in the top-right corner. Its own scale of everything,
+    // one notch down from the loadout's: it's the secondary readout on the
+    // screen and drawing it at the same weight would make the eye choose.
+    constexpr float kTopMargin = 26.0f;
+    constexpr float kSideMargin = 26.0f;
+    constexpr float kRosterIconSize = 24.0f;
+    constexpr float kRosterValueSize = 21.0f;
+    constexpr float kRosterGap = 10.0f;    // icon -> count -> pips
+    constexpr float kRosterRowGap = 12.0f; // one side's row -> the other's
+    constexpr float kRosterPipsWidth = 68.0f;
+
     constexpr float kHintSize = 13.0f;
     constexpr float kHintGap = 15.0f; // hint row -> panel
     constexpr float kHintKeyPad = 7.0f;
@@ -61,6 +72,12 @@ namespace
     // module doesn't read as either of the things it sits between. Matches the
     // ring the game draws round a soldier using it.
     constexpr XMFLOAT4 kAbilityColor = { 0.35f, 0.85f, 0.70f, 1.0f };
+    // The two sides, in the colors the arena already marks them with: the ring
+    // the game draws under a squadmate, and the red everything hostile has
+    // been. Friend or foe is answered the same way whether it's read off the
+    // ground or out of the corner, which is the whole point of taking them from
+    // there rather than picking two that look nice together.
+    constexpr XMFLOAT4 kAllyColor = { 0.38f, 0.68f, 1.00f, 1.0f };
     constexpr XMFLOAT4 kContactColor = { 0.80f, 0.38f, 0.34f, 1.0f };
     constexpr XMFLOAT4 kSpentColor = { 0.32f, 0.36f, 0.44f, 1.0f }; // an empty slot's icon
 
@@ -415,9 +432,9 @@ void Hud::Render(Renderer& renderer, const State& st)
     grenade.value = std::to_string(st.grenades);
     grenade.valueColor = st.grenades > 0 ? kValueColor : kMutedColor;
 
-    // The class ability, after the standard issue and before the contact count:
-    // everything to its left is what every soldier carries, so the one thing
-    // that isn't shared sits at the end of the loadout rather than inside it.
+    // The class ability, last in the row: everything to its left is what every
+    // soldier carries, so the one thing that isn't shared sits at the end of
+    // the loadout rather than inside it.
     //
     // Three states, one module. Ready says so in a word — a number would be a
     // zero, and a zero next to an ammo count reads as empty. Running counts the
@@ -446,13 +463,7 @@ void Hud::Render(Renderer& renderer, const State& st)
                          : 1.0f;
     }
 
-    Module contacts;
-    contacts.icon = Icon::Contact;
-    contacts.iconColor = st.npcs > 0 ? kContactColor : kSpentColor;
-    contacts.value = std::to_string(st.npcs);
-    contacts.valueColor = st.npcs > 0 ? kValueColor : kMutedColor;
-
-    Module modules[6];
+    Module modules[5];
     size_t moduleCount = 0;
     const auto add = [&](const Module& m) { modules[moduleCount++] = m; };
     add(health);
@@ -461,7 +472,6 @@ void Hud::Render(Renderer& renderer, const State& st)
     add(grenade);
     if (st.ability)
         add(abilityModule);
-    add(contacts);
 
     // --- Layout ---
 
@@ -607,6 +617,87 @@ void Hud::Render(Renderer& renderer, const State& st)
         renderer.DrawScreenText(hint.label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
                                 Fade(kMutedColor, fade));
         hintX += renderer.MeasureScreenText(hint.label, hintSize) + kHintSpacing * s;
+    }
+
+    // --- Roster ---
+    //
+    // Top right: two rows, your side over theirs, each a soldier icon in that
+    // side's color, how many of it are standing, and a pip per slot on the
+    // roster. The pips are what make it readable without reading — five lit is
+    // a squad, two lit and three dark is a squad in trouble — and they're the
+    // same pips the magazine and the blade already use, because "how many of a
+    // fixed number are left" is the same question in all three places.
+    //
+    // Deliberately not faded during the respawn wait, unlike everything above.
+    // The loadout dims because it's describing kit nobody is holding; the
+    // roster is describing a fight that is still going on without the player,
+    // and the wait is exactly when they have nothing to do but read it.
+
+    const float rosterIcon = kRosterIconSize * s;
+    const float rosterValue = kRosterValueSize * s;
+    const float rosterGap = kRosterGap * s;
+    const float pipsW = kRosterPipsWidth * s;
+    const float rowH = std::max(rosterIcon, barH);
+
+    struct Side
+    {
+        int up;
+        XMFLOAT4 color;
+    };
+    const Side sides[2] = { { st.allies, kAllyColor }, { st.enemies, kContactColor } };
+
+    // One count column wide enough for either row, so the two pip strips line
+    // up under each other. A roster whose bars didn't share an edge would be a
+    // roster you had to read twice to compare.
+    std::string counts[2];
+    float countW = 0.0f;
+    for (int i = 0; i < 2; ++i)
+    {
+        counts[i] = std::to_string(std::max(sides[i].up, 0));
+        countW = std::max(countW, renderer.MeasureScreenText(counts[i], rosterValue));
+    }
+
+    const bool drawPips = st.teamSize > 0 && st.teamSize <= kMaxPips;
+    const float rosterContentW =
+        rosterIcon + rosterGap + countW + (drawPips ? rosterGap + pipsW : 0.0f);
+    const float rosterW = rosterContentW + pad * 2.0f;
+    const float rosterH = rowH * 2.0f + kRosterRowGap * s + pad * 2.0f;
+    const float rosterX = std::floor(w - kSideMargin * s - rosterW);
+    const float rosterY = std::floor(kTopMargin * s);
+
+    AppendRoundRect(tris, rosterX, rosterY, rosterW, rosterH, kPanelCorner * s, kPanelBg);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        const Side& side = sides[i];
+        const float rowTop = rosterY + pad + static_cast<float>(i) * (rowH + kRosterRowGap * s);
+        float rx = rosterX + pad;
+
+        // No rule between the rows, unlike the modules below. Those are six
+        // unrelated readouts that would run together without one; these are two
+        // halves of a comparison, already told apart by color, and a line drawn
+        // faintly enough not to cut the panel in two is a line nobody can see.
+
+        // A side wiped out greys out rather than vanishing, the same way a
+        // spent grenade does: the slots are still on the roster, there's just
+        // nobody standing in them this second.
+        const XMFLOAT4 iconColor = side.up > 0 ? side.color : kSpentColor;
+        DrawIcon(tris, Icon::Contact, rx, rowTop + (rowH - rosterIcon) * 0.5f, rosterIcon,
+                 iconColor);
+        rx += rosterIcon + rosterGap;
+
+        renderer.DrawScreenText(counts[i], rx, rowTop + (rowH - rosterValue) * 0.5f, rosterValue,
+                                side.up > 0 ? kValueColor : kMutedColor);
+        rx += countW + rosterGap;
+
+        if (!drawPips)
+            continue;
+
+        const float pipW = (pipsW - kPipGap * s * (st.teamSize - 1)) / st.teamSize;
+        const float pipY = rowTop + (rowH - barH) * 0.5f;
+        for (int p = 0; p < st.teamSize; ++p)
+            AppendRoundRect(tris, rx + p * (pipW + kPipGap * s), pipY, pipW, barH, barH * 0.35f,
+                            p < side.up ? side.color : kTrack);
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
