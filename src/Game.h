@@ -24,9 +24,15 @@
 #include <unordered_map>
 #include <vector>
 
-// Prototype gameplay: one soldier on a grid arena, screen-relative WASD
+// Prototype gameplay: two squads on a grid arena, screen-relative WASD
 // movement, mouse aim, and projectiles. This is the seed for Infantry-style
 // systems (vehicles, weapons, teams, net play) to grow from.
+//
+// Everyone on the field but the local player is an NPC today, but the shape of
+// the thing is already the shape a server would keep: each side has a fixed
+// number of slots, a slot that empties is refilled after a wait, and the local
+// player is simply the one slot this machine is driving. When soldiers start
+// arriving over a socket, they take slots that the AI is filling now.
 class Game
 {
 public:
@@ -159,6 +165,21 @@ private:
         float yaw;
     };
 
+    // A slot on a team waiting to be filled again. Queued when a soldier dies
+    // and cashed in kRespawnDelay later, which is the same wait the player
+    // serves — a squad is five soldiers, and the only time it isn't is the
+    // moment after one of them is killed.
+    //
+    // It's a queue rather than one timer per side because each death should
+    // start its own clock: a team that loses three at once has three soldiers
+    // coming back at the times they died, not one every five seconds while the
+    // other side runs it down.
+    struct Reinforcement
+    {
+        int team;
+        float timer;
+    };
+
     // Fires `weapon`'s projectile from `from` along `dir`. Bullets always fly
     // at full speed; lobbed shots (grenades) shorten their toss to come down
     // `targetDist` away, up to the weapon's max range.
@@ -181,6 +202,24 @@ private:
     // around so the per-frame list costs no allocation.
     Ability::Scene AbilityScene();
     void SpawnNpc(int team);
+    // Puts both sides on the field at full strength. Called once, when the
+    // player commits to a class, because that's the moment the match starts —
+    // nothing simulates until then and there's nobody for a squad to fight.
+    void FillRosters();
+    // Runs the queue of waiting slots down and puts a soldier back on the field
+    // when one comes due, unless the side is somehow already up to strength.
+    void UpdateReinforcements(float dt);
+    // How many computer soldiers `team` is meant to be fielding: its share of
+    // the roster, less the slot the local player holds on their own side. The
+    // player's slot is theirs whether they're alive or waiting to respawn, so
+    // nothing fills in for them and nothing has to be sent away when they're
+    // back.
+    int NpcQuota(int team) const
+    {
+        return kTeamSize - (team == m_team ? 1 : 0);
+    }
+    // Living computer soldiers currently on `team`.
+    int NpcCount(int team) const;
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
     // Turns whatever died this frame into a corpse and takes it off the
@@ -250,6 +289,13 @@ private:
     // short enough that watching it out isn't the game. A placeholder value
     // until there's something to tune it against (round length, ticket bleed).
     static constexpr float kRespawnDelay = 5.0f;
+    // Soldiers a side puts on the field, the local player included. Five a side
+    // is the smallest number that makes the arena read as a fight rather than a
+    // duel: enough that a flank is covered by somebody, few enough that any one
+    // soldier going down is felt. It's a constant rather than a level property
+    // because it's a statement about the game mode, and there's only one of
+    // those so far; when a server decides team sizes, this is what it sets.
+    static constexpr int kTeamSize = 5;
 
     Physics m_physics;
     Sound m_sound;
@@ -319,7 +365,13 @@ private:
     Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 
     std::vector<Npc> m_npcs;
-    int m_nextNpcClass = 0; // spawns cycle through the class table
+    // Where each side has got to in the class table. Per team rather than
+    // global so both squads are dealt from the same rotation and come out with
+    // the same makeup, however many soldiers each of them is owed — which is
+    // not the same number, since the player fills one of the slots on their
+    // own side. Sized to the level's team count in LoadContent.
+    std::vector<int> m_nextNpcClass;
+    std::vector<Reinforcement> m_reinforcements; // slots waiting to be refilled
     std::mt19937 m_rng{ std::random_device{}() };
 
     std::vector<Projectile> m_projectiles;

@@ -11,6 +11,7 @@ Prototype scaffold with a working game loop:
 - Fixed-angle isometric camera (orthographic, smoothed follow, mouse-wheel zoom)
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
+- Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is the shape a server would keep, and the local player is simply the one slot this machine is playing
 - A soldier turns rather than pivots: the facing chases the cursor at a fixed rate instead of snapping to it, so getting behind someone is worth the trip. Holding steady drops both the walk and the turn to a fraction of normal — the gun sits where it's put, at the price of being able to leave
 - Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
 - One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks

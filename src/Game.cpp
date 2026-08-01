@@ -366,6 +366,7 @@ void Game::LoadContent(Renderer& renderer)
         m_teamSpawns.push_back(spawn.pos);
     m_team = std::min(m_team, static_cast<int>(m_teamSpawns.size()) - 1);
     m_playerPos = m_teamSpawns[m_team];
+    m_nextNpcClass.assign(m_teamSpawns.size(), 0);
 
     // Static floor grid.
     const int half = static_cast<int>(m_arenaHalf);
@@ -482,6 +483,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_meleeCooldown = 0.0f;
             m_ability = {};
             m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
+            // The rest of the match turns up with the player. The class pick is
+            // the last thing standing between the menu and the arena, so it's
+            // also the first moment there's anything for two squads to do.
+            FillRosters();
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
         }
@@ -509,6 +514,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_physics.Step(dt);
         UpdateProjectiles(dt);
         ReapDead();
+        UpdateReinforcements(dt);
         UpdateParticles(dt);
         UpdateCorpses(dt);
         if (m_respawnTimer <= 0.0f)
@@ -706,11 +712,14 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // --- NPCs: debug spawning and AI. Holding steady puts the soldier on the
-    // player's own team instead of the other one, which is the only way to get
-    // a squadmate onto the field so far — and the only way to have anything for
-    // the medic's dressing to reach. It's the steady control itself and not a
-    // second reading of the same key, so a player who moves steady somewhere
-    // else takes the spawn modifier with them ---
+    // player's own team instead of the other one. Both sides now come up to
+    // strength on their own, so this is no longer how a squadmate gets onto the
+    // field — it's how a side is put *over* strength, which is what testing a
+    // lopsided fight takes. A soldier spawned this way is a guest rather than a
+    // member: nothing replaces them when they die, because the roster they
+    // pushed past is what reinforcements count against. It's the steady control
+    // itself and not a second reading of the same key, so a player who moves
+    // steady somewhere else takes the spawn modifier with them ---
     if (m_binds.Pressed(input, Act::SpawnNpc) || input.padEvents.y == PadTracker::PRESSED)
         SpawnNpc(steady ? m_team : EnemyTeam());
     UpdateNpcs(dt);
@@ -719,6 +728,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     m_physics.Step(dt);
     UpdateProjectiles(dt);
     ReapDead();
+    UpdateReinforcements(dt);
     UpdateParticles(dt);
     UpdateCorpses(dt);
 
@@ -980,8 +990,8 @@ void Game::SpawnNpc(int team)
     // a hostile across the arena, so the two debug keys put soldiers where
     // those soldiers would actually have come from.
     Npc npc;
-    npc.cls = &kClassDefs[m_nextNpcClass];
-    m_nextNpcClass = (m_nextNpcClass + 1) % static_cast<int>(kClassCount);
+    npc.cls = &kClassDefs[m_nextNpcClass[team]];
+    m_nextNpcClass[team] = (m_nextNpcClass[team] + 1) % static_cast<int>(kClassCount);
     npc.team = team;
     npc.pos = m_teamSpawns[team];
     npc.pos.x += Rand(-2.0f, 2.0f);
@@ -996,6 +1006,41 @@ void Game::SpawnNpc(int team)
     npc.walkPhase = Rand(0.0f, XM_2PI); // desync strides across the squad
     npc.moveBlend = 0.0f;
     m_npcs.push_back(npc);
+}
+
+int Game::NpcCount(int team) const
+{
+    return static_cast<int>(std::count_if(m_npcs.begin(), m_npcs.end(), [team](const Npc& n) {
+        return n.team == team && n.hp > 0.0f;
+    }));
+}
+
+void Game::FillRosters()
+{
+    for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
+        for (int i = NpcCount(team); i < NpcQuota(team); ++i)
+            SpawnNpc(team);
+}
+
+void Game::UpdateReinforcements(float dt)
+{
+    // Two passes and a sweep, the way the dead are collected: the spawn has to
+    // happen between deciding a slot is due and forgetting about it, and doing
+    // all three in one loop would mean adding to one list while erasing from
+    // another.
+    for (Reinforcement& slot : m_reinforcements)
+        slot.timer -= dt;
+
+    for (const Reinforcement& slot : m_reinforcements)
+    {
+        // Counted fresh each time, so two slots coming due on the same frame
+        // both get filled — and neither does if a debug spawn has already put
+        // the side past its establishment while they were waiting.
+        if (slot.timer <= 0.0f && NpcCount(slot.team) < NpcQuota(slot.team))
+            SpawnNpc(slot.team);
+    }
+
+    std::erase_if(m_reinforcements, [](const Reinforcement& slot) { return slot.timer <= 0.0f; });
 }
 
 void Game::UpdateNpcs(float dt)
@@ -1028,8 +1073,10 @@ void Game::UpdateNpcs(float dt)
         // anyone out at all is a fact about the world, so it's here.
         //
         // It runs a sight test per candidate, which makes this quadratic in the
-        // squad size; at the handful of soldiers a debug key puts on the field
-        // that's cheaper than the bookkeeping to avoid it.
+        // number of soldiers on the field; at two squads of five that's a
+        // hundred segment tests a frame, which is cheaper than the bookkeeping
+        // to avoid it. The number to watch it against is kTeamSize, and it will
+        // want revisiting long before this arena holds a proper Infantry zone.
         m_contacts.clear();
         const Vector2 npcXZ = { npc.pos.x, npc.pos.z };
         const auto sight = [&](const Vector3& pos) {
@@ -1437,8 +1484,15 @@ void Game::ReapDead()
 {
     for (const Npc& npc : m_npcs)
         if (npc.hp <= 0.0f)
+        {
             SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color,
                         npc.knock);
+            // The soldier is gone, but the slot they held isn't: their side is
+            // owed a body, and it comes back on the same clock the player's
+            // does. Whether it's actually sent is settled when the wait is up
+            // rather than here — see UpdateReinforcements.
+            m_reinforcements.push_back({ npc.team, kRespawnDelay });
+        }
     std::erase_if(m_npcs, [](const Npc& n) { return n.hp <= 0.0f; });
 }
 
