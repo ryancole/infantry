@@ -23,6 +23,7 @@ namespace
     // place for when there is one.
     constexpr int kGrenadeKey = 'F';
     constexpr int kMeleeKey = 'V';
+    constexpr int kAbilityKey = 'Q';
     constexpr int kReloadKey = 'R';
     constexpr int kSpawnNpcKey = 'N';
     constexpr int kSteadyKey = VK_SHIFT; // either shift, alongside the pad's left trigger
@@ -170,6 +171,13 @@ namespace
     // see is where the blade went, not a standing promise of where it would go.
     constexpr XMFLOAT4 kMeleeArcColor = { 0.82f, 0.90f, 1.00f, 0.85f };
     constexpr float kMeleeFlashTime = 0.13f;
+    // A running ability draws a ring closing round the user's feet, one sweep
+    // over its whole duration. It's deliberately something an enemy can read
+    // too: a medic patching up is a medic who can't shoot back for the next two
+    // seconds, and that's worth knowing from across the arena. The green is the
+    // HUD's health color, because so far the only ability there is is a heal.
+    constexpr XMFLOAT4 kAbilityRingColor = { 0.35f, 0.85f, 0.70f, 0.75f };
+    constexpr float kAbilityRingRadius = 0.9f; // just clear of the soldier's shoulders
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -429,6 +437,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_meleeCharges = kMelee.charges;
             m_meleeRecover = 0.0f;
             m_meleeCooldown = 0.0f;
+            m_abilityTime = 0.0f;
+            m_abilityCooldown = 0.0f;
             m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
@@ -550,6 +560,15 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         BeginReload();
     }
 
+    // Set by anything that puts a hand back on a weapon this frame. The class
+    // ability below reads it for both halves of one rule: it drops a dressing
+    // that was running, and it stops one from starting. Without the second
+    // half, a player leaning on the trigger could press the ability key, start
+    // something, and have it cancelled by their own gunfire on the same frame
+    // — paying the whole cooldown for a dressing that never got a frame to
+    // itself, with nothing on screen long enough to explain why.
+    bool weaponUsed = false;
+
     // --- Firing ---
     m_fireCooldown -= dt;
     if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
@@ -558,6 +577,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         SpawnShot(m_class->primary, m_playerPos, m_aimDir, m_team, m_aimDist);
         m_fireCooldown = m_class->primary.fireInterval;
+        weaponUsed = true;
         // Empty: reload without being asked. Holding an empty weapon is never
         // the play, so making the player press for it would only cost them the
         // time it took to notice.
@@ -577,6 +597,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         SpawnShot(kGrenade, m_playerPos, m_aimDir, m_team, m_aimDist);
         --m_grenades;
+        weaponUsed = true;
     }
 
     // --- Melee: the blade, for the range the primary can't cover. Its charges
@@ -610,6 +631,48 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_meleeCooldown <= 0.0f && m_meleeCharges > 0)
     {
         SwingMelee();
+        weaponUsed = true;
+    }
+
+    // --- Ability: the one thing this class can do that the others can't. Off
+    // the magazine like the grenade and the blade, so a reload never takes it
+    // away, and on a press edge rather than a hold — it isn't a trigger, and a
+    // second press is what stops it.
+    //
+    // Nothing else in the loadout stops for it: the medic dressing a wound can
+    // still run, still turn, still be shot at. What it costs is the weapon —
+    // firing, throwing or swinging drops the dressing where it stands. Since
+    // the cooldown is measured from the end rather than the start, being
+    // interrupted costs the whole ability rather than the part that was left,
+    // which is what makes deciding to see it out a decision.
+    //
+    // It goes last, after everything a weapon can do this frame, so that a
+    // press arriving on the same frame as a shot is a press that never started
+    // anything, rather than one that started something and immediately paid for
+    // losing it ---
+    const AbilityDef& ability = m_class->ability;
+    m_abilityCooldown = std::max(0.0f, m_abilityCooldown - dt);
+    const bool abilityPressed =
+        input.KeyPressed(kAbilityKey) || input.padEvents.b == PadTracker::PRESSED;
+    if (weaponUsed || abilityPressed)
+        EndAbility(); // a no-op unless something was running
+    if (m_abilityTime > 0.0f)
+    {
+        const float step = std::min(dt, m_abilityTime);
+        m_abilityTime -= step;
+        // Paid out by the second, not banked until the end. A dressing that
+        // only settled up on completion would be worth exactly nothing in the
+        // moment it's most likely to be interrupted, which is the moment it's
+        // most likely to be needed.
+        if (ability.kind == AbilityKind::Heal)
+            m_playerHp =
+                std::min(kMaxHealth, m_playerHp + ability.amount * step / ability.duration);
+        if (m_abilityTime <= 0.0f)
+            EndAbility();
+    }
+    else if (abilityPressed && !weaponUsed)
+    {
+        BeginAbility();
     }
 
     // --- NPCs: debug spawning and AI ---
@@ -635,6 +698,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_reloadTimer = 0.0f;
         m_meleeRecover = 0.0f;
         m_meleeFlash = 0.0f;
+        // A dressing dies with the soldier too, and the ring it was drawing
+        // goes with it. It doesn't pay the cooldown on the way out — the
+        // respawn hands back a fresh loadout regardless — so the timer is
+        // simply dropped rather than ended.
+        m_abilityTime = 0.0f;
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
@@ -713,6 +781,32 @@ void Game::SwingMelee()
     PlaySoundAt(target->hp <= 0.0f ? "death" : "hit", target->pos);
 }
 
+void Game::BeginAbility()
+{
+    const AbilityDef& ability = m_class->ability;
+    if (ability.kind == AbilityKind::None || m_abilityTime > 0.0f || m_abilityCooldown > 0.0f)
+        return;
+    // Nothing to dress. Spending fourteen seconds of cooldown on health the
+    // soldier already has is never what the key meant, so it does nothing at
+    // all rather than something worthless — the same courtesy BeginReload does
+    // for a full magazine.
+    if (ability.kind == AbilityKind::Heal && m_playerHp >= kMaxHealth)
+        return;
+
+    m_abilityTime = ability.duration;
+    // At the listener, not in the world: it's the player's own kit, heard the
+    // way the reload is.
+    m_sound.Play("heal");
+}
+
+void Game::EndAbility()
+{
+    if (m_abilityTime <= 0.0f)
+        return;
+    m_abilityTime = 0.0f;
+    m_abilityCooldown = m_class->ability.cooldown;
+}
+
 void Game::Respawn(IsoCamera& camera)
 {
     m_playerHp = kMaxHealth;
@@ -723,6 +817,8 @@ void Game::Respawn(IsoCamera& camera)
     m_meleeCharges = kMelee.charges;    // all three swings, likewise
     m_meleeRecover = 0.0f;
     m_meleeCooldown = 0.0f;
+    m_abilityTime = 0.0f;               // and the ability off its cooldown, however it was left
+    m_abilityCooldown = 0.0f;
     m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
     m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
     m_moveVel = Vector3::Zero;          // and without the momentum they died carrying
@@ -1608,6 +1704,20 @@ void Game::Render(Renderer& renderer)
                       color);
         }
 
+        // A running ability, drawn as a ring closing round the user's feet over
+        // its whole duration. Unlike the melee arc this is a promise rather than
+        // a record: it says how much of the thing is left to run, which is the
+        // only number that matters while it runs — for the player deciding
+        // whether they can afford the rest of it, and for anyone watching who
+        // now knows exactly how long this soldier can't shoot back.
+        if (m_abilityTime > 0.0f && m_class->ability.duration > 0.0f)
+        {
+            const float done = 1.0f - m_abilityTime / m_class->ability.duration;
+            const Vector3 center(m_playerPos.x, kAimRingHeight, m_playerPos.z);
+            AppendArc(m_scratch, center, kAbilityRingRadius, -XM_PIDIV2, XM_2PI * done, 28,
+                      kAbilityRingColor);
+        }
+
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                 identity);
     }
@@ -1648,6 +1758,16 @@ void Game::RenderHud(Renderer& renderer)
             ? 1.0f - m_meleeRecover / kMelee.recoverTime
             : -1.0f;
     hud.grenades = m_grenades;
+    // The ability module is the class's own, so it's handed over as the whole
+    // definition: the HUD needs its name for the key hint and its cooldown to
+    // turn the seconds left into a bar. A class without one hands over nothing
+    // and gets no module, rather than getting an empty one — an ability isn't
+    // equipment that ran out.
+    hud.ability = m_class->ability.kind != AbilityKind::None ? &m_class->ability : nullptr;
+    hud.abilityFraction = m_abilityTime > 0.0f && m_class->ability.duration > 0.0f
+                              ? 1.0f - m_abilityTime / m_class->ability.duration
+                              : -1.0f;
+    hud.abilityCooldown = m_abilityCooldown;
     hud.npcs = static_cast<int>(m_npcs.size());
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;

@@ -161,3 +161,29 @@ for ($i = 0; $i -lt $n; $i++) {
     $swing[$i] = 1.1 * $hp * $env * $env
 }
 Write-Wav (Join-Path $OutDir "swing.wav") $swing
+
+# heal: the medic's field dressing going on. An injector hiss off the top of a
+# soft two-note rise, so it reads as something being given rather than something
+# fired — nothing in it clicks, cracks or seats, which is what keeps it clear of
+# the reload it will often be heard next to. It plays once, at the start of the
+# dressing: what says the dressing is still running is the ring on the floor and
+# the health bar climbing, and a sustained tone under a firefight would be one
+# more thing to hear over rather than one more thing heard.
+$n = [int](0.34 * $SampleRate)
+$heal = [float[]]::new($n)
+$phase = 0.0
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    # Two notes a fifth apart, the second arriving a third of the way in, both
+    # swelling rather than striking.
+    $tone = [Math]::Sin(2.0 * [Math]::PI * 520.0 * $t)
+    if ($t -gt 0.11) { $tone += [Math]::Sin(2.0 * [Math]::PI * 780.0 * ($t - 0.11)) }
+    $swell = [Math]::Min(1.0, $t / 0.05) * [Math]::Exp(-$t * 5.5)
+    # The hiss of the injector itself: low-passed noise, gone before the notes
+    # are, so it sits at the front of the sound like a plunger going down.
+    $lp = 0.6 * $lp + 0.4 * (2.0 * $rng.NextDouble() - 1.0)
+    $hiss = $lp * [Math]::Exp(-$t * 16.0)
+    $heal[$i] = 0.32 * $tone * $swell + 0.22 * $hiss
+}
+Write-Wav (Join-Path $OutDir "heal.wav") $heal

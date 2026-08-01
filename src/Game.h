@@ -143,6 +143,13 @@ private:
     // and strikes the nearest enemy standing in it, if any. The charge goes
     // whether or not it lands.
     void SwingMelee();
+    // Starts the class's ability, if it has one, it's off cooldown, and there's
+    // anything for it to do. A no-op otherwise, so the key can be leaned on.
+    void BeginAbility();
+    // Ends a run of the ability and starts its cooldown. Idempotent, because
+    // every way out of an ability comes through here — running out, being
+    // cancelled, dying — and only the first of them should count.
+    void EndAbility();
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
@@ -239,6 +246,12 @@ private:
     float m_meleeCooldown = 0.0f; // time until the next swing
     float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
     Vector3 m_meleeSwingDir = Vector3::UnitX;
+    // The class ability, on its own key and its own clock — off the magazine
+    // like the grenade and the blade, so a reload never takes it away. Only one
+    // of the two timers ever runs: the ability is doing its work, or it's
+    // coming back. Both are zero for a class that hasn't got one.
+    float m_abilityTime = 0.0f;     // > 0 while it's running
+    float m_abilityCooldown = 0.0f; // > 0 while it's recharging
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;

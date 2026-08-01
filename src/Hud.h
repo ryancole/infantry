@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PlayerClass.h"
 #include "Renderer.h"
 
 #include <DirectXMath.h>
@@ -11,7 +12,9 @@
 // That keeps the layout free of gameplay entanglement — the numbers arrive
 // already decided, so the only thing this file is responsible for is how they
 // look — and means a second consumer (a spectator view, a replay) can put the
-// same readout on screen without owning a Game.
+// same readout on screen without owning a Game. The class tables it leans on
+// are the same kind of thing: pure data with no simulation behind it, and the
+// place a class's own facts (its color, its ability) are already written down.
 namespace Hud
 {
     struct State
@@ -31,6 +34,15 @@ namespace Hud
         // at once and neither can stand in for the other.
         float meleeRecoverFraction;
         int grenades;
+        // The class ability, or null for a class that hasn't got one — which
+        // leaves the module out of the cluster entirely rather than drawing an
+        // empty slot, since an ability isn't kit that can be spent. The
+        // definition comes over whole because the HUD needs more than a number
+        // off it: the name goes on the key hint, and the cooldown is what turns
+        // the seconds below into a bar.
+        const AbilityDef* ability;
+        float abilityFraction; // 0..1 through a use; < 0 when it isn't running
+        float abilityCooldown; // seconds until it's ready again; 0 = now
         int npcs;
         DirectX::XMFLOAT4 accent; // class color, for the panel's edge light
         // False during the respawn wait: the loadout on show isn't in anyone's

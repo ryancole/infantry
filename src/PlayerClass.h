@@ -5,8 +5,8 @@
 
 // The soldier archetypes a player must pick from before spawning. Pure data,
 // so the selection screen and gameplay code share one source of truth. Stats
-// only cover what the prototype simulates today (movement + projectiles);
-// health, abilities, and equipment slots layer on once those systems exist.
+// only cover what the prototype simulates today (movement, projectiles, and
+// one ability per class); equipment slots layer on once those systems exist.
 enum class ClassId
 {
     Marine,
@@ -64,6 +64,64 @@ struct MoveDef
     float stop;  // 1/s; higher plants harder
 };
 
+// The one thing a class can do that no other class can. Everything else in this
+// file is standard issue with the numbers moved around — the same shape of
+// rifle, the same grenade, the same blade — so a class is currently a stat line
+// and not a job. This is where that changes.
+//
+// One ability, on one key, on one clock. A soldier with three buttons is a
+// soldier you have to study before you can play them, and the whole promise of
+// picking one off a card is that you already know what you got.
+//
+// `kind` says what the ability does; the numbers under it are read by that kind
+// and mean nothing without it. Only the medic has one so far, so this is a
+// one-entry enum next to the None the other three carry — and that None isn't a
+// placeholder for a system that hasn't landed, it's an accurate statement of
+// what those three classes are today.
+enum class AbilityKind
+{
+    None,
+    // Puts `amount` health back into the user over `duration` seconds,
+    // delivered by the second rather than in a lump at the end.
+    Heal,
+};
+
+struct AbilityDef
+{
+    AbilityKind kind;
+    const char* name; // uppercase, for the class card and the key hint
+    float duration;   // seconds it runs for; must be > 0 for any kind but None
+    // Measured from when the ability *ends*, not from when it started, so being
+    // cut short costs the whole cooldown rather than a shortened one. Nothing
+    // else in the loadout works this way, and it's why letting go of the
+    // ability is a decision instead of a free look at it.
+    float cooldown;
+    float amount; // what it delivers over the duration; read by the kind
+};
+
+inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.0f };
+
+// The medic's, and the first ability in the game. It heals the medic and nobody
+// else, because there is nobody else yet — every other soldier on the field is
+// an enemy. When teammates exist this is the ability that should reach them;
+// until then a self-dressing is the honest version of it, and it's the one that
+// can actually be played against the arena as it stands.
+//
+// Sixty health over two and a half seconds is most of a body brought back, and
+// far faster than the fourteen-second wait says it should be — which is the
+// point. The ability isn't rationed by how much it gives, it's rationed by when
+// a medic can afford to give it: the dressing drops the moment they fire,
+// throw, or swing, so using it means choosing to be unarmed in the middle of a
+// fight they're already losing. Everything else stays available — the medic can
+// still run, still turn, still be shot at — because a class built to cross open
+// ground shouldn't be rooted by its own ability. What it hands the player is the
+// same question every time: break contact and come back whole, or hold the
+// trigger and stay hurt.
+inline constexpr AbilityDef kFieldDressing = {
+    // kind               name              duration cooldown amount
+    AbilityKind::Heal, "FIELD DRESSING",    2.5f,    14.0f,   60.0f
+};
+
 struct ClassDef
 {
     const char* name;  // uppercase: the debug line font has no lowercase
@@ -71,6 +129,7 @@ struct ClassDef
     DirectX::XMFLOAT4 color; // player body + UI accent
     MoveDef move;
     WeaponDef primary;
+    AbilityDef ability;
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
@@ -109,11 +168,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // under six tenths (grenadier), against a soldier 0.8 wide — so the spread
     // between the lightest class and the heaviest is roughly a third of a body.
     // It is meant to be felt in the hands rather than seen from the camera.
-    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false } },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false } },
-    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false } },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  } },
+    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, kNoAbility },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing },
+    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, kNoAbility },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, kNoAbility },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
