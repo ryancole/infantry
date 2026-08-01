@@ -49,12 +49,11 @@ namespace
     // blend rate eases the walking pose in/out over ~1/8th of a second.
     constexpr float kStrideRate = 2.2f;
     constexpr float kMoveBlendRate = 8.0f;
-    constexpr float kHealthBarY = 1.42f; // clears the helmet and antenna tip
 
     // Bounding sphere used to skip soldiers that fall outside the viewport.
-    // Generous on purpose: it has to cover the model at full stride and the
-    // health bar floating above the helmet, and popping in at the screen edge
-    // is far worse than submitting a few extra draws.
+    // Generous on purpose: it has to cover the model at full stride, and
+    // popping in at the screen edge is far worse than submitting a few extra
+    // draws.
     constexpr float kSoldierBoundsY = 0.7f;
     constexpr float kSoldierBoundsRadius = 1.2f;
 
@@ -148,8 +147,8 @@ namespace
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
 
     // Appends a solid cube with fixed per-face shading. Units and obstacles
-    // moved to the renderer's lit shapes; this remains for overlay-style
-    // readouts (NPC health bars) that shouldn't respond to scene lighting.
+    // moved to the renderer's lit shapes; this remains for effects (impact
+    // debris) that shouldn't respond to scene lighting.
     void AppendCube(std::vector<Vertex>& out, const XMFLOAT3& center, const XMFLOAT3& size,
                     const XMFLOAT4& color)
     {
@@ -1389,19 +1388,6 @@ void Game::Render(Renderer& renderer)
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
         DrawSoldier(renderer, npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color);
-
-        // Health bar: a thin slab that shrinks toward its left edge and shifts
-        // green -> red, so weapon damage is readable per hit. Stays a
-        // vertex-color cube: it's a readout, not a lit object. Undamaged
-        // soldiers show no bar at all, so a full row of them reads as clean
-        // silhouettes and any bar on screen means something took a hit.
-        if (npc.hp >= kMaxHealth)
-            continue;
-        const float frac = std::max(npc.hp, 0.0f) / kMaxHealth;
-        const float barW = 0.9f * frac;
-        const XMFLOAT4 barColor = { 0.9f * (1.0f - frac), 0.8f * frac, 0.1f, 1.0f };
-        AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kHealthBarY, npc.pos.z },
-                   { barW, 0.08f, 0.08f }, barColor);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
     // with every segment placed by the physics body it was built from. Same
