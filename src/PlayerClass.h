@@ -167,10 +167,17 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // in the middle of both, and is still the class the others are read
     // against.
     //
-    // Coast on release runs from about a third of a unit (sniper) to a little
-    // under six tenths (grenadier), against a soldier 0.8 wide — so the spread
-    // between the lightest class and the heaviest is roughly a third of a body.
-    // It is meant to be felt in the hands rather than seen from the camera.
+    // The rates are times, not distances, so they say the same thing at any
+    // top speed: a released key still settles in about a twentieth of a second
+    // (sniper) to a thirteenth (grenadier), and that ordering is the weight.
+    // What the ground covered in that time is depends on the speed: at the
+    // speeds below, coast on release runs from about a sixth of a unit
+    // (sniper) to a little under three tenths (grenadier), against a soldier
+    // 0.8 wide — so the spread between the lightest class and the heaviest is
+    // roughly a sixth of a body. It is meant to be felt in the hands rather
+    // than seen from the camera. Should the speeds move again, these distances
+    // move with them and the rates do not; bringing the rates along is what
+    // holds the coast where it is.
     //
     // Two of the colors moved when the armor became the team's. The sniper's
     // blue and the grenadier's orange were the marks that sat nearest the sides
@@ -179,10 +186,10 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
     // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
