@@ -18,7 +18,25 @@ if (-not (Get-Command fxc.exe -ErrorAction SilentlyContinue)) {
     if ($fxc) { $env:Path = "$($fxc.DirectoryName);$env:Path" }
 }
 
-cmake -S $root -B $buildDir -A x64
+# -A only applies to a fresh configure. Re-passing it at an existing build
+# directory is what CMake compares against the cache, and any cache configured
+# without it (a bare `cmake -S . -B build`, or an IDE that configured for us)
+# stores an empty platform and fails the comparison — even though VS 2019 and
+# up already default to x64. So it's set once, when there's nothing to conflict
+# with, and left out of every reconfigure after that.
+$fresh = -not (Test-Path (Join-Path $buildDir 'CMakeCache.txt'))
+if ($fresh) { cmake -S $root -B $buildDir -A x64 } else { cmake -S $root -B $buildDir }
+
+# A cache can still be unusable — a moved source tree, a Visual Studio that has
+# been upgraded out from under it — and that's not something to make the user
+# diagnose: the build directory is entirely derived, so it's thrown away and
+# configured from scratch. Only on a reconfigure; a fresh configure that fails
+# has a real problem in it, and retrying would just fail the same way.
+if ($LASTEXITCODE -ne 0 -and -not $fresh) {
+    Write-Host "`nConfigure failed against the existing cache; reconfiguring from scratch." -ForegroundColor Yellow
+    Remove-Item -Recurse -Force (Join-Path $buildDir 'CMakeCache.txt'), (Join-Path $buildDir 'CMakeFiles') -ErrorAction SilentlyContinue
+    cmake -S $root -B $buildDir -A x64
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # DirectXTK12's CMake launches CompileShaders.cmd via `cmake -E env`, which
