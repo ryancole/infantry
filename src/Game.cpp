@@ -51,6 +51,17 @@ namespace
     constexpr float kStrideRate = 2.2f;
     constexpr float kMoveBlendRate = 8.0f;
 
+    // A soldier carries their own weight: the walk chases the keys rather than
+    // being them, so starting takes a step to get going and stopping costs
+    // about half a body length of coast. The time constant is short enough
+    // that a dodge still answers on the frame it's asked for — what it buys is
+    // that a direction change reads as one, and that letting go looks like a
+    // man arriving somewhere instead of a switch being thrown. Below the floor
+    // speed the drift is snapped away, so a released key settles rather than
+    // creeping on forever.
+    constexpr float kMoveResponse = 20.0f;  // 1/s; ~0.05s to answer the keys
+    constexpr float kMoveStopSpeed = 0.1f;  // units per second
+
     // Turning is not free: the soldier's facing chases the aim direction at a
     // fixed angular rate rather than snapping to it, so whipping the cursor
     // across the screen costs a moment spent pointed the wrong way. A full
@@ -457,19 +468,28 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveRight += input.pad.thumbSticks.leftX;
 
     Vector3 move = upG * moveUp + rightG * moveRight;
-    const bool moving = move.LengthSquared() > 1e-10f;
     const float speed = m_class->moveSpeed * (steady ? kSteadyMoveScale : 1.0f);
-    if (moving)
-    {
+    if (move.LengthSquared() > 1e-10f)
         move.Normalize();
-        m_playerPos += move * (speed * dt);
-    }
+    else
+        move = Vector3::Zero;
+
+    // The keys ask for a velocity; the body eases onto it. Framed as a decay
+    // toward the wanted velocity rather than a step of acceleration so the
+    // feel holds at any frame rate.
+    m_moveVel += (move * speed - m_moveVel) * (1.0f - std::exp(-kMoveResponse * dt));
+    if (m_moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
+        m_moveVel = Vector3::Zero;
+    m_playerPos += m_moveVel * dt;
     ResolveObstacles(m_playerPos);
 
     // Stride off the speed actually travelled, not the class's, so the feet
-    // keep up with the ground at either pace instead of skating over it.
-    if (moving)
-        m_walkPhase += speed * kStrideRate * dt;
+    // keep up with the ground at either pace instead of skating over it — and
+    // so the legs keep walking through the coast rather than stopping with the
+    // key while the body is still sliding.
+    const float travelSpeed = m_moveVel.Length();
+    const bool moving = travelSpeed > 0.0f;
+    m_walkPhase += travelSpeed * kStrideRate * dt;
     m_moveBlend = std::clamp(m_moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
                              0.0f, 1.0f);
 
@@ -695,6 +715,7 @@ void Game::Respawn(IsoCamera& camera)
     m_meleeCooldown = 0.0f;
     m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
     m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
+    m_moveVel = Vector3::Zero;          // and without the momentum they died carrying
     m_phase = Phase::Playing;
     // A cut, not a sweep: the spawn is somewhere else entirely, and panning
     // the whole arena to get there would take longer than the wait did.
