@@ -113,6 +113,13 @@ public:
                         const DirectX::XMFLOAT4& color);
     float MeasureScreenText(std::string_view text, float size) const;
 
+    // Queues alpha-blended screen-space triangles in pixel coordinates (x
+    // right, y down, z ignored), drawn at EndFrame between the post chain and
+    // the text. Overlay art built from these — the HUD — therefore escapes
+    // bloom and the death desaturation, the same way the text already does, and
+    // sits under it. Depth isn't tested: submission order is draw order.
+    void DrawScreenTriangles(const Vertex* verts, uint32_t count);
+
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
 
@@ -123,6 +130,7 @@ private:
 
     void CreateSizedResources();
     void CreateEffects();
+    void DrawScreenGeometry();
     void CreateFlatNormalTexture();
     void CreateSpriteResources();
     void CreateShapePrimitives();
@@ -157,6 +165,10 @@ private:
     std::unique_ptr<DirectX::BasicEffect> m_alphaLineEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
+    // Overlay geometry: no depth (nothing is bound by then) and straight-alpha
+    // blending, so a translucent HUD panel darkens what's behind it by exactly
+    // the alpha it asks for.
+    std::unique_ptr<DirectX::BasicEffect> m_screenTriEffect;
     std::unique_ptr<DirectX::PrimitiveBatch<Vertex>> m_batch;
     std::unique_ptr<DirectX::GeometricPrimitive> m_shapes[static_cast<size_t>(Shape::Count)];
 
@@ -195,6 +207,7 @@ private:
     std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
     std::unique_ptr<DirectX::SpriteFont> m_font;
     std::vector<TextDraw> m_textDraws;
+    std::vector<Vertex> m_screenTris;
     // Metrics of the baked 'X' glyph, so `size` maps to capital height.
     float m_fontCapHeight = 1.0f;
     float m_fontCapOffsetY = 0.0f;

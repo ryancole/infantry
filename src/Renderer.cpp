@@ -152,6 +152,7 @@ void Renderer::Shutdown()
     m_alphaLineEffect.reset();
     m_modelEffect.reset();
     m_texModelEffect.reset();
+    m_screenTriEffect.reset();
     m_flatNormalTex.Reset();
     m_srvPile.reset();
     m_states.reset();
@@ -258,6 +259,19 @@ void Renderer::CreateEffects()
                                                          modelDesc);
     m_texModelEffect->EnableDefaultLighting();
     m_texModelEffect->DisableSpecular();
+
+    // Overlay geometry draws on the resolved backbuffer, where no depth buffer
+    // is bound — hence a render target state without one, and DepthNone.
+    // NonPremultiplied rather than the scene's premultiplied blend: the HUD
+    // writes plain colors with an alpha it expects to be honored.
+    const RenderTargetState screenRtState(kBackBufferFormat, DXGI_FORMAT_UNKNOWN);
+
+    const EffectPipelineStateDescription screenTriDesc(
+        &Vertex::InputLayout, CommonStates::NonPremultiplied, CommonStates::DepthNone,
+        CommonStates::CullNone, screenRtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_screenTriEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                      screenTriDesc);
+
 }
 
 // NormalMapEffect always samples a normal map, so parts without one get this
@@ -534,6 +548,38 @@ float Renderer::MeasureScreenText(std::string_view text, float size) const
     return XMVectorGetX(m_font->MeasureString(str.c_str())) * (size / m_fontCapHeight);
 }
 
+void Renderer::DrawScreenTriangles(const Vertex* verts, uint32_t count)
+{
+    m_screenTris.insert(m_screenTris.end(), verts, verts + count);
+}
+
+// Flushes everything queued by DrawScreenTriangles onto the backbuffer. Called
+// from EndFrame once the post chain has resolved there.
+void Renderer::DrawScreenGeometry()
+{
+    if (m_screenTris.empty())
+        return;
+
+    // Pixel space with the origin at the top-left corner and y running down —
+    // the coordinates the overlay is authored in, and the same convention the
+    // text uses.
+    const XMMATRIX proj =
+        XMMatrixOrthographicOffCenterLH(0.0f, static_cast<float>(m_width),
+                                        static_cast<float>(m_height), 0.0f, 0.0f, 1.0f);
+
+    if (m_screenTris.size() <= kBatchVertices)
+    {
+        m_screenTriEffect->SetMatrices(XMMatrixIdentity(), XMMatrixIdentity(), proj);
+        m_screenTriEffect->Apply(m_cmdList.Get());
+        m_batch->Begin(m_cmdList.Get());
+        m_batch->Draw(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, m_screenTris.data(),
+                      static_cast<uint32_t>(m_screenTris.size()));
+        m_batch->End();
+        ++m_drawCalls;
+    }
+    m_screenTris.clear();
+}
+
 void Renderer::BeginFrame(const float clearColor[4])
 {
     QueryPerformanceCounter(&m_frameStart);
@@ -568,6 +614,8 @@ void Renderer::BeginFrame(const float clearColor[4])
 void Renderer::EndFrame()
 {
     RunPostChain();
+
+    DrawScreenGeometry();
 
     if (!m_textDraws.empty())
     {

@@ -1,5 +1,6 @@
 #include "Game.h"
 
+#include "Hud.h"
 #include "Level.h"
 
 #include <algorithm>
@@ -1416,31 +1417,32 @@ void Game::Render(Renderer& renderer)
     RenderHud(renderer);
 }
 
-// Screen-space overlay: player health, grenade state, NPC count, perf counters,
-// control hints.
+// Screen-space overlay: the gameplay cluster (Hud.cpp), the respawn countdown,
+// and the perf counters.
 void Game::RenderHud(Renderer& renderer)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
     const float size = h * 0.024f;
-    const float y = h - size * 2.0f;
-    // Ammo is the one readout that changes shot to shot, so it says the two
-    // things a player acts on and nothing else: how many are left, and — while
-    // the magazine is out — that the trigger is dead for the moment. The
-    // remaining seconds aren't spelled out; the reload is short enough that a
-    // number to read would arrive after it mattered. Grenades read as a count,
-    // not a timer: there's nothing to wait out, so what matters is whether one
-    // is left.
-    const std::string ammo = m_reloadTimer > 0.0f
-                                 ? "RELOADING"
-                                 : std::to_string(m_ammo) + "/" +
-                                       std::to_string(m_class->primary.magazine);
-    const std::string status =
-        "HP " + std::to_string(static_cast<int>(std::ceil(std::max(m_playerHp, 0.0f)))) +
-        "   AMMO " + ammo +
-        "   NADES " + std::to_string(m_grenades) +
-        "   NPCS " + std::to_string(m_npcs.size());
-    renderer.DrawScreenText(status, size, y, size, kHudColor);
+
+    // The loadout readout is a snapshot handed over whole, so the HUD reads
+    // nothing out of the game itself. Reload progress runs 0 -> 1 rather than
+    // counting seconds down, because that's what a bar wants; a negative value
+    // means the magazine is in and there's nothing to wait for.
+    Hud::State hud = {};
+    hud.hp = m_playerHp;
+    hud.maxHp = kMaxHealth;
+    hud.ammo = m_ammo;
+    hud.magazine = m_class->primary.magazine;
+    hud.reloadFraction =
+        m_reloadTimer > 0.0f && m_class->primary.reloadTime > 0.0f
+            ? 1.0f - m_reloadTimer / m_class->primary.reloadTime
+            : -1.0f;
+    hud.grenades = m_grenades;
+    hud.npcs = static_cast<int>(m_npcs.size());
+    hud.accent = m_class->color;
+    hud.alive = m_phase == Phase::Playing;
+    Hud::Render(renderer, hud);
 
     // Respawn countdown, centered and big: while it's up there's nothing else
     // to do, so it's the one thing on screen worth reading. Counts whole
@@ -1466,8 +1468,4 @@ void Game::RenderHud(Renderer& renderer)
     std::snprintf(perf, sizeof(perf), "FRAME %.1fMS  CPU %.2fMS  DRAWS %u", m_frameMs,
                   renderer.CpuFrameMs(), renderer.LastDrawCalls());
     renderer.DrawScreenText(perf, size, size, perfSize, kHudHintColor);
-
-    const std::string hint = "R - RELOAD   F - GRENADE   N - SPAWN NPC";
-    renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,
-                            kHudHintColor);
 }
