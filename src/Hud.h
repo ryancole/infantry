@@ -4,6 +4,7 @@
 #include "Renderer.h"
 
 #include <DirectXMath.h>
+#include <cstddef>
 
 // The heads-up display: one bottom-centered cluster of icon + value modules,
 // drawn in screen space over the finished frame.
@@ -17,6 +18,17 @@
 // place a class's own facts (its color, its ability) are already written down.
 namespace Hud
 {
+    // One key cap and what it does. The key text arrives as a string rather
+    // than being written down here because the player owns their layout now:
+    // what RELOAD is spelled with is a fact about their bindings, and this file
+    // has no business holding a second opinion about it. What the key *does* is
+    // still stated here — that's the name of a thing, not a binding.
+    struct Hint
+    {
+        const char* key;
+        const char* label;
+    };
+
     struct State
     {
         float hp;
@@ -44,6 +56,13 @@ namespace Hud
         float abilityFraction; // 0..1 through a use; < 0 when it isn't running
         float abilityCooldown; // seconds until it's ready again; 0 = now
         int npcs;
+        // The key-cap row above the panel, in draw order. It arrives whole
+        // rather than being assembled here because half of it is now the
+        // player's bindings and the other half — which of them are worth the
+        // space, and what the ability on this class is called — is the game's;
+        // neither is a fact this file can look up.
+        const Hint* hints;
+        size_t hintCount;
         DirectX::XMFLOAT4 accent; // class color, for the panel's edge light
         // False during the respawn wait: the loadout on show isn't in anyone's
         // hands, so the whole cluster fades rather than lying about a magazine

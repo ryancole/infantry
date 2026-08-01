@@ -1,10 +1,13 @@
 #pragma once
 
 #include "Ability.h"
+#include "BindMenu.h"
+#include "Bindings.h"
 #include "Brain.h"
 #include "Camera.h"
 #include "ClassSelect.h"
 #include "Input.h"
+#include "MainMenu.h"
 #include "Physics.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
@@ -14,6 +17,7 @@
 
 #include <DirectXMath.h>
 #include <SimpleMath.h>
+#include <array>
 #include <memory>
 #include <random>
 #include <string>
@@ -33,16 +37,32 @@ public:
     void Update(float dt, const Input& input, IsoCamera& camera);
     void Render(Renderer& renderer);
 
+    // Whether the player has asked, from the menu, to be done. The game has no
+    // way to close a window and no business learning one, so it says so and the
+    // platform layer does it on the next turn of the loop.
+    bool QuitRequested() const { return m_quit; }
+
+    // The player's controls. Handed out because the camera orbit is driven from
+    // the platform layer — it's a mouse *mode* as much as a control, and the
+    // capture belongs where the window is — and that binding has to be the same
+    // one the settings screen edits.
+    const Bindings& Binds() const { return m_binds; }
+
     // Stops the game's hold on anything that outlives a frame; call once the
     // loop is done, before the window and devices go away.
     void Shutdown();
 
 private:
-    // Players must pick a class before they spawn; the arena only starts
-    // simulating once the choice is made. Dying drops back out of Playing for
-    // the respawn wait: the arena keeps running, the player just isn't in it.
+    // The game opens on the menu, not in the arena: something has to ask
+    // whether the player is playing before anything asks what they're playing
+    // as. From there they must pick a class before they spawn, and the arena
+    // only starts simulating once that choice is made. Dying drops back out of
+    // Playing for the respawn wait: the arena keeps running, the player just
+    // isn't in it.
     enum class Phase
     {
+        MainMenu,
+        KeyBinds,
         ClassSelect,
         Playing,
         Dead,
@@ -233,8 +253,21 @@ private:
 
     Physics m_physics;
     Sound m_sound;
-    Phase m_phase = Phase::ClassSelect;
+    Phase m_phase = Phase::MainMenu;
+    MainMenu m_mainMenu;
+    BindMenu m_bindMenu;
     ClassSelect m_classSelect;
+    // The player's layout, read off disk at startup and written back whenever
+    // they leave the settings screen. Defaults stand if there's no file yet.
+    Bindings m_binds;
+    bool m_quit = false; // see QuitRequested
+    // The HUD's key caps, rebuilt each frame from the bindings above. They're
+    // strings rather than the letters the HUD used to hold because a cap can now
+    // say anything the player has bound, including two of them joined by a plus.
+    // They live here rather than in RenderHud because the HUD is handed pointers
+    // to them and draws after that function has returned.
+    static constexpr size_t kMaxHints = 8;
+    std::array<std::string, kMaxHints> m_hintKeys;
     const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id. The local player

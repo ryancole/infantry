@@ -1,10 +1,13 @@
 #include "ClassSelect.h"
 
+#include "ScreenDraw.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
 
 using namespace DirectX;
+using namespace ScreenDraw;
 
 namespace
 {
@@ -52,47 +55,6 @@ namespace
     constexpr float kMaxMoveSpeed = MaxMoveSpeed();
     constexpr float kMaxProjectileSpeed = MaxProjectileSpeed();
 
-    XMFLOAT4 Dim(const XMFLOAT4& c, float f)
-    {
-        return { c.x * f, c.y * f, c.z * f, c.w };
-    }
-
-    void AppendQuad(std::vector<Vertex>& out, float x, float y, float w, float h, float z,
-                    const XMFLOAT4& color)
-    {
-        const Vertex v[4] = {
-            { XMFLOAT3{ x, y, z }, color },
-            { XMFLOAT3{ x + w, y, z }, color },
-            { XMFLOAT3{ x + w, y + h, z }, color },
-            { XMFLOAT3{ x, y + h, z }, color },
-        };
-        out.push_back(v[0]);
-        out.push_back(v[1]);
-        out.push_back(v[2]);
-        out.push_back(v[0]);
-        out.push_back(v[2]);
-        out.push_back(v[3]);
-    }
-
-    void AppendOutline(std::vector<Vertex>& out, float x, float y, float w, float h, float z,
-                       const XMFLOAT4& color)
-    {
-        const XMFLOAT3 p[4] = {
-            { x, y, z }, { x + w, y, z }, { x + w, y + h, z }, { x, y + h, z }
-        };
-        for (int i = 0; i < 4; ++i)
-        {
-            out.push_back({ p[i], color });
-            out.push_back({ p[(i + 1) % 4], color });
-        }
-    }
-
-    void DrawCentered(Renderer& renderer, std::string_view text, float centerX, float y,
-                      float size, const XMFLOAT4& color)
-    {
-        renderer.DrawScreenText(text, centerX - renderer.MeasureScreenText(text, size) * 0.5f, y,
-                                size, color);
-    }
 }
 
 ClassSelect::Rect ClassSelect::CardRect(size_t index, float width, float height)
@@ -133,7 +95,7 @@ std::optional<ClassId> ClassSelect::Update(const Input& input, uint32_t width, u
     return std::nullopt;
 }
 
-void ClassSelect::Render(Renderer& renderer)
+void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
@@ -143,22 +105,30 @@ void ClassSelect::Render(Renderer& renderer)
     m_lines.clear();
 
     DrawCentered(renderer, "CHOOSE YOUR CLASS", w * 0.5f, h * 0.14f, h * 0.05f, kTitleColor);
+    // The card numbers are the one thing on this screen that isn't a binding:
+    // picking a class is a menu, and menus stay where the game put them.
     DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
                  kHintColor);
     // The grenade isn't on any card because it isn't a class trait: every
-    // soldier gets the same one, so it's called out once, here.
-    DrawCentered(renderer, "ONE GRENADE PER LIFE - F TO THROW", w * 0.5f, h * 0.82f, h * 0.022f,
-                 kHintColor);
+    // soldier gets the same one, so it's called out once, here. The key comes
+    // off the player's bindings rather than being spelled out — this screen is
+    // the last thing read before spawning, and a briefing naming a key the
+    // player doesn't use would be worse than no briefing.
+    DrawCentered(renderer, "ONE GRENADE PER LIFE - " + binds.Label(Bindings::Action::Grenade) +
+                               " TO THROW",
+                 w * 0.5f, h * 0.82f, h * 0.022f, kHintColor);
     // The reload isn't a class trait either — every weapon has one — so it's
     // called out alongside the grenade rather than on the cards, which carry
     // only what separates one class from another.
-    DrawCentered(renderer, "EMPTY RELOADS ITSELF - R TO RELOAD EARLY", w * 0.5f, h * 0.86f,
-                 h * 0.022f, kHintColor);
+    DrawCentered(renderer, "EMPTY RELOADS ITSELF - " + binds.Label(Bindings::Action::Reload) +
+                               " TO RELOAD EARLY",
+                 w * 0.5f, h * 0.86f, h * 0.022f, kHintColor);
     // Nor is the blade: every soldier carries the same one, and it's the answer
     // to the range no class's primary covers, so it belongs down here with the
     // rest of what they all have in common.
-    DrawCentered(renderer, "THREE MELEE SWINGS, THEN A WAIT - V TO SWING", w * 0.5f, h * 0.90f,
-                 h * 0.022f, kHintColor);
+    DrawCentered(renderer, "THREE MELEE SWINGS, THEN A WAIT - " +
+                               binds.Label(Bindings::Action::Melee) + " TO SWING",
+                 w * 0.5f, h * 0.90f, h * 0.022f, kHintColor);
 
     for (size_t i = 0; i < kClassCount; ++i)
     {
@@ -197,7 +167,8 @@ void ClassSelect::Render(Renderer& renderer)
         // prototype is rather than something to hide.
         const bool hasAbility = def.ability.kind != Ability::Kind::None;
         const std::string abilityLine =
-            hasAbility ? "Q - " + std::string(def.ability.name) : "NO ABILITY YET";
+            hasAbility ? binds.Label(Bindings::Action::Ability) + " - " + def.ability.name
+                       : "NO ABILITY YET";
         DrawCentered(renderer, abilityLine, r.x + r.w * 0.5f, r.y + r.h * 0.505f, r.w * 0.042f,
                      hasAbility ? Dim(def.color, 0.85f) : kHintColor);
 

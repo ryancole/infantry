@@ -57,6 +57,21 @@ struct Input
         return kbEvents.IsKeyPressed(static_cast<DirectX::Keyboard::Keys>(vk));
     }
 
+    // The other edge. Only a held control needs it — a camera orbit has to know
+    // when the button comes up as much as when it goes down — but a binding can
+    // put any key on any action, so every key has to be able to answer it.
+    bool KeyReleased(int vk) const
+    {
+        switch (vk)
+        {
+        case VK_SHIFT:   return KeyReleased(VK_LSHIFT) || KeyReleased(VK_RSHIFT);
+        case VK_CONTROL: return KeyReleased(VK_LCONTROL) || KeyReleased(VK_RCONTROL);
+        case VK_MENU:    return KeyReleased(VK_LMENU) || KeyReleased(VK_RMENU);
+        default:         break;
+        }
+        return kbEvents.IsKeyReleased(static_cast<DirectX::Keyboard::Keys>(vk));
+    }
+
     bool MouseDown(int button) const // 0 = left, 1 = right, 2 = middle
     {
         return button == 0 ? mouse.leftButton
@@ -71,6 +86,15 @@ struct Input
                                          : button == 1 ? mouseEvents.rightButton
                                                        : mouseEvents.middleButton;
         return state == Tracker::PRESSED;
+    }
+
+    bool MouseReleased(int button) const
+    {
+        using Tracker = DirectX::Mouse::ButtonStateTracker;
+        const Tracker::ButtonState state = button == 0 ? mouseEvents.leftButton
+                                         : button == 1 ? mouseEvents.rightButton
+                                                       : mouseEvents.middleButton;
+        return state == Tracker::RELEASED;
     }
 
     // Call once per frame, after the message pump.

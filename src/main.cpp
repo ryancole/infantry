@@ -59,9 +59,10 @@ namespace
         case WM_SYSKEYDOWN:
         case WM_KEYUP:
         case WM_SYSKEYUP:
+            // Escape used to close the window from right here. It belongs to
+            // the game now: with menus to back out through, what it means
+            // depends on the screen you're on, and this end can't see that.
             DirectX::Keyboard::ProcessMessage(msg, wParam, lParam);
-            if (msg == WM_KEYDOWN && wParam == VK_ESCAPE)
-                DestroyWindow(hwnd);
             return 0;
         case WM_INPUT:
         case WM_MOUSEMOVE:
@@ -167,18 +168,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
         app.input.Update();
 
-        // Hold middle mouse to orbit the camera: relative mode captures and
-        // hides the cursor and reports raw deltas until the button releases.
-        using MouseTracker = DirectX::Mouse::ButtonStateTracker;
-        if (app.input.mouseEvents.middleButton == MouseTracker::PRESSED)
+        // Hold the orbit control to turn the camera: relative mode captures and
+        // hides the cursor and reports raw deltas until it's let go. Bound like
+        // everything else, which is why the mode switch reads the two edges of
+        // an action rather than the two edges of the middle mouse button.
+        const Bindings& binds = app.game.Binds();
+        if (binds.Pressed(app.input, Bindings::Action::OrbitCamera))
             app.mouse->SetMode(DirectX::Mouse::MODE_RELATIVE);
-        else if (app.input.mouseEvents.middleButton == MouseTracker::RELEASED)
+        else if (binds.Released(app.input, Bindings::Action::OrbitCamera))
             app.mouse->SetMode(DirectX::Mouse::MODE_ABSOLUTE);
         if (app.input.mouse.positionMode == DirectX::Mouse::MODE_RELATIVE)
             app.camera.AddYaw(static_cast<float>(app.input.mouse.x) * kOrbitSensitivity);
 
         app.camera.AddZoom(app.input.wheel);
         app.game.Update(dt, app.input, app.camera);
+        // Quitting from the menu takes the same road out as the close box: tear
+        // the window down and let the next pump pick up the WM_QUIT, rather than
+        // dropping out of the loop here and leaving a second way to shut down.
+        // The `continue` is what keeps this frame from rendering into it.
+        if (app.game.QuitRequested())
+        {
+            DestroyWindow(hwnd);
+            continue;
+        }
         app.camera.Update(dt);
 
         if (app.renderer.Width() > 0 && app.renderer.Height() > 0)

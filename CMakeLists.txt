@@ -44,18 +44,29 @@ FetchContent_Declare(json
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
-FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json)
+# toml++: reads and writes the player's key bindings. TOML rather than the JSON
+# already here because this is the one file a person is expected to open — it
+# takes comments, which is where the file explains itself.
+FetchContent_Declare(tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+)
+
+FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json tomlplusplus)
 
 add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
     src/Ability.cpp
+    src/BindMenu.cpp
+    src/Bindings.cpp
     src/Brain.cpp
     src/Camera.cpp
     src/ClassSelect.cpp
     src/Game.cpp
     src/Hud.cpp
     src/Level.cpp
+    src/MainMenu.cpp
     src/Model.cpp
     src/Physics.cpp
     src/Soldier.cpp
@@ -75,6 +86,7 @@ target_link_libraries(infantry PRIVATE
     DirectXTK12
     Jolt
     nlohmann_json::nlohmann_json
+    tomlplusplus::tomlplusplus
     d3d12
     dxgi
     user32
