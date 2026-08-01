@@ -52,4 +52,11 @@ namespace Hud
     };
 
     void Render(Renderer& renderer, const State& state);
+
+    // Green -> amber -> red for a 0..1 share of health, thresholds a hit or two
+    // apart at typical damage. Exposed because the panel is no longer the only
+    // place health gets drawn: a medic sees their squadmates' health over their
+    // heads, and a soldier at a third has to look the same there as the player
+    // at a third does down here. One rule, read from one place.
+    DirectX::XMFLOAT4 HealthColor(float fraction);
 }

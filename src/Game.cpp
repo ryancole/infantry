@@ -192,6 +192,16 @@ namespace
     // the field the dressing is actually reaching.
     constexpr XMFLOAT4 kAbilityLinkColor = { 0.45f, 0.95f, 0.78f, 0.80f };
     constexpr float kAbilityLinkHeight = 0.75f; // chest height, so it reads as a line between two people
+
+    // Squadmate health bars, which only a class that can do something about
+    // them gets to see. Small: it's a glance that has to survive several of
+    // them being on screen at once, and a soldier is 0.8 wide, so a bar a
+    // little narrower than that reads as belonging to the body under it.
+    constexpr float kHealthBarHeight = 1.70f; // clear of the helmet (head sits at 1.05)
+    constexpr float kHealthBarWidth = 0.70f;
+    constexpr float kHealthBarThickness = 0.11f;
+    constexpr float kHealthBarEdge = 0.02f; // dark surround, so a red bar still reads against blood
+    constexpr XMFLOAT4 kHealthBarBack = { 0.03f, 0.04f, 0.06f, 0.72f };
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -273,6 +283,32 @@ namespace
                       const XMFLOAT4& color)
     {
         AppendArc(out, center, radius, 0.0f, XM_2PI, 24, color);
+    }
+
+    // An upright quad in the world, `origin` its bottom-left corner, running
+    // `width` along `right` and `height` straight up. Billboarding the cheap
+    // way: the horizontal axis follows the camera and the vertical one is
+    // simply world up, which under an orthographic camera that never rolls is
+    // all it takes to stand something square to the screen. A proper billboard
+    // would also tilt back by the camera's pitch; at this size the difference
+    // is a bar that looks very slightly foreshortened, which is the correct
+    // amount of effort to spend on it.
+    void AppendUprightQuad(std::vector<Vertex>& out, const Vector3& origin, const Vector3& right,
+                           float width, float height, const XMFLOAT4& color)
+    {
+        if (width <= 0.0f || height <= 0.0f)
+            return;
+        const Vector3 across = right * width;
+        const XMFLOAT3 p0 = origin;
+        const XMFLOAT3 p1 = origin + across;
+        const XMFLOAT3 p2 = origin + across + Vector3(0.0f, height, 0.0f);
+        const XMFLOAT3 p3 = origin + Vector3(0.0f, height, 0.0f);
+        out.push_back({ p0, color });
+        out.push_back({ p1, color });
+        out.push_back({ p2, color });
+        out.push_back({ p0, color });
+        out.push_back({ p2, color });
+        out.push_back({ p3, color });
     }
 
     // Draws a living soldier: the model's segments posed by the walk cycle and
@@ -485,6 +521,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // --- Movement: WASD relative to the screen ---
     const Vector3 upG = camera.ScreenUpOnGround();
     const Vector3 rightG = camera.ScreenRightOnGround();
+    m_screenRight = rightG;
 
     float moveUp = 0.0f, moveRight = 0.0f;
     if (input.Key('W')) moveUp += 1.0f;
@@ -1759,6 +1796,55 @@ void Game::Render(Renderer& renderer)
     AppendFog(m_fogVerts);
     renderer.DrawTrianglesAlpha(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
                                 identity);
+
+    // Squadmate health, over the heads of the ones who have lost some. Only a
+    // class that can put it back gets to see it: this is the medic's job made
+    // visible, and on anyone else it would be a free readout of information
+    // they have no way to act on. So it's gated on the ability rather than on
+    // the class name — whoever can heal is whoever can see who needs healing,
+    // and if a second class ever gets a dressing it inherits this with it.
+    //
+    // Only the wounded get a bar. "Who should I heal" is the question being
+    // answered, and a row of full bars would bury the answer in soldiers who
+    // aren't part of it; the friendly ring is already under everyone, so a ring
+    // with nothing over it reads as a soldier who's fine. It also means the bar
+    // going away is what says a treatment finished.
+    //
+    // Same viewport and sight tests the bodies get. A bar is not allowed to be
+    // the thing that tells a medic where someone is standing — that would make
+    // the class see through walls, which is a different power from the one
+    // being handed out here.
+    if (m_phase == Phase::Playing && m_class->ability.kind == AbilityKind::Heal)
+    {
+        m_scratch.clear();
+        for (const Npc& npc : m_npcs)
+        {
+            if (npc.team != m_team || npc.hp <= 0.0f || npc.hp >= kMaxHealth)
+                continue;
+            if (!renderer.IsSphereVisible({ npc.pos.x, kSoldierBoundsY, npc.pos.z },
+                                          kSoldierBoundsRadius))
+                continue;
+            if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
+                continue;
+
+            const float frac = std::clamp(npc.hp / kMaxHealth, 0.0f, 1.0f);
+            const Vector3 left(npc.pos.x - m_screenRight.x * kHealthBarWidth * 0.5f,
+                               kHealthBarHeight,
+                               npc.pos.z - m_screenRight.z * kHealthBarWidth * 0.5f);
+            // Backing plate first, a hair proud of the bar on every side, so a
+            // nearly-empty red bar doesn't have to be read against whatever
+            // happens to be behind it.
+            AppendUprightQuad(m_scratch,
+                              left - m_screenRight * kHealthBarEdge -
+                                  Vector3(0.0f, kHealthBarEdge, 0.0f),
+                              m_screenRight, kHealthBarWidth + kHealthBarEdge * 2.0f,
+                              kHealthBarThickness + kHealthBarEdge * 2.0f, kHealthBarBack);
+            AppendUprightQuad(m_scratch, left, m_screenRight, kHealthBarWidth * frac,
+                              kHealthBarThickness, Hud::HealthColor(frac));
+        }
+        renderer.DrawTrianglesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
+                                    identity);
+    }
 
     // Aim indicator: the shot's actual trajectory as a dim 3D polyline — an
     // arch for the grenade's lob, a near-level line with droop for bullets —

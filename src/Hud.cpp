@@ -49,6 +49,7 @@ namespace
     constexpr XMFLOAT4 kMutedColor = { 0.45f, 0.52f, 0.62f, 1.0f };
     // Health runs green -> amber -> red so its state carries without reading
     // the number; the thresholds are a hit or two apart at typical damage.
+    // (Hud::HealthColor is the one place that applies them.)
     constexpr XMFLOAT4 kHealthGood = { 0.35f, 0.85f, 0.45f, 1.0f };
     constexpr XMFLOAT4 kHealthWarn = { 0.95f, 0.72f, 0.22f, 1.0f };
     constexpr XMFLOAT4 kHealthLow = { 0.92f, 0.28f, 0.22f, 1.0f };
@@ -332,6 +333,11 @@ namespace
     constexpr size_t kMaxHints = std::size(kHints) + 1;
 }
 
+XMFLOAT4 Hud::HealthColor(float fraction)
+{
+    return fraction > 0.5f ? kHealthGood : (fraction > 0.25f ? kHealthWarn : kHealthLow);
+}
+
 void Hud::Render(Renderer& renderer, const State& st)
 {
     const float w = static_cast<float>(renderer.Width());
@@ -343,8 +349,7 @@ void Hud::Render(Renderer& renderer, const State& st)
 
     const float hpFrac =
         st.maxHp > 0.0f ? std::clamp(st.hp / st.maxHp, 0.0f, 1.0f) : 0.0f;
-    const XMFLOAT4 hpColor =
-        hpFrac > 0.5f ? kHealthGood : (hpFrac > 0.25f ? kHealthWarn : kHealthLow);
+    const XMFLOAT4 hpColor = HealthColor(hpFrac);
 
     Module health;
     health.icon = Icon::Health;

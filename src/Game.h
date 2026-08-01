@@ -247,6 +247,12 @@ private:
     Vector3 m_playerPos;
     Vector3 m_moveVel;                 // current ground velocity; the keys steer it, they aren't it
     Vector3 m_aimDir = Vector3::UnitX;
+    // Which way is right on screen, in world space, taken off the camera during
+    // Update because Render isn't handed one. It's what stands a health bar
+    // square to the view. Read a frame later than it's written, which costs
+    // nothing: yaw is applied before Update runs, and nothing between there and
+    // the draw can turn the camera.
+    Vector3 m_screenRight = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
     // The magazine, and the wait to refill it. A reload starts on the last
