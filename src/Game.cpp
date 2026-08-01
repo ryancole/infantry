@@ -51,6 +51,23 @@ namespace
     constexpr float kSoldierBoundsY = 0.7f;
     constexpr float kSoldierBoundsRadius = 1.2f;
 
+    // Corpses: a killed soldier is handed to the physics world as a ragdoll and
+    // left to fall. They're decoration, so what matters is that they get out of
+    // the way again — a body sinks through the floor over its last seconds
+    // rather than blinking out while someone is looking at it, and the field
+    // holds a fixed number so a long firefight can't unbound the body count.
+    constexpr float kCorpseLife = 14.0f;
+    constexpr float kCorpseSink = 1.5f;      // seconds spent sinking, at the end of that life
+    constexpr float kCorpseSinkDepth = 1.6f; // deep enough to swallow a body whole
+    constexpr size_t kMaxCorpses = 10;
+    // Launch velocity from the killing blow: a shove along it plus some lift,
+    // so a body falls away from what killed it instead of dropping in place. A
+    // blast throws harder, scaled by how much of it the victim caught.
+    constexpr float kCorpseKnock = 4.5f;
+    constexpr float kCorpseBlastKnock = 11.0f;
+    constexpr float kCorpseLift = 3.0f;
+    constexpr float kCorpseSpin = 7.0f; // random angular velocity, radians/sec
+
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
     // Below this speed a bouncing grenade's contacts are a roll, not a bounce,
@@ -148,124 +165,32 @@ namespace
         }
     }
 
-    // Draws one soldier in space armor, assembled from the renderer's lit
-    // primitives: class-tinted plating over a dark undersuit, a helmet with a
-    // glowing visor, backpack + antenna, and a rifle held two-handed toward
-    // `aimDir`. `walkPhase`/`moveBlend` drive the leg swing and torso bob.
+    // Draws a living soldier: the model's segments posed by the walk cycle and
+    // placed at `pos` facing `aimDir`. A corpse draws the same parts, its
+    // segments posed by the ragdoll instead (see Game::Render).
     void DrawSoldier(Renderer& renderer, const Vector3& pos, const Vector3& aimDir,
                      float walkPhase, float moveBlend, const XMFLOAT4& color)
     {
-        const float yaw = std::atan2(aimDir.x, aimDir.z);
-        const XMMATRIX base = XMMatrixRotationY(yaw) * XMMatrixTranslation(pos.x, pos.y, pos.z);
+        XMMATRIX local[Soldier::SegmentCount];
+        Soldier::Pose(local, walkPhase, moveBlend);
 
-        const XMFLOAT4 plate = color;
-        const XMFLOAT4 plateDark = { color.x * 0.55f, color.y * 0.55f, color.z * 0.55f, 1.0f };
-        const XMFLOAT4 suit = { 0.15f, 0.16f, 0.19f, 1.0f };
-        const XMFLOAT4 metal = { 0.09f, 0.10f, 0.12f, 1.0f };
-        const XMFLOAT4 visor = { 0.35f, 0.95f, 1.00f, 1.0f };
+        const XMMATRIX base = Soldier::Base(pos, aimDir);
+        XMMATRIX world[Soldier::SegmentCount];
+        for (int i = 0; i < Soldier::SegmentCount; ++i)
+            world[i] = local[i] * base;
 
-        // Parts are laid out in local space (facing +Z, feet at y=0) and
-        // placed through `base`.
-        auto part = [&](Shape shape, const XMMATRIX& local, const XMFLOAT4& col) {
-            renderer.DrawShape(shape, local * base, col);
-        };
-        // A limb is a cylinder stretched between two local-space points.
-        auto limb = [&](const Vector3& a, const Vector3& b, float thick, const XMFLOAT4& col) {
-            const Vector3 d = b - a;
-            const float len = d.Length();
-            if (len < 1e-5f)
-                return;
-            const Vector3 mid = (a + b) * 0.5f;
-            const float dot = std::clamp(d.y / len, -1.0f, 1.0f);
-            Vector3 axis = Vector3::UnitY.Cross(d / len);
-            XMMATRIX rot;
-            if (axis.LengthSquared() < 1e-8f)
-                rot = dot > 0.0f ? XMMatrixIdentity() : XMMatrixRotationX(XM_PI);
-            else
-            {
-                axis.Normalize();
-                rot = XMMatrixRotationAxis(XMLoadFloat3(&axis), std::acos(dot));
-            }
-            part(Shape::CylinderLow,
-                 XMMatrixScaling(thick, len, thick) * rot *
-                     XMMatrixTranslation(mid.x, mid.y, mid.z),
-                 col);
-        };
+        Soldier::Draw(renderer, world, color);
+    }
 
-        // Legs stride along the facing axis; the torso dips a touch at full
-        // stride spread so the walk reads even from the isometric camera.
-        const float swing = std::sin(walkPhase) * 0.6f * moveBlend;
-        const float bob = 0.03f * moveBlend * std::cos(walkPhase * 2.0f);
-
-        constexpr float kLegLen = 0.43f;
-        for (float side : { -1.0f, 1.0f })
-        {
-            const float s = swing * side;
-            const Vector3 hip(side * 0.10f, 0.50f, 0.02f);
-            const Vector3 foot = hip + Vector3(0.0f, -std::cos(s), std::sin(s)) * kLegLen;
-            limb(hip, foot, 0.13f, suit);
-            part(Shape::Box, // armored boot
-                 XMMatrixScaling(0.15f, 0.10f, 0.24f) *
-                     XMMatrixTranslation(foot.x, foot.y - 0.02f, foot.z + 0.05f),
-                 plateDark);
-        }
-
-        part(Shape::Box, // pelvis girdle
-             XMMatrixScaling(0.30f, 0.16f, 0.22f) * XMMatrixTranslation(0.0f, 0.55f + bob, 0.0f),
-             plateDark);
-        part(Shape::Box, // undersuit torso, mostly hidden by the chest plate
-             XMMatrixScaling(0.26f, 0.30f, 0.18f) * XMMatrixTranslation(0.0f, 0.72f + bob, 0.0f),
-             suit);
-        part(Shape::Box, // chest plate
-             XMMatrixScaling(0.36f, 0.26f, 0.28f) * XMMatrixTranslation(0.0f, 0.79f + bob, 0.01f),
-             plate);
-        part(Shape::Box, // backpack / life support
-             XMMatrixScaling(0.26f, 0.30f, 0.14f) * XMMatrixTranslation(0.0f, 0.80f + bob, -0.21f),
-             plateDark);
-        part(Shape::CylinderLow, // antenna
-             XMMatrixScaling(0.025f, 0.30f, 0.025f) *
-                 XMMatrixTranslation(-0.09f, 1.02f + bob, -0.22f),
-             metal);
-        part(Shape::SphereLow, // antenna tip, catches the bloom like the visor
-             XMMatrixScaling(0.05f, 0.05f, 0.05f) *
-                 XMMatrixTranslation(-0.09f, 1.18f + bob, -0.22f),
-             visor);
-
-        for (float side : { -1.0f, 1.0f }) // shoulder pauldrons
-            part(Shape::SphereMed,
-                 XMMatrixScaling(0.19f, 0.19f, 0.19f) *
-                     XMMatrixTranslation(side * 0.25f, 0.90f + bob, 0.01f),
-                 plate);
-
-        // Arms reach from the pauldrons to a two-handed rifle grip: right hand
-        // on the trigger, left hand crossed to the forestock.
-        const Vector3 gripR(0.12f, 0.74f + bob, 0.20f);
-        const Vector3 gripL(0.10f, 0.77f + bob, 0.38f);
-        limb(Vector3(0.25f, 0.88f + bob, 0.02f), gripR, 0.10f, suit);
-        limb(Vector3(-0.25f, 0.88f + bob, 0.02f), gripL, 0.10f, suit);
-        for (const Vector3& hand : { gripR, gripL })
-            part(Shape::SphereLow,
-                 XMMatrixScaling(0.11f, 0.11f, 0.11f) *
-                     XMMatrixTranslation(hand.x, hand.y, hand.z),
-                 metal);
-
-        part(Shape::Box, // rifle body
-             XMMatrixScaling(0.07f, 0.10f, 0.42f) * XMMatrixTranslation(0.11f, 0.77f + bob, 0.26f),
-             metal);
-        part(Shape::CylinderLow, // barrel, ending near the muzzle spawn point
-             XMMatrixScaling(0.045f, 0.28f, 0.045f) * XMMatrixRotationX(XM_PIDIV2) *
-                 XMMatrixTranslation(0.11f, 0.79f + bob, 0.58f),
-             metal);
-
-        part(Shape::CylinderLow, // neck seal
-             XMMatrixScaling(0.11f, 0.08f, 0.11f) * XMMatrixTranslation(0.0f, 0.95f + bob, 0.01f),
-             suit);
-        part(Shape::SphereMed, // helmet
-             XMMatrixScaling(0.27f, 0.27f, 0.27f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.01f),
-             plate);
-        part(Shape::SphereLow, // visor, bulging out of the helmet's front
-             XMMatrixScaling(0.17f, 0.10f, 0.12f) * XMMatrixTranslation(0.0f, 1.05f + bob, 0.10f),
-             visor);
+    // Velocity a killing blow hands to the corpse it makes: a shove along the
+    // blow, flattened to the ground plane, plus enough lift that the body
+    // falls away from it instead of dropping straight down.
+    Vector3 CorpseKnock(const Vector3& dir, float strength)
+    {
+        Vector3 flat(dir.x, 0.0f, dir.z);
+        if (flat.LengthSquared() > 1e-8f)
+            flat.Normalize();
+        return flat * strength + Vector3(0.0f, kCorpseLift, 0.0f);
     }
 
     // Horizontal muzzle speed for a shot aimed to come down targetDist away:
@@ -480,10 +405,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     m_physics.Step(dt);
     UpdateProjectiles(dt);
     UpdateParticles(dt);
+    UpdateCorpses(dt);
 
     if (m_playerDied)
     {
         m_playerDied = false;
+        // The body stays where it fell — the player respawns out of it.
+        SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_playerHp = kMaxHealth;
         m_playerPos = m_teamSpawns[m_team];
         m_grenades = kGrenadesPerLife; // respawn is a fresh loadout
@@ -778,6 +706,9 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
             if (dmg <= 0.0f)
                 continue;
             npc.hp -= dmg;
+            // Blown outward from the blast, as hard as the share of it they
+            // caught: a body at the rim topples, one on top of it is thrown.
+            npc.knock = CorpseKnock(npc.pos - center, kCorpseBlastKnock * (dmg / damage));
             PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
         }
     }
@@ -787,6 +718,7 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
         if (dmg > 0.0f && m_playerHp > 0.0f)
         {
             m_playerHp -= dmg;
+            m_deathKnock = CorpseKnock(m_playerPos - center, kCorpseBlastKnock * (dmg / damage));
             m_rumbleTime = 0.25f;
             if (m_playerHp <= 0.0f)
                 m_playerDied = true;
@@ -857,6 +789,11 @@ void Game::UpdateProjectiles(float dt)
         // damage but stops a direct hit from being counted twice.
         const bool blast = shot.blastRadius > 0.0f;
         const XMFLOAT3 bodyHalf = { kPlayerHalf, kPlayerHalf, kPlayerHalf };
+        // Where the round was heading this tick — the direction a corpse it
+        // makes gets thrown. (An explosive's shove comes from ApplyBlast
+        // instead, radially out of the detonation.)
+        const Vector3 travel(pos.x - shot.prevPos.x, pos.y - shot.prevPos.y,
+                             pos.z - shot.prevPos.z);
         if (shot.life > 0.0f && shot.team == m_team)
         {
             for (Npc& npc : m_npcs)
@@ -868,6 +805,7 @@ void Game::UpdateProjectiles(float dt)
                     if (!blast)
                     {
                         npc.hp -= shot.damage;
+                        npc.knock = CorpseKnock(travel, kCorpseKnock);
                         PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
                     }
                     shot.life = 0.0f;
@@ -885,6 +823,7 @@ void Game::UpdateProjectiles(float dt)
                 if (!blast)
                 {
                     m_playerHp -= shot.damage;
+                    m_deathKnock = CorpseKnock(travel, kCorpseKnock);
                     m_rumbleTime = 0.25f;
                     if (m_playerHp <= 0.0f)
                         m_playerDied = true;
@@ -931,7 +870,82 @@ void Game::UpdateProjectiles(float dt)
         if (shot.life <= 0.0f)
             m_physics.RemoveBody(shot.body);
     std::erase_if(m_projectiles, [](const Projectile& s) { return s.life <= 0.0f; });
+
+    // The dead leave a ragdoll standing exactly where they fell before they
+    // come off the roster.
+    for (const Npc& npc : m_npcs)
+        if (npc.hp <= 0.0f)
+            SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color,
+                        npc.knock);
     std::erase_if(m_npcs, [](const Npc& n) { return n.hp <= 0.0f; });
+}
+
+void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
+                       const XMFLOAT4& color, const Vector3& knock)
+{
+    if (m_corpses.size() >= kMaxCorpses)
+        RemoveCorpse(0);
+
+    // The ragdoll is built in the pose the soldier was drawn in on its last
+    // frame, so death is a body carrying on from the stride it was in rather
+    // than a model snapping to a T-pose and dropping.
+    XMMATRIX local[Soldier::SegmentCount];
+    Soldier::Pose(local, walkPhase, moveBlend);
+    const XMMATRIX base = Soldier::Base(pos, aimDir);
+
+    Corpse corpse;
+    corpse.color = color;
+    corpse.life = kCorpseLife;
+
+    XMMATRIX world[Soldier::SegmentCount];
+    for (int i = 0; i < Soldier::SegmentCount; ++i)
+    {
+        world[i] = local[i] * base;
+        XMFLOAT3 center;
+        XMFLOAT4 rot;
+        XMStoreFloat3(&center, world[i].r[3]);
+        XMStoreFloat4(&rot, XMQuaternionRotationMatrix(world[i]));
+
+        // Every segment leaves with the same shove, and its own random tumble
+        // on top: a corpse that only translated would fall like a statue.
+        const XMFLOAT3 spin = { Rand(-kCorpseSpin, kCorpseSpin), Rand(-kCorpseSpin, kCorpseSpin),
+                                Rand(-kCorpseSpin, kCorpseSpin) };
+        corpse.parts[i] = m_physics.SpawnDebrisBox(center, Soldier::kBodies[i].size, rot, knock,
+                                                   spin, Soldier::kBodies[i].mass);
+    }
+
+    // Joints are anchored in the parent segment's frame and centered on the
+    // child's bone, both taken from the pose the bodies were just built in.
+    for (const Soldier::Joint& joint : Soldier::kJoints)
+    {
+        XMFLOAT3 anchor, boneAxis;
+        XMStoreFloat3(&anchor,
+                      XMVector3Transform(XMLoadFloat3(&joint.anchor), world[joint.parent]));
+        XMStoreFloat3(&boneAxis, XMVector3Normalize(world[joint.child].r[1]));
+        m_physics.AddConeJoint(corpse.parts[joint.parent], corpse.parts[joint.child], anchor,
+                               boneAxis, joint.coneAngle, joint.twistAngle);
+    }
+
+    m_corpses.push_back(corpse);
+}
+
+void Game::UpdateCorpses(float dt)
+{
+    for (size_t i = m_corpses.size(); i-- > 0;)
+    {
+        m_corpses[i].life -= dt;
+        if (m_corpses[i].life <= 0.0f)
+            RemoveCorpse(i);
+    }
+}
+
+void Game::RemoveCorpse(size_t index)
+{
+    // Removing a part takes its joints with it, so the ragdoll comes apart in
+    // whatever order the segments happen to be in.
+    for (Physics::BodyHandle part : m_corpses[index].parts)
+        m_physics.RemoveBody(part);
+    m_corpses.erase(m_corpses.begin() + index);
 }
 
 // Builds the fog overlay: the visibility polygon splits the world into
@@ -1029,6 +1043,34 @@ void Game::Render(Renderer& renderer)
         AppendCube(m_scratch, { npc.pos.x - (0.9f - barW) * 0.5f, kHealthBarY, npc.pos.z },
                    { barW, 0.08f, 0.08f }, barColor);
     }
+    // Corpses, drawn from their ragdolls: the same model as a living soldier,
+    // with every segment placed by the physics body it was built from. Same
+    // culling as the living, tested at the pelvis — where a body ends up is the
+    // ragdoll's business, so there's no single position to key off otherwise.
+    for (const Corpse& corpse : m_corpses)
+    {
+        const Physics::Transform pelvis = m_physics.GetTransform(corpse.parts[Soldier::Pelvis]);
+        if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
+            continue;
+        if (!Visibility::IsPointVisible(eye, { pelvis.pos.x, pelvis.pos.z }, m_occluders))
+            continue;
+
+        // Sinking is a drawing trick, not a physical one: the bodies stay put
+        // (asleep, by then) and the model is drawn further under the floor each
+        // frame until it's gone.
+        const float sink =
+            std::max(0.0f, kCorpseSink - corpse.life) / kCorpseSink * kCorpseSinkDepth;
+
+        XMMATRIX world[Soldier::SegmentCount];
+        for (int i = 0; i < Soldier::SegmentCount; ++i)
+        {
+            const Physics::Transform t = m_physics.GetTransform(corpse.parts[i]);
+            world[i] = XMMatrixRotationQuaternion(XMLoadFloat4(&t.rot)) *
+                       XMMatrixTranslation(t.pos.x, t.pos.y - sink, t.pos.z);
+        }
+        Soldier::Draw(renderer, world, corpse.color);
+    }
+
     for (const Projectile& shot : m_projectiles)
     {
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);

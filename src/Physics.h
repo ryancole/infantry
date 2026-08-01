@@ -28,8 +28,33 @@ public:
     BodyHandle SpawnProjectile(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT3& vel,
                                float radius, float mass, float restitution = 0.0f);
 
+    // A corpse limb: a dynamic box that collides with the static world and
+    // nothing else, so a ragdoll can't stop a bullet, shove a soldier, or have
+    // its own limbs fight each other. `rot` is a quaternion (x, y, z, w).
+    BodyHandle SpawnDebrisBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& size,
+                              const DirectX::XMFLOAT4& rot, const DirectX::XMFLOAT3& vel,
+                              const DirectX::XMFLOAT3& angVel, float mass);
+
+    // Cone-and-twist joint pinning two bodies together at the world-space
+    // point `anchor`. `boneAxis` is the limb's rest direction; `coneAngle`
+    // caps how far off it the joint may swing and `twistAngle` how far it may
+    // spin about it (both radians). Joints are dropped automatically when
+    // either of their bodies is removed.
+    void AddConeJoint(BodyHandle parent, BodyHandle child, const DirectX::XMFLOAT3& anchor,
+                      const DirectX::XMFLOAT3& boneAxis, float coneAngle, float twistAngle);
+
     void RemoveBody(BodyHandle handle);
     DirectX::XMFLOAT3 GetPosition(BodyHandle handle) const;
+
+    // Position and orientation of a body, for anything whose rotation is the
+    // simulation's to decide (a tumbling corpse; a projectile is a sphere and
+    // only needs GetPosition).
+    struct Transform
+    {
+        DirectX::XMFLOAT3 pos;
+        DirectX::XMFLOAT4 rot; // quaternion (x, y, z, w)
+    };
+    Transform GetTransform(BodyHandle handle) const;
 
     // True if the body touched anything during the most recent Step. Used to
     // despawn projectiles on impact instead of letting them ricochet.

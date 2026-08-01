@@ -6,6 +6,7 @@
 #include "Physics.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
+#include "Soldier.h"
 #include "Sound.h"
 #include "Visibility.h"
 
@@ -84,6 +85,19 @@ private:
         float strafeTimer; // time until the strafe direction flips
         float walkPhase;   // leg-swing angle for the soldier model, advances with distance
         float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
+        Vector3 knock;     // launch velocity the last hit would give its corpse
+    };
+
+    // What's left of a soldier: the model's segments handed to the physics
+    // world as a jointed ragdoll, keeping the pose it died in and then falling
+    // out of it. Corpses are decoration — they take no damage, block nothing,
+    // and collide with the level alone — so all the game keeps is what it needs
+    // to draw them and, once they've lain around long enough, to clear them.
+    struct Corpse
+    {
+        Physics::BodyHandle parts[Soldier::SegmentCount];
+        DirectX::XMFLOAT4 color;
+        float life; // seconds until it's cleaned up
     };
 
     // Runtime halves of a level object: solid objects contribute a Collider
@@ -124,6 +138,13 @@ private:
     // only where the blast has line of sight, so cover still protects.
     void ApplyBlast(const Vector3& center, float radius, float damage, int team);
     void UpdateParticles(float dt);
+    // Leaves a ragdoll where a soldier stood, built from the pose it died in
+    // and launched with `knock` so it falls away from the killing blow. Past
+    // the corpse cap the oldest body on the field is recycled.
+    void SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
+                     const DirectX::XMFLOAT4& color, const Vector3& knock);
+    void UpdateCorpses(float dt);
+    void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
     // against the colliders and the ground; returns the horizontal distance
     // from `from` at which the shot stops. When outArc is given, fills it
@@ -166,6 +187,7 @@ private:
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
     float m_deathFlashTime = 0.0f; // grayscale post flash after dying
     bool m_playerDied = false;     // set by projectile hits, handled in Update
+    Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 
     std::vector<Npc> m_npcs;
     int m_nextNpcClass = 0; // spawns cycle through the class table
@@ -173,6 +195,7 @@ private:
 
     std::vector<Projectile> m_projectiles;
     std::vector<Particle> m_particles;
+    std::vector<Corpse> m_corpses; // oldest first, so the cap sheds the stalest body
     std::vector<Collider> m_colliders;
     std::vector<Visibility::Rect> m_occluders; // footprints of sight-blockers
     std::vector<Vertex> m_fogVerts; // reused per frame

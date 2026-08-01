@@ -11,6 +11,7 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_set>
+#include <vector>
 
 using namespace DirectX;
 
@@ -29,7 +31,13 @@ namespace
     {
         constexpr JPH::ObjectLayer NON_MOVING = 0;
         constexpr JPH::ObjectLayer MOVING = 1;
-        constexpr JPH::ObjectLayer COUNT = 2;
+        // Corpse ragdolls: they fall through the world's static geometry and
+        // meet nothing else. Keeping them off MOVING means a body can never
+        // stop a shot or shove a soldier, and — since a ragdoll's own limbs
+        // overlap at every joint — spares us collision groups to stop a corpse
+        // tearing itself apart.
+        constexpr JPH::ObjectLayer DEBRIS = 2;
+        constexpr JPH::ObjectLayer COUNT = 3;
     }
 
     // Broad-phase layers: statics live in their own tree so the (large, rarely
@@ -64,6 +72,9 @@ namespace
     public:
         bool ShouldCollide(JPH::ObjectLayer layer, JPH::BroadPhaseLayer bpLayer) const override
         {
+            // Debris is only ever tested against the world's static tree.
+            if (layer == ObjLayers::DEBRIS)
+                return bpLayer == BPLayers::NON_MOVING;
             // Statics never collide with each other.
             return layer != ObjLayers::NON_MOVING || bpLayer != BPLayers::NON_MOVING;
         }
@@ -74,6 +85,8 @@ namespace
     public:
         bool ShouldCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) const override
         {
+            if (a == ObjLayers::DEBRIS || b == ObjLayers::DEBRIS)
+                return a == ObjLayers::NON_MOVING || b == ObjLayers::NON_MOVING;
             return a != ObjLayers::NON_MOVING || b != ObjLayers::NON_MOVING;
         }
     };
@@ -130,6 +143,15 @@ namespace
 
 struct Physics::Impl
 {
+    // A live constraint, remembered with the bodies it ties together so
+    // RemoveBody can drop it before either end is destroyed.
+    struct Joint
+    {
+        JPH::Ref<JPH::Constraint> constraint;
+        uint32_t a;
+        uint32_t b;
+    };
+
     JPH::TempAllocatorImpl tempAllocator{ 10 * 1024 * 1024 };
     JPH::JobSystemThreadPool jobSystem{ JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
                                         static_cast<int>(std::max(1u, std::thread::hardware_concurrency() - 1)) };
@@ -138,6 +160,7 @@ struct Physics::Impl
     ObjectLayerPairFilterImpl objPairFilter;
     JPH::PhysicsSystem system;
     ContactRecorder contacts;
+    std::vector<Joint> joints;
     float accumulator = 0.0f;
 };
 
@@ -183,8 +206,79 @@ Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3
     return id.GetIndexAndSequenceNumber();
 }
 
+Physics::BodyHandle Physics::SpawnDebrisBox(const XMFLOAT3& center, const XMFLOAT3& size,
+                                            const XMFLOAT4& rot, const XMFLOAT3& vel,
+                                            const XMFLOAT3& angVel, float mass)
+{
+    const JPH::Vec3 half(size.x * 0.5f, size.y * 0.5f, size.z * 0.5f);
+    // Limb boxes are far smaller than the default convex radius, which has to
+    // fit inside the box it rounds off.
+    const float convexRadius = std::min(0.02f, half.ReduceMin() * 0.5f);
+
+    JPH::BodyCreationSettings settings(
+        new JPH::BoxShape(half, convexRadius), JPH::RVec3(center.x, center.y, center.z),
+        JPH::Quat(rot.x, rot.y, rot.z, rot.w).Normalized(), JPH::EMotionType::Dynamic,
+        ObjLayers::DEBRIS);
+    settings.mLinearVelocity = JPH::Vec3(vel.x, vel.y, vel.z);
+    settings.mAngularVelocity = JPH::Vec3(angVel.x, angVel.y, angVel.z);
+    // Dead weight: high friction and almost no bounce, so a body drops where
+    // it lands and stops instead of skating or skipping across the floor.
+    settings.mFriction = 0.8f;
+    settings.mRestitution = 0.05f;
+    settings.mLinearDamping = 0.15f;
+    settings.mAngularDamping = 0.4f;
+    settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+    settings.mMassPropertiesOverride.mMass = mass;
+
+    const JPH::BodyID id = m_impl->system.GetBodyInterface().CreateAndAddBody(
+        settings, JPH::EActivation::Activate);
+    return id.GetIndexAndSequenceNumber();
+}
+
+void Physics::AddConeJoint(BodyHandle parent, BodyHandle child, const XMFLOAT3& anchor,
+                           const XMFLOAT3& boneAxis, float coneAngle, float twistAngle)
+{
+    JPH::Vec3 twist(boneAxis.x, boneAxis.y, boneAxis.z);
+    if (twist.IsNearZero())
+        twist = JPH::Vec3::sAxisY();
+    twist = twist.Normalized();
+    // Any axis square to the bone will do — the cone is symmetric about it, so
+    // it only fixes where the twist angle is measured from.
+    const JPH::Vec3 seed =
+        std::abs(twist.GetY()) > 0.9f ? JPH::Vec3::sAxisX() : JPH::Vec3::sAxisY();
+    const JPH::Vec3 plane = twist.Cross(seed).Normalized();
+
+    // Both bodies get the same frame, so the pose the ragdoll is built in is
+    // the middle of every joint's range: a corpse sags away from how it stood.
+    JPH::SwingTwistConstraintSettings settings;
+    settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+    settings.mPosition1 = settings.mPosition2 = JPH::RVec3(anchor.x, anchor.y, anchor.z);
+    settings.mTwistAxis1 = settings.mTwistAxis2 = twist;
+    settings.mPlaneAxis1 = settings.mPlaneAxis2 = plane;
+    settings.mNormalHalfConeAngle = coneAngle;
+    settings.mPlaneHalfConeAngle = coneAngle;
+    settings.mTwistMinAngle = -twistAngle;
+    settings.mTwistMaxAngle = twistAngle;
+
+    JPH::TwoBodyConstraint* constraint = m_impl->system.GetBodyInterface().CreateConstraint(
+        &settings, JPH::BodyID(parent), JPH::BodyID(child));
+    if (constraint == nullptr)
+        return;
+    m_impl->system.AddConstraint(constraint);
+    m_impl->joints.push_back({ constraint, parent, child });
+}
+
 void Physics::RemoveBody(BodyHandle handle)
 {
+    // Any joint hanging off this body goes first: a constraint may not outlive
+    // the bodies it holds.
+    std::erase_if(m_impl->joints, [&](const Impl::Joint& joint) {
+        if (joint.a != handle && joint.b != handle)
+            return false;
+        m_impl->system.RemoveConstraint(joint.constraint);
+        return true;
+    });
+
     const JPH::BodyID id(handle);
     JPH::BodyInterface& bodies = m_impl->system.GetBodyInterface();
     bodies.RemoveBody(id);
@@ -195,6 +289,15 @@ XMFLOAT3 Physics::GetPosition(BodyHandle handle) const
 {
     const JPH::RVec3 p = m_impl->system.GetBodyInterface().GetPosition(JPH::BodyID(handle));
     return { p.GetX(), p.GetY(), p.GetZ() };
+}
+
+Physics::Transform Physics::GetTransform(BodyHandle handle) const
+{
+    JPH::RVec3 pos;
+    JPH::Quat rot;
+    m_impl->system.GetBodyInterface().GetPositionAndRotation(JPH::BodyID(handle), pos, rot);
+    return { { pos.GetX(), pos.GetY(), pos.GetZ() },
+             { rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW() } };
 }
 
 bool Physics::HadContact(BodyHandle handle) const
