@@ -49,6 +49,7 @@ namespace
     constexpr XMFLOAT4 kMutedColor = { 0.45f, 0.52f, 0.62f, 1.0f };
     // Health runs green -> amber -> red so its state carries without reading
     // the number; the thresholds are a hit or two apart at typical damage.
+    // (Hud::HealthColor is the one place that applies them.)
     constexpr XMFLOAT4 kHealthGood = { 0.35f, 0.85f, 0.45f, 1.0f };
     constexpr XMFLOAT4 kHealthWarn = { 0.95f, 0.72f, 0.22f, 1.0f };
     constexpr XMFLOAT4 kHealthLow = { 0.92f, 0.28f, 0.22f, 1.0f };
@@ -56,6 +57,10 @@ namespace
     constexpr XMFLOAT4 kReloadColor = { 0.95f, 0.52f, 0.18f, 1.0f };
     constexpr XMFLOAT4 kMeleeColor = { 0.66f, 0.80f, 0.94f, 1.0f }; // bare steel
     constexpr XMFLOAT4 kGrenadeColor = { 0.58f, 0.72f, 0.42f, 1.0f };
+    // Greener than the ammo and bluer than the health meter, so the ability
+    // module doesn't read as either of the things it sits between. Matches the
+    // ring the game draws round a soldier using it.
+    constexpr XMFLOAT4 kAbilityColor = { 0.35f, 0.85f, 0.70f, 1.0f };
     constexpr XMFLOAT4 kContactColor = { 0.80f, 0.38f, 0.34f, 1.0f };
     constexpr XMFLOAT4 kSpentColor = { 0.32f, 0.36f, 0.44f, 1.0f }; // an empty slot's icon
 
@@ -224,6 +229,32 @@ namespace
                    Shade(c, 0.62f));
     }
 
+    // A syringe stood upright: plunger and thumb pad on top, barrel, then the
+    // needle out the bottom. The rod above the body is what keeps it apart from
+    // the cartridge two modules back — both are tall and narrow, but only one
+    // of them has anything sticking out of the top.
+    //
+    // It's the medic's dressing drawn literally, which is fine while the medic
+    // owns the only ability in the game. The second one will want this switched
+    // on the ability's kind, the way the module's numbers already are.
+    void DrawAbilityIcon(std::vector<Vertex>& out, float x, float y, float size, const XMFLOAT4& c)
+    {
+        // Plunger: thumb pad across the top and the rod running down from it.
+        AppendQuad(out, x + size * 0.31f, y, size * 0.38f, size * 0.07f, Shade(c, 0.62f));
+        AppendQuad(out, x + size * 0.44f, y + size * 0.07f, size * 0.12f, size * 0.17f,
+                   Shade(c, 0.62f));
+        // Barrel, with its finger flange at the shoulder.
+        AppendQuad(out, x + size * 0.24f, y + size * 0.22f, size * 0.52f, size * 0.06f,
+                   Shade(c, 0.78f));
+        AppendRoundRect(out, x + size * 0.33f, y + size * 0.24f, size * 0.34f, size * 0.48f,
+                        size * 0.06f, c);
+        // Hub and needle.
+        AppendQuad(out, x + size * 0.42f, y + size * 0.70f, size * 0.16f, size * 0.08f,
+                   Shade(c, 0.78f));
+        AppendQuad(out, x + size * 0.47f, y + size * 0.76f, size * 0.06f, size * 0.24f,
+                   Shade(c, 0.90f));
+    }
+
     // A helmeted head and shoulders: whoever else is on the field.
     void DrawContactIcon(std::vector<Vertex>& out, float x, float y, float size, const XMFLOAT4& c)
     {
@@ -238,6 +269,7 @@ namespace
         Ammo,
         Melee,
         Grenade,
+        Ability,
         Contact,
     };
 
@@ -250,6 +282,7 @@ namespace
         case Icon::Ammo: DrawAmmoIcon(out, x, y, size, c); break;
         case Icon::Melee: DrawMeleeIcon(out, x, y, size, c); break;
         case Icon::Grenade: DrawGrenadeIcon(out, x, y, size, c); break;
+        case Icon::Ability: DrawAbilityIcon(out, x, y, size, c); break;
         case Icon::Contact: DrawContactIcon(out, x, y, size, c); break;
         }
     }
@@ -285,13 +318,24 @@ namespace
         const char* key;
         const char* label;
     };
+    // What every soldier's keys do. The ability's binding isn't in here because
+    // it isn't one of them: the key is the same for everyone but the thing it
+    // does isn't, so it's added at the front of the row at draw time under the
+    // ability's own name.
     constexpr Hint kHints[] = {
         { "R", "RELOAD" },
         { "F", "GRENADE" },
         { "V", "MELEE" },
         { "SHIFT", "STEADY" },
-        { "N", "SPAWN NPC" },
+        { "N", "SPAWN FOE" },
+        { "SHIFT+N", "SPAWN ALLY" },
     };
+    constexpr size_t kMaxHints = std::size(kHints) + 1;
+}
+
+XMFLOAT4 Hud::HealthColor(float fraction)
+{
+    return fraction > 0.5f ? kHealthGood : (fraction > 0.25f ? kHealthWarn : kHealthLow);
 }
 
 void Hud::Render(Renderer& renderer, const State& st)
@@ -305,8 +349,7 @@ void Hud::Render(Renderer& renderer, const State& st)
 
     const float hpFrac =
         st.maxHp > 0.0f ? std::clamp(st.hp / st.maxHp, 0.0f, 1.0f) : 0.0f;
-    const XMFLOAT4 hpColor =
-        hpFrac > 0.5f ? kHealthGood : (hpFrac > 0.25f ? kHealthWarn : kHealthLow);
+    const XMFLOAT4 hpColor = HealthColor(hpFrac);
 
     Module health;
     health.icon = Icon::Health;
@@ -385,14 +428,53 @@ void Hud::Render(Renderer& renderer, const State& st)
     grenade.value = std::to_string(st.grenades);
     grenade.valueColor = st.grenades > 0 ? kValueColor : kMutedColor;
 
+    // The class ability, after the standard issue and before the contact count:
+    // everything to its left is what every soldier carries, so the one thing
+    // that isn't shared sits at the end of the loadout rather than inside it.
+    //
+    // Three states, one module. Ready says so in a word — a number would be a
+    // zero, and a zero next to an ammo count reads as empty. Running counts the
+    // seconds of it left, since what the player is deciding is whether to see
+    // it out. Recharging counts the seconds until it's back, in the reload's
+    // color, because that's the same wait the rest of the panel already draws.
+    Module abilityModule;
+    if (st.ability)
+    {
+        const bool running = st.abilityFraction >= 0.0f;
+        const bool recharging = !running && st.abilityCooldown > 0.0f;
+        const float left =
+            running ? (1.0f - st.abilityFraction) * st.ability->duration : st.abilityCooldown;
+
+        abilityModule.icon = Icon::Ability;
+        abilityModule.iconColor = recharging ? kReloadColor : kAbilityColor;
+        abilityModule.value = running || recharging
+                                  ? std::to_string(static_cast<int>(std::ceil(left)))
+                                  : "RDY";
+        abilityModule.valueColor = recharging ? kMutedColor : kValueColor;
+        abilityModule.bar = Bar::Fill;
+        abilityModule.barColor = recharging ? kReloadColor : kAbilityColor;
+        abilityModule.fill =
+            running      ? std::clamp(st.abilityFraction, 0.0f, 1.0f)
+            : recharging ? std::clamp(1.0f - st.abilityCooldown / st.ability->cooldown, 0.0f, 1.0f)
+                         : 1.0f;
+    }
+
     Module contacts;
     contacts.icon = Icon::Contact;
     contacts.iconColor = st.npcs > 0 ? kContactColor : kSpentColor;
     contacts.value = std::to_string(st.npcs);
     contacts.valueColor = st.npcs > 0 ? kValueColor : kMutedColor;
 
-    Module modules[] = { health, ammo, melee, grenade, contacts };
-    constexpr size_t kModuleCount = std::size(modules);
+    Module modules[6];
+    size_t moduleCount = 0;
+    const auto add = [&](const Module& m) { modules[moduleCount++] = m; };
+    add(health);
+    add(ammo);
+    add(melee);
+    add(grenade);
+    if (st.ability)
+        add(abilityModule);
+    add(contacts);
 
     // --- Layout ---
 
@@ -401,13 +483,14 @@ void Hud::Render(Renderer& renderer, const State& st)
     const float pad = kPanelPad * s;
 
     float contentW = 0.0f;
-    for (Module& m : modules)
+    for (size_t i = 0; i < moduleCount; ++i)
     {
+        Module& m = modules[i];
         const float textW = renderer.MeasureScreenText(m.value, valueSize);
         m.width = std::max(m.minWidth * s, iconSize + kIconGap * s + textW);
         contentW += m.width;
     }
-    contentW += kModuleGap * s * (kModuleCount - 1);
+    contentW += kModuleGap * s * (moduleCount - 1);
 
     const float panelW = contentW + pad * 2.0f;
     const float panelH = pad * 2.0f + iconSize + kRowGap * s + kBarHeight * s;
@@ -436,7 +519,7 @@ void Hud::Render(Renderer& renderer, const State& st)
     const float barH = kBarHeight * s;
     float x = panelX + pad;
 
-    for (size_t i = 0; i < kModuleCount; ++i)
+    for (size_t i = 0; i < moduleCount; ++i)
     {
         const Module& m = modules[i];
 
@@ -504,33 +587,43 @@ void Hud::Render(Renderer& renderer, const State& st)
     const float capH = hintSize + kHintKeyPad * s * 2.0f;
     const float hintY = panelY - kHintGap * s - capH;
 
+    // The ability leads the row, named after what it does rather than after the
+    // slot it sits in: FIELD DRESSING says more about the class than ABILITY
+    // ever would, and it's the only line here a player might not already know.
+    Hint hints[kMaxHints];
+    size_t hintCount = 0;
+    if (st.ability)
+        hints[hintCount++] = { "Q", st.ability->name };
+    for (const Hint& hint : kHints)
+        hints[hintCount++] = hint;
+
     float hintsW = 0.0f;
-    float capWidths[std::size(kHints)] = {};
-    for (size_t i = 0; i < std::size(kHints); ++i)
+    float capWidths[kMaxHints] = {};
+    for (size_t i = 0; i < hintCount; ++i)
     {
-        capWidths[i] = std::max(renderer.MeasureScreenText(kHints[i].key, hintSize) +
+        capWidths[i] = std::max(renderer.MeasureScreenText(hints[i].key, hintSize) +
                                     kHintKeyPad * s * 2.0f,
                                 capH);
         hintsW += capWidths[i] + kHintTextGap * s +
-                  renderer.MeasureScreenText(kHints[i].label, hintSize);
+                  renderer.MeasureScreenText(hints[i].label, hintSize);
     }
-    hintsW += kHintSpacing * s * (std::size(kHints) - 1);
+    hintsW += kHintSpacing * s * (hintCount - 1);
 
     float hintX = std::floor((w - hintsW) * 0.5f);
-    for (size_t i = 0; i < std::size(kHints); ++i)
+    for (size_t i = 0; i < hintCount; ++i)
     {
         AppendRoundRect(tris, hintX, hintY, capWidths[i], capH, capH * 0.28f,
                         Fade(kTrack, fade));
-        renderer.DrawScreenText(kHints[i].key,
+        renderer.DrawScreenText(hints[i].key,
                                 hintX + (capWidths[i] -
-                                         renderer.MeasureScreenText(kHints[i].key, hintSize)) *
+                                         renderer.MeasureScreenText(hints[i].key, hintSize)) *
                                             0.5f,
                                 hintY + kHintKeyPad * s, hintSize, Fade(kValueColor, fade));
 
         hintX += capWidths[i] + kHintTextGap * s;
-        renderer.DrawScreenText(kHints[i].label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
+        renderer.DrawScreenText(hints[i].label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
                                 Fade(kMutedColor, fade));
-        hintX += renderer.MeasureScreenText(kHints[i].label, hintSize) + kHintSpacing * s;
+        hintX += renderer.MeasureScreenText(hints[i].label, hintSize) + kHintSpacing * s;
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));

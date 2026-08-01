@@ -49,6 +49,8 @@ FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json)
 add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
+    src/Ability.cpp
+    src/Brain.cpp
     src/Camera.cpp
     src/ClassSelect.cpp
     src/Game.cpp

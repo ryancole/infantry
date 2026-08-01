@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Ability.h"
+#include "Brain.h"
 #include "Camera.h"
 #include "ClassSelect.h"
 #include "Input.h"
@@ -79,22 +81,29 @@ private:
         bool blood = false;
     };
 
-    // A computer-controlled enemy soldier. NPCs share the player's class
-    // table, so every weapon can be tested from both ends: fired at them,
-    // and dodged when they fire it back.
+    // A computer-controlled soldier. NPCs share the player's class table, so
+    // every weapon can be tested from both ends: fired at them, and dodged when
+    // they fire it back.
+    //
+    // They are not all hostile. An NPC on the player's own team is a squadmate
+    // — it fights the same enemies, soaks the same rounds, and is the thing a
+    // medic's dressing has to have in front of it to be worth anything. Which
+    // side an NPC is on is `team`, and every system that deals damage or picks
+    // a target reads it rather than assuming, the way they all used to.
     struct Npc
     {
         const ClassDef* cls;
+        int team;
         Vector3 pos;
         Vector3 aimDir;
         float hp;
         float fireCooldown;
         int ammo;          // rounds left in the magazine
         float reloadTimer; // > 0 while reloading, and unable to shoot back
-        Vector3 wanderTarget;
-        float repickTimer; // forces a fresh wander target even when stuck
-        float strafeSign;  // +1/-1: which way to circle while engaged
-        float strafeTimer; // time until the strafe direction flips
+        // Whatever this soldier's brain remembers between frames. Meaningless
+        // out here on purpose: which mind it is comes off the class, and what
+        // it keeps in there is that mind's business.
+        Brain::Memory mind;
         float walkPhase;   // leg-swing angle for the soldier model, advances with distance
         float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
         Vector3 knock;     // launch velocity the last hit would give its corpse
@@ -143,7 +152,15 @@ private:
     // and strikes the nearest enemy standing in it, if any. The charge goes
     // whether or not it lands.
     void SwingMelee();
-    void SpawnNpc();
+    // What the player's ability is allowed to act on this frame: the player
+    // themselves, and every living squadmate they can currently see. The sight
+    // rule is applied here rather than inside the ability because the fog is
+    // this class's business and an ability has never heard of a wall — which is
+    // also what keeps "can a medic treat someone through cover" answered in
+    // exactly one place. Rebuilt per call into m_abilityAllies, which is kept
+    // around so the per-frame list costs no allocation.
+    Ability::Scene AbilityScene();
+    void SpawnNpc(int team);
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
     // Turns whatever died this frame into a corpse and takes it off the
@@ -182,6 +199,13 @@ private:
     // out of the world for the respawn wait, so bullets, blasts and NPC AI
     // all have nothing to aim at until they're back.
     bool PlayerOnField() const;
+    // The side the player isn't on. A two-team arena, so "the other team" is a
+    // single answer rather than a list; when it isn't, this is the one place
+    // that has to learn otherwise.
+    int EnemyTeam() const
+    {
+        return (m_team + 1) % static_cast<int>(m_teamSpawns.size());
+    }
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
@@ -221,6 +245,12 @@ private:
     Vector3 m_playerPos;
     Vector3 m_moveVel;                 // current ground velocity; the keys steer it, they aren't it
     Vector3 m_aimDir = Vector3::UnitX;
+    // Which way is right on screen, in world space, taken off the camera during
+    // Update because Render isn't handed one. It's what stands a health bar
+    // square to the view. Read a frame later than it's written, which costs
+    // nothing: yaw is applied before Update runs, and nothing between there and
+    // the draw can turn the camera.
+    Vector3 m_screenRight = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
     // The magazine, and the wait to refill it. A reload starts on the last
@@ -239,6 +269,13 @@ private:
     float m_meleeCooldown = 0.0f; // time until the next swing
     float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
     Vector3 m_meleeSwingDir = Vector3::UnitX;
+    // The class ability's clocks — off the magazine like the grenade and the
+    // blade, so a reload never takes it away. What they mean and what runs them
+    // is Ability's business; all that's kept here is that they belong to this
+    // soldier, and that a respawn hands back a fresh set.
+    Ability::Runtime m_ability;
+    std::vector<Ability::Target> m_abilityAllies; // reused per frame; see AbilityScene
+    std::vector<Brain::Contact> m_contacts;       // reused per NPC; see UpdateNpcs
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;

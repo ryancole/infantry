@@ -189,6 +189,18 @@ void ClassSelect::Render(Renderer& renderer)
         DrawCentered(renderer, loadout, r.x + r.w * 0.5f, r.y + r.h * 0.45f, r.w * 0.042f,
                      Dim(def.color, 0.85f));
 
+        // The ability, named rather than barred: it's the one line on the card
+        // that isn't a quantity, and two classes with identical bars are still
+        // different soldiers if only one of them can put itself back together.
+        // Classes without one say so outright — a blank row would read as a
+        // card that failed to draw, and "not yet" is the truth about where the
+        // prototype is rather than something to hide.
+        const bool hasAbility = def.ability.kind != Ability::Kind::None;
+        const std::string abilityLine =
+            hasAbility ? "Q - " + std::string(def.ability.name) : "NO ABILITY YET";
+        DrawCentered(renderer, abilityLine, r.x + r.w * 0.5f, r.y + r.h * 0.505f, r.w * 0.042f,
+                     hasAbility ? Dim(def.color, 0.85f) : kHintColor);
+
         // Stat bars: label + background + class-colored fill.
         struct Bar
         {

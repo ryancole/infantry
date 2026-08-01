@@ -1,12 +1,15 @@
 #pragma once
 
+#include "Ability.h"
+#include "Brain.h"
+
 #include <DirectXMath.h>
 #include <cstddef>
 
 // The soldier archetypes a player must pick from before spawning. Pure data,
 // so the selection screen and gameplay code share one source of truth. Stats
-// only cover what the prototype simulates today (movement + projectiles);
-// health, abilities, and equipment slots layer on once those systems exist.
+// only cover what the prototype simulates today (movement, projectiles, and
+// one ability per class); equipment slots layer on once those systems exist.
 enum class ClassId
 {
     Marine,
@@ -64,6 +67,52 @@ struct MoveDef
     float stop;  // 1/s; higher plants harder
 };
 
+// The abilities the table below hands out. What an ability *is* — and what it
+// does when the key goes down — lives in Ability.h; what's here is the tuning,
+// because that's the half a balance pass wants to read, and it wants to read it
+// next to the speeds and the magazines it trades against.
+//
+// Only the medic has one so far. The other three carry Ability::kNone, and that
+// isn't a placeholder for a system that hasn't landed — it's an accurate
+// statement of what those three classes are today.
+//
+// The medic's is the first ability in the game. It patches up the medic and
+// one other soldier at once: whoever on their side they happen to be pointed at
+// that instant, out to seven units and a little under half a radian either way.
+// Both get the full sixty over the two and a half seconds — the friendly isn't
+// paid for out of the medic's share — so a medic who keeps someone in front of
+// them for the whole dressing does twice the work of one who doesn't. That's
+// the skill in it, and it's why the target is picked fresh every frame rather
+// than locked at the start: the healing goes where the medic is looking, and
+// sweeping across two wounded soldiers really does split it between them.
+//
+// Sixty health over two and a half seconds is most of a body brought back, and
+// far faster than the fourteen-second wait says it should be — which is the
+// point. The ability isn't rationed by how much it gives, it's rationed by when
+// a medic can afford to give it: the dressing drops the moment they fire,
+// throw, or swing, so using it means choosing to be unarmed in the middle of a
+// fight they're already losing. Everything else stays available — the medic can
+// still run, still turn, still be shot at — because a class built to cross open
+// ground shouldn't be rooted by its own ability. What it hands the player is the
+// same question every time: break contact and come back whole, or hold the
+// trigger and stay hurt. Doing it for somebody else asks it twice over, since
+// now there are two soldiers standing still in the open instead of one.
+//
+// The reach is deliberately short of the range anything shoots at. A medic has
+// to close most of the way to the soldier they're treating, which is the walk
+// the class's speed exists to pay for.
+inline constexpr Ability::Def kFieldDressing = {
+    // kind                  name              duration cooldown sound  | amount reach arc
+    Ability::Kind::Heal, "FIELD DRESSING",     2.5f,    14.0f,   "heal", { 60.0f, 7.0f, 0.45f }
+};
+
+// What a class is, in one row. Increasingly this table is a manifest as much as
+// a balance sheet: the stats are still here to be compared down a column, but
+// the last two fields only name things — which ability this class carries, which
+// mind its NPCs think with — and the things themselves live in their own files.
+// That's the shape to keep as classes get more bespoke. Whatever a class grows
+// next, this row should end up naming it rather than holding it, so that the one
+// place four soldiers can be compared side by side stays readable.
 struct ClassDef
 {
     const char* name;  // uppercase: the debug line font has no lowercase
@@ -71,6 +120,12 @@ struct ClassDef
     DirectX::XMFLOAT4 color; // player body + UI accent
     MoveDef move;
     WeaponDef primary;
+    Ability::Def ability;
+    // How this class fights when the computer is playing it. All four name the
+    // same one today, which is what "the AI doesn't know one class from another
+    // yet" looks like written down — and it's where a class stops sharing that
+    // behavior the moment it has its own.
+    Brain::Kind brain;
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
@@ -109,11 +164,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // under six tenths (grenadier), against a soldier 0.8 wide — so the spread
     // between the lightest class and the heaviest is roughly a third of a body.
     // It is meant to be felt in the hands rather than seen from the camera.
-    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false } },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false } },
-    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false } },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  } },
+    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
