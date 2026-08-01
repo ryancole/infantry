@@ -289,6 +289,7 @@ namespace
         { "R", "RELOAD" },
         { "F", "GRENADE" },
         { "V", "MELEE" },
+        { "SHIFT", "STEADY" },
         { "N", "SPAWN NPC" },
     };
 }

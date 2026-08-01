@@ -25,6 +25,7 @@ namespace
     constexpr int kMeleeKey = 'V';
     constexpr int kReloadKey = 'R';
     constexpr int kSpawnNpcKey = 'N';
+    constexpr int kSteadyKey = VK_SHIFT; // either shift, alongside the pad's left trigger
 
     // Grace period on the trigger after a spawn or a class pick, so the click
     // that got the player into the arena doesn't also fire their first shot.
@@ -56,6 +57,16 @@ namespace
     // enough to stay responsive — a full about-face lands in just under half a
     // second — but slow enough that being flanked is a real problem.
     constexpr float kTurnRate = 8.0f; // radians per second
+
+    // Holding steady trades the two things that get a soldier out of trouble —
+    // moving and coming around — for a gun that sits where it's put. At a
+    // quarter of the turn rate the facing stops chasing the hand and starts
+    // filtering it, so small wobble never reaches the muzzle and a target the
+    // cursor crosses isn't one the barrel swept over. What it costs is being
+    // committed: a full about-face is a second and a half, which is long enough
+    // that anyone who reaches the flank while it's held has already won.
+    constexpr float kSteadyMoveScale = 0.4f;  // fraction of class move speed
+    constexpr float kSteadyTurnScale = 0.25f; // fraction of kTurnRate
 
     // Bounding sphere used to skip soldiers that fall outside the viewport.
     // Generous on purpose: it has to cover the model at full stride, and
@@ -427,6 +438,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
+    // --- Steady: held, not toggled, because it's a posture and not a mode. A
+    // toggle would leave the player standing in it having forgotten, and the
+    // whole cost of the thing is that it's a decision you're currently making ---
+    const bool steady = input.Key(kSteadyKey) || input.pad.triggers.left > 0.5f;
+
     // --- Movement: WASD relative to the screen ---
     const Vector3 upG = camera.ScreenUpOnGround();
     const Vector3 rightG = camera.ScreenRightOnGround();
@@ -441,15 +457,18 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     Vector3 move = upG * moveUp + rightG * moveRight;
     const bool moving = move.LengthSquared() > 1e-10f;
+    const float speed = m_class->moveSpeed * (steady ? kSteadyMoveScale : 1.0f);
     if (moving)
     {
         move.Normalize();
-        m_playerPos += move * (m_class->moveSpeed * dt);
+        m_playerPos += move * (speed * dt);
     }
     ResolveObstacles(m_playerPos);
 
+    // Stride off the speed actually travelled, not the class's, so the feet
+    // keep up with the ground at either pace instead of skating over it.
     if (moving)
-        m_walkPhase += m_class->moveSpeed * kStrideRate * dt;
+        m_walkPhase += speed * kStrideRate * dt;
     m_moveBlend = std::clamp(m_moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
                              0.0f, 1.0f);
 
@@ -474,7 +493,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         // are pointed — the body has to come around to it. Everything that
         // reads the aim, including the shots and the aim ring, follows the
         // facing rather than the cursor, so what's drawn is what will fire.
-        m_aimDir = TurnToward(m_aimDir, aim, kTurnRate * dt);
+        const float turnRate = kTurnRate * (steady ? kSteadyTurnScale : 1.0f);
+        m_aimDir = TurnToward(m_aimDir, aim, turnRate * dt);
     }
 
     using PadTracker = DirectX::GamePad::ButtonStateTracker;
