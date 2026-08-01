@@ -1,6 +1,7 @@
 #include "ClassSelect.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 
 using namespace DirectX;
@@ -20,10 +21,20 @@ namespace
     constexpr XMFLOAT4 kBarBg = { 0.14f, 0.17f, 0.23f, 1.0f };
 
     // Normalizers for the stat bars, chosen so the strongest class in each
-    // stat fills its bar.
+    // stat fills its bar. The fire rate one is computed from the class table
+    // rather than written down, because the number it has to beat is a reload
+    // and a cadence together and no longer reads off any single field.
     constexpr float kMaxMoveSpeed = 11.0f;
-    constexpr float kMaxFireRate = 1.0f / 0.12f;
     constexpr float kMaxProjectileSpeed = 80.0f;
+
+    constexpr float MaxSustainedFireRate()
+    {
+        float best = 0.0f;
+        for (const ClassDef& def : kClassDefs)
+            best = std::max(best, SustainedFireRate(def.primary));
+        return best;
+    }
+    constexpr float kMaxFireRate = MaxSustainedFireRate();
 
     XMFLOAT4 Dim(const XMFLOAT4& c, float f)
     {
@@ -122,6 +133,11 @@ void ClassSelect::Render(Renderer& renderer)
     // soldier gets the same one, so it's called out once, here.
     DrawCentered(renderer, "ONE GRENADE PER LIFE - F TO THROW", w * 0.5f, h * 0.82f, h * 0.022f,
                  kHintColor);
+    // The reload isn't a class trait either — every weapon has one — so it's
+    // called out alongside the grenade rather than on the cards, which carry
+    // only what separates one class from another.
+    DrawCentered(renderer, "EMPTY RELOADS ITSELF - R TO RELOAD EARLY", w * 0.5f, h * 0.86f,
+                 h * 0.022f, kHintColor);
 
     for (size_t i = 0; i < kClassCount; ++i)
     {
@@ -142,6 +158,16 @@ void ClassSelect::Render(Renderer& renderer)
         DrawCentered(renderer, def.blurb, r.x + r.w * 0.5f, r.y + r.h * 0.36f, r.w * 0.042f,
                      kHintColor);
 
+        // Magazine and reload, spelled out rather than barred: they're the two
+        // halves of one trade (how long the class can fire, what the pause
+        // costs), and a bar per half would read as two more things to be good
+        // at when a big magazine and a quick reload aren't the same virtue.
+        char loadout[48];
+        std::snprintf(loadout, sizeof(loadout), "%d %s - %.1fS RELOAD", def.primary.magazine,
+                      def.primary.magazine == 1 ? "RD" : "RDS", def.primary.reloadTime);
+        DrawCentered(renderer, loadout, r.x + r.w * 0.5f, r.y + r.h * 0.45f, r.w * 0.042f,
+                     Dim(def.color, 0.85f));
+
         // Stat bars: label + background + class-colored fill.
         struct Bar
         {
@@ -150,7 +176,7 @@ void ClassSelect::Render(Renderer& renderer)
         };
         const Bar bars[3] = {
             { "SPD", def.moveSpeed / kMaxMoveSpeed },
-            { "ROF", (1.0f / def.primary.fireInterval) / kMaxFireRate },
+            { "ROF", SustainedFireRate(def.primary) / kMaxFireRate },
             { "RNG", def.primary.projectileSpeed / kMaxProjectileSpeed },
         };
         const float rowH = r.h * 0.10f;

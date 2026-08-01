@@ -21,7 +21,12 @@ namespace
     // rebinding UI or config file yet); naming them keeps the defaults in one
     // place for when there is one.
     constexpr int kGrenadeKey = 'F';
+    constexpr int kReloadKey = 'R';
     constexpr int kSpawnNpcKey = 'N';
+
+    // Grace period on the trigger after a spawn or a class pick, so the click
+    // that got the player into the arena doesn't also fire their first shot.
+    constexpr float kFireGrace = 0.3f;
 
     // NPC combat tuning. Engage range is intentionally shorter than what the
     // player can see, so NPCs can be picked at from a distance.
@@ -90,6 +95,11 @@ namespace
     // than darker RGB so whatever it crosses still shows through.
     constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 0.55f };
     constexpr XMFLOAT4 kAimDimColor = { 0.95f, 0.95f, 0.40f, 0.22f };
+    // Drained of color while the magazine is out: the line still tracks the
+    // cursor, but nothing will come out of the barrel until the reload ends,
+    // and that has to be visible without looking away from the fight.
+    constexpr XMFLOAT4 kAimSpentColor = { 0.62f, 0.64f, 0.68f, 0.45f };
+    constexpr XMFLOAT4 kAimSpentDimColor = { 0.62f, 0.64f, 0.68f, 0.18f };
     // The grenade's ring is orange, so it never reads as part of the primary's
     // yellow aim line.
     constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
@@ -323,7 +333,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             m_class = &GetClassDef(*picked);
             m_phase = Phase::Playing;
-            m_fireCooldown = 0.3f; // so the selection click doesn't fire a shot
+            m_ammo = m_class->primary.magazine;
+            m_reloadTimer = 0.0f;
+            m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
         }
@@ -392,20 +404,48 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_aimDir = aim;
     }
 
-    // --- Firing ---
     using PadTracker = DirectX::GamePad::ButtonStateTracker;
+
+    // --- Reload: the magazine runs out mid-firefight, and getting a fresh one
+    // in costs the player their guns for a moment. It can be started early,
+    // which is the whole decision the system asks for — top up in the lull, or
+    // get caught doing it. The cadence timer keeps running underneath, so a
+    // reload never doubles as a way to skip one ---
+    if (m_reloadTimer > 0.0f)
+    {
+        m_reloadTimer -= dt;
+        if (m_reloadTimer <= 0.0f)
+        {
+            m_reloadTimer = 0.0f;
+            m_ammo = m_class->primary.magazine;
+            m_sound.Play("reload", 1.0f, 0.25f); // mag in, a note above mag out
+        }
+    }
+    else if (input.KeyPressed(kReloadKey) || input.padEvents.x == PadTracker::PRESSED)
+    {
+        BeginReload();
+    }
+
+    // --- Firing ---
     m_fireCooldown -= dt;
     if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
          input.pad.triggers.right > 0.5f) &&
-        m_fireCooldown <= 0.0f)
+        m_fireCooldown <= 0.0f && m_reloadTimer <= 0.0f && m_ammo > 0)
     {
         SpawnShot(m_class->primary, m_playerPos, m_aimDir, m_team, m_aimDist);
         m_fireCooldown = m_class->primary.fireInterval;
+        // Empty: reload without being asked. Holding an empty weapon is never
+        // the play, so making the player press for it would only cost them the
+        // time it took to notice.
+        if (--m_ammo == 0)
+            BeginReload();
     }
 
     // --- Grenade: same for every class, lobbed onto the aim point, then left
     // to bounce until its fuse runs out (UpdateProjectiles). One per life, so
-    // there's no cooldown to run down — spending it is the whole cost. Thrown
+    // there's no cooldown to run down — spending it is the whole cost. It comes
+    // off the belt rather than out of the magazine, so it's still throwable
+    // mid-reload: caught empty, a player has one thing left to do. Thrown
     // on the key's press edge, which with a single grenade also stops a held
     // key from throwing it before the player means to ---
     if ((input.KeyPressed(kGrenadeKey) || input.padEvents.leftShoulder == PadTracker::PRESSED) &&
@@ -429,6 +469,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     if (m_playerDied)
     {
         m_playerDied = false;
+        // A reload dies with the soldier: nothing ticks it down during the
+        // respawn wait, so leaving it running would hold the HUD on RELOADING
+        // for the whole countdown over a magazine no one is holding.
+        m_reloadTimer = 0.0f;
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
@@ -439,13 +483,29 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     camera.SetTarget(m_playerPos);
 }
 
+void Game::BeginReload()
+{
+    const WeaponDef& weapon = m_class->primary;
+    if (m_reloadTimer > 0.0f || m_ammo >= weapon.magazine)
+        return;
+
+    // Whatever was left in the magazine goes with it: partial reloads would
+    // make tapping R between every shot strictly correct, and there's nothing
+    // interesting about a player who does that.
+    m_ammo = 0;
+    m_reloadTimer = weapon.reloadTime;
+    m_sound.Play("reload");
+}
+
 void Game::Respawn(IsoCamera& camera)
 {
     m_playerHp = kMaxHealth;
     m_playerPos = m_teamSpawns[m_team];
-    m_grenades = kGrenadesPerLife; // respawn is a fresh loadout
-    m_fireCooldown = 0.3f;         // brief grace, as after the class pick
-    m_moveBlend = 0.0f;            // stands still on arrival instead of resuming mid-stride
+    m_grenades = kGrenadesPerLife;      // respawn is a fresh loadout: the grenade back,
+    m_ammo = m_class->primary.magazine; // and a full magazine, however they died holding it
+    m_reloadTimer = 0.0f;
+    m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
+    m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
     m_phase = Phase::Playing;
     // A cut, not a sweep: the spawn is somewhere else entirely, and panning
     // the whole arena to get there would take longer than the wait did.
@@ -572,6 +632,8 @@ void Game::SpawnNpc()
     npc.aimDir = { -1.0f, 0.0f, 0.0f };
     npc.hp = kMaxHealth;
     npc.fireCooldown = 0.5f; // brief grace so spawns don't instantly fire
+    npc.ammo = npc.cls->primary.magazine;
+    npc.reloadTimer = 0.0f;
     npc.wanderTarget = npc.pos;
     npc.repickTimer = 0.0f; // picks a real wander target on the first tick
     npc.strafeSign = (Rand(0.0f, 1.0f) < 0.5f) ? -1.0f : 1.0f;
@@ -587,6 +649,22 @@ void Game::UpdateNpcs(float dt)
     for (Npc& npc : m_npcs)
     {
         npc.fireCooldown -= dt;
+
+        // NPCs reload on the same terms the player does, so the lull after a
+        // squad empties its magazines is a real opening rather than something
+        // only one side has to live with. They reload wherever they are —
+        // breaking off to do it under cover is a decision the AI isn't smart
+        // enough to make yet.
+        if (npc.reloadTimer > 0.0f)
+        {
+            npc.reloadTimer -= dt;
+            if (npc.reloadTimer <= 0.0f)
+            {
+                npc.reloadTimer = 0.0f;
+                npc.ammo = npc.cls->primary.magazine;
+                PlaySoundAt("reload", npc.pos, 0.25f);
+            }
+        }
 
         Vector3 toPlayer = m_playerPos - npc.pos;
         toPlayer.y = 0.0f;
@@ -617,7 +695,7 @@ void Game::UpdateNpcs(float dt)
                 move = Vector3(-toPlayer.z, 0.0f, toPlayer.x) * npc.strafeSign;
             speed *= kNpcCombatSpeed;
 
-            if (npc.fireCooldown <= 0.0f)
+            if (npc.fireCooldown <= 0.0f && npc.reloadTimer <= 0.0f && npc.ammo > 0)
             {
                 // A touch of angular spread keeps NPCs beatable up close and
                 // makes long-range sniper duels survivable.
@@ -628,6 +706,11 @@ void Game::UpdateNpcs(float dt)
                 // down on the player instead of sailing to max range.
                 SpawnShot(weapon, npc.pos, dir, npcTeam, dist);
                 npc.fireCooldown = weapon.fireInterval;
+                if (--npc.ammo == 0)
+                {
+                    npc.reloadTimer = weapon.reloadTime;
+                    PlaySoundAt("reload", npc.pos);
+                }
             }
         }
         else
@@ -1163,27 +1246,33 @@ void Game::Render(Renderer& renderer)
     // can't clear, or the ground). A bright tick crosses the end point, lobbed
     // weapons get a landing circle, and the grenade gets a marker where the
     // throw touches down. Drawn after the fog pass so it stays bright. There's
-    // nothing to aim while dead, so it goes with the soldier.
+    // nothing to aim while dead, so it goes with the soldier. The whole
+    // indicator greys out through a reload — where the shot would land is still
+    // worth showing, but not as something the player can act on yet.
     if (m_phase == Phase::Playing)
     {
+        const bool reloading = m_reloadTimer > 0.0f;
+        const XMFLOAT4 aimColor = reloading ? kAimSpentColor : kAimColor;
+        const XMFLOAT4 aimDim = reloading ? kAimSpentDimColor : kAimDimColor;
+
         PredictShotStop(m_class->primary, m_playerPos, m_aimDir, m_aimDist, &m_aimArc);
 
         m_scratch.clear();
         for (size_t i = 1; i < m_aimArc.size(); ++i)
         {
-            m_scratch.push_back({ m_aimArc[i - 1], kAimDimColor });
-            m_scratch.push_back({ m_aimArc[i], kAimDimColor });
+            m_scratch.push_back({ m_aimArc[i - 1], aimDim });
+            m_scratch.push_back({ m_aimArc[i], aimDim });
         }
 
         // End-of-flight tick, perpendicular to the aim direction, at the
         // height of the impact (on a wall it floats at the hit point).
         const Vector3 end = m_aimArc.back();
         const float px = -m_aimDir.z * 0.45f, pz = m_aimDir.x * 0.45f;
-        m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, kAimColor });
-        m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, kAimColor });
+        m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, aimColor });
+        m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, aimColor });
 
         if (m_class->primary.lobVelocity > 0.0f)
-            AppendCircle(m_scratch, end, 0.4f, kAimColor);
+            AppendCircle(m_scratch, end, 0.4f, aimColor);
 
         // Grenade marker: where the throw first touches down. Deliberately not
         // the blast radius — the grenade bounces and rolls on from here before
@@ -1215,10 +1304,20 @@ void Game::RenderHud(Renderer& renderer)
     const float h = static_cast<float>(renderer.Height());
     const float size = h * 0.024f;
     const float y = h - size * 2.0f;
-    // Grenades read as a count, not a timer: there's nothing to wait out, so
-    // what matters is whether one is left.
+    // Ammo is the one readout that changes shot to shot, so it says the two
+    // things a player acts on and nothing else: how many are left, and — while
+    // the magazine is out — that the trigger is dead for the moment. The
+    // remaining seconds aren't spelled out; the reload is short enough that a
+    // number to read would arrive after it mattered. Grenades read as a count,
+    // not a timer: there's nothing to wait out, so what matters is whether one
+    // is left.
+    const std::string ammo = m_reloadTimer > 0.0f
+                                 ? "RELOADING"
+                                 : std::to_string(m_ammo) + "/" +
+                                       std::to_string(m_class->primary.magazine);
     const std::string status =
         "HP " + std::to_string(static_cast<int>(std::ceil(std::max(m_playerHp, 0.0f)))) +
+        "   AMMO " + ammo +
         "   NADES " + std::to_string(m_grenades) +
         "   NPCS " + std::to_string(m_npcs.size());
     renderer.DrawScreenText(status, size, y, size, kHudColor);
@@ -1248,7 +1347,7 @@ void Game::RenderHud(Renderer& renderer)
                   renderer.CpuFrameMs(), renderer.LastDrawCalls());
     renderer.DrawScreenText(perf, size, size, perfSize, kHudHintColor);
 
-    const std::string hint = "F - GRENADE   N - SPAWN NPC";
+    const std::string hint = "R - RELOAD   F - GRENADE   N - SPAWN NPC";
     renderer.DrawScreenText(hint, w - renderer.MeasureScreenText(hint, size) - size, y, size,
                             kHudHintColor);
 }

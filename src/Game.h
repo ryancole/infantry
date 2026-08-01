@@ -85,6 +85,8 @@ private:
         Vector3 aimDir;
         float hp;
         float fireCooldown;
+        int ammo;          // rounds left in the magazine
+        float reloadTimer; // > 0 while reloading, and unable to shoot back
         Vector3 wanderTarget;
         float repickTimer; // forces a fresh wander target even when stuck
         float strafeSign;  // +1/-1: which way to circle while engaged
@@ -129,6 +131,10 @@ private:
     // `targetDist` away, up to the weapon's max range.
     void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
                    float targetDist);
+    // Starts the player's reload: empties the rest of the magazine into the
+    // timer and plays the mag-out click. A no-op if one is already running or
+    // the magazine is full, so the reload key can be leaned on harmlessly.
+    void BeginReload();
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
@@ -196,6 +202,12 @@ private:
     Vector3 m_aimDir = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;
+    // The magazine, and the wait to refill it. A reload starts on the last
+    // round automatically or on the reload key, and until it finishes the
+    // trigger does nothing — no ammo pool behind it, so the only cost of a
+    // reload is the time.
+    int m_ammo = 0;
+    float m_reloadTimer = 0.0f; // > 0 while reloading
     int m_grenades = kGrenadesPerLife; // same issue for every class; refilled on respawn
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
