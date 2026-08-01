@@ -32,13 +32,16 @@ namespace
     // that got the player into the arena doesn't also fire their first shot.
     constexpr float kFireGrace = 0.3f;
 
-    // NPC combat tuning. Engage range is intentionally shorter than what the
-    // player can see, so NPCs can be picked at from a distance.
-    constexpr float kNpcEngageRange = 22.0f;    // sight radius for entering combat
-    constexpr float kNpcPreferredRange = 11.0f; // closer than this they strafe, not advance
-    constexpr float kNpcAimJitter = 0.06f;      // radians of random spread per shot
-    constexpr float kNpcCombatSpeed = 0.85f;    // fraction of class move speed in combat
-    constexpr float kNpcWanderSpeed = 0.5f;     // fraction of class move speed idling
+    // How far an NPC can make anyone out at all — a fact about eyesight, not a
+    // decision, which is why it's here and the range a brain chooses to fight
+    // at is in Brain.cpp. Generous on purpose: it has to sit above whatever the
+    // hungriest brain wants, or that brain quietly gets capped by a number it
+    // can't see and nothing anywhere says so.
+    constexpr float kNpcSightRange = 30.0f;
+    // Random spread per shot, which keeps NPCs beatable up close and long-range
+    // sniper duels survivable. A property of the whole AI rather than of any
+    // one mind, so the body applies it.
+    constexpr float kNpcAimJitter = 0.06f;
 
     // Line of sight is computed at eye level: colliders whose box doesn't
     // reach this height (low crates, curbs) can be seen and shot over.
@@ -938,10 +941,7 @@ void Game::SpawnNpc(int team)
     npc.fireCooldown = 0.5f; // brief grace so spawns don't instantly fire
     npc.ammo = npc.cls->primary.magazine;
     npc.reloadTimer = 0.0f;
-    npc.wanderTarget = npc.pos;
-    npc.repickTimer = 0.0f; // picks a real wander target on the first tick
-    npc.strafeSign = (Rand(0.0f, 1.0f) < 0.5f) ? -1.0f : 1.0f;
-    npc.strafeTimer = Rand(1.0f, 2.5f);
+    Brain::Wake(npc.mind, npc.pos, m_rng);
     npc.walkPhase = Rand(0.0f, XM_2PI); // desync strides across the squad
     npc.moveBlend = 0.0f;
     m_npcs.push_back(npc);
@@ -969,110 +969,73 @@ void Game::UpdateNpcs(float dt)
             }
         }
 
-        // Who this soldier is fighting: the nearest enemy it can actually see.
-        // It used to be the player and nothing else, which was true only while
-        // every NPC on the field was hostile. Now a hostile picks between the
-        // player and the player's squadmates, and a squadmate goes after the
-        // hostiles — same rule, read off `team` instead of assumed.
+        // Who this soldier can see. Everyone hostile, at whatever range, with
+        // the same sight test the player's fog of war uses so nobody shoots
+        // through a wall the player can't see through either — and no further
+        // opinion than that. How close is close enough to fight is a matter of
+        // temperament, so it belongs to the brain; how far a soldier can pick
+        // anyone out at all is a fact about the world, so it's here.
         //
-        // The sight test is the one the player's fog of war uses, so nobody
-        // shoots through a wall the player can't see through either. It runs
-        // once per candidate, which makes target selection quadratic in the
+        // It runs a sight test per candidate, which makes this quadratic in the
         // squad size; at the handful of soldiers a debug key puts on the field
         // that's cheaper than the bookkeeping to avoid it.
+        m_contacts.clear();
         const Vector2 npcXZ = { npc.pos.x, npc.pos.z };
-        bool engaged = false;
-        float dist = 0.0f;
-        Vector3 target;
-        const auto consider = [&](const Vector3& pos) {
+        const auto sight = [&](const Vector3& pos) {
             const float d = Vector2(pos.x - npc.pos.x, pos.z - npc.pos.z).Length();
-            if (d < 1e-3f || d > kNpcEngageRange || (engaged && d >= dist))
+            if (d < 1e-3f || d > kNpcSightRange)
                 return;
-            if (!Visibility::IsPointVisible(npcXZ, { pos.x, pos.z }, m_occluders))
-                return;
-            engaged = true;
-            dist = d;
-            target = pos;
+            if (Visibility::IsPointVisible(npcXZ, { pos.x, pos.z }, m_occluders))
+                m_contacts.push_back({ pos, d });
         };
         if (PlayerOnField() && npc.team != m_team)
-            consider(m_playerPos);
+            sight(m_playerPos);
         for (const Npc& other : m_npcs)
             if (&other != &npc && other.hp > 0.0f && other.team != npc.team)
-                consider(other.pos);
+                sight(other.pos);
 
-        Vector3 toEnemy;
-        if (engaged)
+        const WeaponDef& weapon = npc.cls->primary;
+        const bool canFire = npc.fireCooldown <= 0.0f && npc.reloadTimer <= 0.0f && npc.ammo > 0;
+        const Brain::Senses senses = { npc.pos, npc.aimDir, &m_contacts, m_arenaHalf, canFire };
+        const Brain::Intent intent =
+            Brain::Think(npc.cls->brain, npc.mind, senses, dt, m_rng);
+
+        // From here it's the body: everything a soldier does the same way
+        // whichever mind is driving it.
+        if (intent.facing.LengthSquared() > 1e-6f)
+            npc.aimDir = intent.facing;
+
+        if (intent.fire && canFire)
         {
-            toEnemy = target - npc.pos;
-            toEnemy.y = 0.0f;
+            // A touch of angular spread keeps NPCs beatable up close and makes
+            // long-range sniper duels survivable. It stays out here rather than
+            // being a brain's to set: it's a fairness knob on the whole AI, not
+            // a personality — a brain that could tighten its own aim would be a
+            // brain that could decide how hard it is to play against.
+            const Vector3 dir = Vector3::Transform(
+                npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
+            // NPCs "aim" at what they're shooting at rather than at max range,
+            // so a grenadier's lob comes down on them.
+            SpawnShot(weapon, npc.pos, dir, npc.team, intent.fireDist);
+            npc.fireCooldown = weapon.fireInterval;
+            if (--npc.ammo == 0)
+            {
+                npc.reloadTimer = weapon.reloadTime;
+                PlaySoundAt("reload", npc.pos);
+            }
         }
 
-        Vector3 move;
         // NPCs still move on the speed alone — the momentum rates are the
         // player's, and giving the AI weight is a change to how it steers
         // rather than one more field to read.
-        float speed = npc.cls->move.speed;
-        const WeaponDef& weapon = npc.cls->primary;
-        if (engaged)
-        {
-            toEnemy /= dist;
-            npc.aimDir = toEnemy;
-
-            npc.strafeTimer -= dt;
-            if (npc.strafeTimer <= 0.0f)
-            {
-                npc.strafeSign = -npc.strafeSign;
-                npc.strafeTimer = Rand(1.0f, 2.5f);
-            }
-            if (dist > kNpcPreferredRange)
-                move = toEnemy;
-            else
-                move = Vector3(-toEnemy.z, 0.0f, toEnemy.x) * npc.strafeSign;
-            speed *= kNpcCombatSpeed;
-
-            if (npc.fireCooldown <= 0.0f && npc.reloadTimer <= 0.0f && npc.ammo > 0)
-            {
-                // A touch of angular spread keeps NPCs beatable up close and
-                // makes long-range sniper duels survivable.
-                const Vector3 dir = Vector3::Transform(
-                    npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
-                // NPCs "aim" at their target's feet, so a grenadier's lob comes
-                // down on them instead of sailing to max range.
-                SpawnShot(weapon, npc.pos, dir, npc.team, dist);
-                npc.fireCooldown = weapon.fireInterval;
-                if (--npc.ammo == 0)
-                {
-                    npc.reloadTimer = weapon.reloadTime;
-                    PlaySoundAt("reload", npc.pos);
-                }
-            }
-        }
-        else
-        {
-            npc.repickTimer -= dt;
-            const Vector3 toTarget = npc.wanderTarget - npc.pos;
-            const float wlen = toTarget.Length();
-            if (wlen < 1.0f || npc.repickTimer <= 0.0f)
-            {
-                const float margin = m_arenaHalf - 2.0f;
-                npc.wanderTarget = { Rand(-margin, margin), 0.0f, Rand(-margin, margin) };
-                npc.repickTimer = Rand(4.0f, 8.0f);
-            }
-            else
-            {
-                move = toTarget / wlen;
-                npc.aimDir = move;
-            }
-            speed *= kNpcWanderSpeed;
-        }
-
-        const bool moving = move.LengthSquared() > 1e-6f;
+        const float speed = npc.cls->move.speed * intent.speedScale;
+        const bool moving = intent.move.LengthSquared() > 1e-6f;
         if (moving)
             npc.walkPhase += speed * kStrideRate * dt;
         npc.moveBlend = std::clamp(npc.moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
                                    0.0f, 1.0f);
 
-        npc.pos += move * (speed * dt);
+        npc.pos += intent.move * (speed * dt);
         ResolveObstacles(npc.pos);
     }
 

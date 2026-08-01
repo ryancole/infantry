@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ability.h"
+#include "Brain.h"
 #include "Camera.h"
 #include "ClassSelect.h"
 #include "Input.h"
@@ -99,10 +100,10 @@ private:
         float fireCooldown;
         int ammo;          // rounds left in the magazine
         float reloadTimer; // > 0 while reloading, and unable to shoot back
-        Vector3 wanderTarget;
-        float repickTimer; // forces a fresh wander target even when stuck
-        float strafeSign;  // +1/-1: which way to circle while engaged
-        float strafeTimer; // time until the strafe direction flips
+        // Whatever this soldier's brain remembers between frames. Meaningless
+        // out here on purpose: which mind it is comes off the class, and what
+        // it keeps in there is that mind's business.
+        Brain::Memory mind;
         float walkPhase;   // leg-swing angle for the soldier model, advances with distance
         float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
         Vector3 knock;     // launch velocity the last hit would give its corpse
@@ -274,6 +275,7 @@ private:
     // soldier, and that a respawn hands back a fresh set.
     Ability::Runtime m_ability;
     std::vector<Ability::Target> m_abilityAllies; // reused per frame; see AbilityScene
+    std::vector<Brain::Contact> m_contacts;       // reused per NPC; see UpdateNpcs
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;

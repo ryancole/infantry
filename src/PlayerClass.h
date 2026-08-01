@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ability.h"
+#include "Brain.h"
 
 #include <DirectXMath.h>
 #include <cstddef>
@@ -105,6 +106,13 @@ inline constexpr Ability::Def kFieldDressing = {
     Ability::Kind::Heal, "FIELD DRESSING",     2.5f,    14.0f,   "heal", { 60.0f, 7.0f, 0.45f }
 };
 
+// What a class is, in one row. Increasingly this table is a manifest as much as
+// a balance sheet: the stats are still here to be compared down a column, but
+// the last two fields only name things — which ability this class carries, which
+// mind its NPCs think with — and the things themselves live in their own files.
+// That's the shape to keep as classes get more bespoke. Whatever a class grows
+// next, this row should end up naming it rather than holding it, so that the one
+// place four soldiers can be compared side by side stays readable.
 struct ClassDef
 {
     const char* name;  // uppercase: the debug line font has no lowercase
@@ -113,6 +121,11 @@ struct ClassDef
     MoveDef move;
     WeaponDef primary;
     Ability::Def ability;
+    // How this class fights when the computer is playing it. All four name the
+    // same one today, which is what "the AI doesn't know one class from another
+    // yet" looks like written down — and it's where a class stops sharing that
+    // behavior the moment it has its own.
+    Brain::Kind brain;
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
@@ -151,11 +164,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // under six tenths (grenadier), against a soldier 0.8 wide — so the spread
     // between the lightest class and the heaviest is roughly a third of a body.
     // It is meant to be felt in the hands rather than seen from the camera.
-    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing },
-    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone },
+    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
