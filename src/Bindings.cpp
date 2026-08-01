@@ -38,7 +38,6 @@ namespace
         { "ability",      "ABILITY",      Key('Q') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
         { "orbit_camera", "ORBIT CAMERA", Mouse(2) },
-        { "spawn_npc",    "SPAWN NPC",    Key('N') },
     };
 
     constexpr const char* kMouseNames[3] = { "LEFT MOUSE", "RIGHT MOUSE", "MIDDLE MOUSE" };

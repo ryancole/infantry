@@ -30,8 +30,8 @@ class Bindings
 {
 public:
     // Everything a player can rebind. The order is the order the settings
-    // screen lists them in, which is why movement leads and the debug spawn
-    // key brings up the rear.
+    // screen lists them in, which is why movement leads and the camera brings
+    // up the rear.
     enum class Action
     {
         MoveForward,
@@ -45,7 +45,6 @@ public:
         Ability,
         Steady,
         OrbitCamera,
-        SpawnNpc,
         Count
     };
 

@@ -366,6 +366,7 @@ void Game::LoadContent(Renderer& renderer)
         m_teamSpawns.push_back(spawn.pos);
     m_team = std::min(m_team, static_cast<int>(m_teamSpawns.size()) - 1);
     m_playerPos = m_teamSpawns[m_team];
+    m_nextNpcClass.assign(m_teamSpawns.size(), 0);
 
     // Static floor grid.
     const int half = static_cast<int>(m_arenaHalf);
@@ -482,6 +483,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_meleeCooldown = 0.0f;
             m_ability = {};
             m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
+            // The rest of the match turns up with the player. The class pick is
+            // the last thing standing between the menu and the arena, so it's
+            // also the first moment there's anything for two squads to do.
+            FillRosters();
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
         }
@@ -509,6 +514,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_physics.Step(dt);
         UpdateProjectiles(dt);
         ReapDead();
+        UpdateReinforcements(dt);
         UpdateParticles(dt);
         UpdateCorpses(dt);
         if (m_respawnTimer <= 0.0f)
@@ -705,20 +711,14 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_sound.Play(ability.startSound);
     }
 
-    // --- NPCs: debug spawning and AI. Holding steady puts the soldier on the
-    // player's own team instead of the other one, which is the only way to get
-    // a squadmate onto the field so far — and the only way to have anything for
-    // the medic's dressing to reach. It's the steady control itself and not a
-    // second reading of the same key, so a player who moves steady somewhere
-    // else takes the spawn modifier with them ---
-    if (m_binds.Pressed(input, Act::SpawnNpc) || input.padEvents.y == PadTracker::PRESSED)
-        SpawnNpc(steady ? m_team : EnemyTeam());
+    // --- NPCs ---
     UpdateNpcs(dt);
 
     // --- Projectiles (simulated by Jolt) ---
     m_physics.Step(dt);
     UpdateProjectiles(dt);
     ReapDead();
+    UpdateReinforcements(dt);
     UpdateParticles(dt);
     UpdateCorpses(dt);
 
@@ -974,14 +974,13 @@ void Game::ResolveObstacles(Vector3& pos) const
 
 void Game::SpawnNpc(int team)
 {
-    // An NPC appears at its own team's spawn point, scattered a little so
-    // repeated presses don't stack them on one tile. Which team that is comes
-    // from the caller now: a squadmate turns up where the player turns up, and
-    // a hostile across the arena, so the two debug keys put soldiers where
-    // those soldiers would actually have come from.
+    // An NPC appears at its own team's spawn point, scattered a little so a
+    // squad arriving at once doesn't stack on one tile. A squadmate turns up
+    // where the player turns up and a hostile across the arena, because the
+    // spawn a soldier comes from is a fact about the side they're on.
     Npc npc;
-    npc.cls = &kClassDefs[m_nextNpcClass];
-    m_nextNpcClass = (m_nextNpcClass + 1) % static_cast<int>(kClassCount);
+    npc.cls = &kClassDefs[m_nextNpcClass[team]];
+    m_nextNpcClass[team] = (m_nextNpcClass[team] + 1) % static_cast<int>(kClassCount);
     npc.team = team;
     npc.pos = m_teamSpawns[team];
     npc.pos.x += Rand(-2.0f, 2.0f);
@@ -996,6 +995,42 @@ void Game::SpawnNpc(int team)
     npc.walkPhase = Rand(0.0f, XM_2PI); // desync strides across the squad
     npc.moveBlend = 0.0f;
     m_npcs.push_back(npc);
+}
+
+int Game::NpcCount(int team) const
+{
+    return static_cast<int>(std::count_if(m_npcs.begin(), m_npcs.end(), [team](const Npc& n) {
+        return n.team == team && n.hp > 0.0f;
+    }));
+}
+
+void Game::FillRosters()
+{
+    for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
+        for (int i = NpcCount(team); i < NpcQuota(team); ++i)
+            SpawnNpc(team);
+}
+
+void Game::UpdateReinforcements(float dt)
+{
+    // Two passes and a sweep, the way the dead are collected: the spawn has to
+    // happen between deciding a slot is due and forgetting about it, and doing
+    // all three in one loop would mean adding to one list while erasing from
+    // another.
+    for (Reinforcement& slot : m_reinforcements)
+        slot.timer -= dt;
+
+    for (const Reinforcement& slot : m_reinforcements)
+    {
+        // Counted fresh each time, so two slots coming due on the same frame
+        // both get filled. The quota is checked rather than assumed because the
+        // roster is what says how many a side fields — the queue only says when
+        // — and a wait that outlived its slot should be dropped, not honored.
+        if (slot.timer <= 0.0f && NpcCount(slot.team) < NpcQuota(slot.team))
+            SpawnNpc(slot.team);
+    }
+
+    std::erase_if(m_reinforcements, [](const Reinforcement& slot) { return slot.timer <= 0.0f; });
 }
 
 void Game::UpdateNpcs(float dt)
@@ -1028,8 +1063,10 @@ void Game::UpdateNpcs(float dt)
         // anyone out at all is a fact about the world, so it's here.
         //
         // It runs a sight test per candidate, which makes this quadratic in the
-        // squad size; at the handful of soldiers a debug key puts on the field
-        // that's cheaper than the bookkeeping to avoid it.
+        // number of soldiers on the field; at two squads of five that's a
+        // hundred segment tests a frame, which is cheaper than the bookkeeping
+        // to avoid it. The number to watch it against is kTeamSize, and it will
+        // want revisiting long before this arena holds a proper Infantry zone.
         m_contacts.clear();
         const Vector2 npcXZ = { npc.pos.x, npc.pos.z };
         const auto sight = [&](const Vector3& pos) {
@@ -1437,8 +1474,15 @@ void Game::ReapDead()
 {
     for (const Npc& npc : m_npcs)
         if (npc.hp <= 0.0f)
+        {
             SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color,
                         npc.knock);
+            // The soldier is gone, but the slot they held isn't: their side is
+            // owed a body, and it comes back on the same clock the player's
+            // does. Whether it's actually sent is settled when the wait is up
+            // rather than here — see UpdateReinforcements.
+            m_reinforcements.push_back({ npc.team, kRespawnDelay });
+        }
     std::erase_if(m_npcs, [](const Npc& n) { return n.hp <= 0.0f; });
 }
 
@@ -1838,19 +1882,23 @@ void Game::RenderHud(Renderer& renderer)
                               ? 1.0f - m_ability.time / m_class->ability.duration
                               : -1.0f;
     hud.abilityCooldown = m_ability.cooldown;
-    // Contacts are hostiles, not bodies on the field: a squadmate is not
-    // something the player has to account for, and a count that went up when
-    // one arrived would be reporting the opposite of what the icon promises.
-    hud.npcs = static_cast<int>(std::count_if(
-        m_npcs.begin(), m_npcs.end(), [this](const Npc& n) { return n.team != m_team; }));
+    // The roster, both sides counted the same way: everyone standing. The
+    // player is one of the soldiers on their own side rather than an extra on
+    // top of it, which is what makes the two rows comparable — five against
+    // five should read as five against five, and it wouldn't if one row
+    // counted the local soldier and the other had nobody to leave out.
+    hud.allies = NpcCount(m_team) + (PlayerOnField() ? 1 : 0);
+    hud.enemies = static_cast<int>(std::count_if(m_npcs.begin(), m_npcs.end(), [this](const Npc& n) {
+        return n.team != m_team && n.hp > 0.0f;
+    }));
+    hud.teamSize = kTeamSize;
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;
 
     // The key-cap row. The ability leads it, named after what it does rather
     // than after the slot it sits in — FIELD DRESSING says more about the class
     // than ABILITY ever would, and it's the only cap here a player might not
-    // already know. The rest is the standard kit every soldier carries, and the
-    // ally spawn is two controls at once because that's what it takes.
+    // already know. The rest is the standard kit every soldier carries.
     //
     // The caps are the player's own bindings, so a rebind is on the HUD the
     // moment they leave the settings screen and nothing here has to be told.
@@ -1867,8 +1915,6 @@ void Game::RenderHud(Renderer& renderer)
     addHint(m_binds.Label(Act::Grenade), "GRENADE");
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
-    addHint(m_binds.Label(Act::SpawnNpc), "SPAWN FOE");
-    addHint(m_binds.Label(Act::Steady) + "+" + m_binds.Label(Act::SpawnNpc), "SPAWN ALLY");
 
     hud.hints = hints;
     hud.hintCount = hintCount;
