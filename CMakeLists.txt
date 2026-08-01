@@ -56,6 +56,7 @@ add_executable(infantry WIN32
     src/Game.cpp
     src/Hud.cpp
     src/Level.cpp
+    src/MainMenu.cpp
     src/Model.cpp
     src/Physics.cpp
     src/Soldier.cpp

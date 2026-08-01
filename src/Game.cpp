@@ -430,6 +430,20 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     const float rumble = m_rumbleTime > 0.0f ? 0.6f : 0.0f;
     DirectX::GamePad::Get().SetVibration(0, rumble, rumble);
 
+    if (m_phase == Phase::MainMenu)
+    {
+        if (const auto picked =
+                m_mainMenu.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
+        {
+            switch (*picked)
+            {
+            case MainMenu::Choice::Deploy: m_phase = Phase::ClassSelect; break;
+            case MainMenu::Choice::Quit:   m_quit = true; break;
+            }
+        }
+        return;
+    }
+
     if (m_phase == Phase::ClassSelect)
     {
         if (const auto picked =
@@ -1508,6 +1522,12 @@ void Game::Render(Renderer& renderer)
     // down: the drained color is what separates watching the arena from
     // playing in it, so it holds until the moment they're back in control.
     renderer.SetMonochrome(m_phase == Phase::Dead);
+
+    if (m_phase == Phase::MainMenu)
+    {
+        m_mainMenu.Render(renderer);
+        return;
+    }
 
     if (m_phase == Phase::ClassSelect)
     {

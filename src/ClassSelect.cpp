@@ -1,10 +1,13 @@
 #include "ClassSelect.h"
 
+#include "ScreenDraw.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
 
 using namespace DirectX;
+using namespace ScreenDraw;
 
 namespace
 {
@@ -52,47 +55,6 @@ namespace
     constexpr float kMaxMoveSpeed = MaxMoveSpeed();
     constexpr float kMaxProjectileSpeed = MaxProjectileSpeed();
 
-    XMFLOAT4 Dim(const XMFLOAT4& c, float f)
-    {
-        return { c.x * f, c.y * f, c.z * f, c.w };
-    }
-
-    void AppendQuad(std::vector<Vertex>& out, float x, float y, float w, float h, float z,
-                    const XMFLOAT4& color)
-    {
-        const Vertex v[4] = {
-            { XMFLOAT3{ x, y, z }, color },
-            { XMFLOAT3{ x + w, y, z }, color },
-            { XMFLOAT3{ x + w, y + h, z }, color },
-            { XMFLOAT3{ x, y + h, z }, color },
-        };
-        out.push_back(v[0]);
-        out.push_back(v[1]);
-        out.push_back(v[2]);
-        out.push_back(v[0]);
-        out.push_back(v[2]);
-        out.push_back(v[3]);
-    }
-
-    void AppendOutline(std::vector<Vertex>& out, float x, float y, float w, float h, float z,
-                       const XMFLOAT4& color)
-    {
-        const XMFLOAT3 p[4] = {
-            { x, y, z }, { x + w, y, z }, { x + w, y + h, z }, { x, y + h, z }
-        };
-        for (int i = 0; i < 4; ++i)
-        {
-            out.push_back({ p[i], color });
-            out.push_back({ p[(i + 1) % 4], color });
-        }
-    }
-
-    void DrawCentered(Renderer& renderer, std::string_view text, float centerX, float y,
-                      float size, const XMFLOAT4& color)
-    {
-        renderer.DrawScreenText(text, centerX - renderer.MeasureScreenText(text, size) * 0.5f, y,
-                                size, color);
-    }
 }
 
 ClassSelect::Rect ClassSelect::CardRect(size_t index, float width, float height)

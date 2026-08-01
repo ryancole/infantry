@@ -179,6 +179,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
         app.camera.AddZoom(app.input.wheel);
         app.game.Update(dt, app.input, app.camera);
+        // Quitting from the menu takes the same road out as the close box: tear
+        // the window down and let the next pump pick up the WM_QUIT, rather than
+        // dropping out of the loop here and leaving a second way to shut down.
+        // The `continue` is what keeps this frame from rendering into it.
+        if (app.game.QuitRequested())
+        {
+            DestroyWindow(hwnd);
+            continue;
+        }
         app.camera.Update(dt);
 
         if (app.renderer.Width() > 0 && app.renderer.Height() > 0)

@@ -5,6 +5,7 @@
 #include "Camera.h"
 #include "ClassSelect.h"
 #include "Input.h"
+#include "MainMenu.h"
 #include "Physics.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
@@ -33,16 +34,25 @@ public:
     void Update(float dt, const Input& input, IsoCamera& camera);
     void Render(Renderer& renderer);
 
+    // Whether the player has asked, from the menu, to be done. The game has no
+    // way to close a window and no business learning one, so it says so and the
+    // platform layer does it on the next turn of the loop.
+    bool QuitRequested() const { return m_quit; }
+
     // Stops the game's hold on anything that outlives a frame; call once the
     // loop is done, before the window and devices go away.
     void Shutdown();
 
 private:
-    // Players must pick a class before they spawn; the arena only starts
-    // simulating once the choice is made. Dying drops back out of Playing for
-    // the respawn wait: the arena keeps running, the player just isn't in it.
+    // The game opens on the menu, not in the arena: something has to ask
+    // whether the player is playing before anything asks what they're playing
+    // as. From there they must pick a class before they spawn, and the arena
+    // only starts simulating once that choice is made. Dying drops back out of
+    // Playing for the respawn wait: the arena keeps running, the player just
+    // isn't in it.
     enum class Phase
     {
+        MainMenu,
         ClassSelect,
         Playing,
         Dead,
@@ -233,8 +243,10 @@ private:
 
     Physics m_physics;
     Sound m_sound;
-    Phase m_phase = Phase::ClassSelect;
+    Phase m_phase = Phase::MainMenu;
+    MainMenu m_mainMenu;
     ClassSelect m_classSelect;
+    bool m_quit = false; // see QuitRequested
     const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id. The local player
