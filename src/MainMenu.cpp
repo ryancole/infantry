@@ -31,8 +31,9 @@ namespace
         MainMenu::Choice choice;
     };
 
-    constexpr std::array<Item, 2> kItems = { {
+    constexpr std::array<Item, 3> kItems = { {
         { "DEPLOY", "PICK A CLASS AND TAKE THE FIELD", MainMenu::Choice::Deploy },
+        { "KEY BINDS", "PUT THE CONTROLS WHERE YOU WANT THEM", MainMenu::Choice::KeyBinds },
         { "QUIT", "LEAVE THE ARENA", MainMenu::Choice::Quit },
     } };
 }

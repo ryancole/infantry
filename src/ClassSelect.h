@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Bindings.h"
 #include "Input.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
@@ -18,7 +19,10 @@ public:
     std::optional<ClassId> Update(const Input& input, uint32_t width, uint32_t height);
 
     // Draws the screen in screen-space; overrides the renderer's view-proj.
-    void Render(Renderer& renderer);
+    // Takes the bindings because the briefing lines under the cards name the
+    // keys they're talking about, and the player's are the only ones worth
+    // naming.
+    void Render(Renderer& renderer, const Bindings& binds);
 
 private:
     struct Rect

@@ -313,24 +313,11 @@ namespace
         float width = 0.0f; // filled in during layout
     };
 
-    struct Hint
-    {
-        const char* key;
-        const char* label;
-    };
-    // What every soldier's keys do. The ability's binding isn't in here because
-    // it isn't one of them: the key is the same for everyone but the thing it
-    // does isn't, so it's added at the front of the row at draw time under the
-    // ability's own name.
-    constexpr Hint kHints[] = {
-        { "R", "RELOAD" },
-        { "F", "GRENADE" },
-        { "V", "MELEE" },
-        { "SHIFT", "STEADY" },
-        { "N", "SPAWN FOE" },
-        { "SHIFT+N", "SPAWN ALLY" },
-    };
-    constexpr size_t kMaxHints = std::size(kHints) + 1;
+    // As many key caps as the row will take. There are seven today; the ceiling
+    // is here so the layout has a fixed amount of stack to work in, not because
+    // the number means anything.
+    constexpr size_t kMaxHints = 10;
+
 }
 
 XMFLOAT4 Hud::HealthColor(float fraction)
@@ -580,50 +567,46 @@ void Hud::Render(Renderer& renderer, const State& st)
     // --- Key hints ---
     //
     // Above the panel as small key caps instead of the old right-aligned line
-    // of text: same three bindings, centered with everything else, and short
-    // enough to stop competing with the readouts for the eye.
+    // of text: centered with everything else, and short enough to stop
+    // competing with the readouts for the eye. Which bindings are worth the
+    // space is settled before they get here (Hud::State::hints); this end knows
+    // only how to lay a row of caps out, and stops at kMaxHints of them so a
+    // caller can't quietly widen the row past the screen.
 
     const float hintSize = kHintSize * s;
     const float capH = hintSize + kHintKeyPad * s * 2.0f;
     const float hintY = panelY - kHintGap * s - capH;
 
-    // The ability leads the row, named after what it does rather than after the
-    // slot it sits in: FIELD DRESSING says more about the class than ABILITY
-    // ever would, and it's the only line here a player might not already know.
-    Hint hints[kMaxHints];
-    size_t hintCount = 0;
-    if (st.ability)
-        hints[hintCount++] = { "Q", st.ability->name };
-    for (const Hint& hint : kHints)
-        hints[hintCount++] = hint;
-
+    const size_t hintCount = std::min(st.hintCount, kMaxHints);
     float hintsW = 0.0f;
     float capWidths[kMaxHints] = {};
     for (size_t i = 0; i < hintCount; ++i)
     {
-        capWidths[i] = std::max(renderer.MeasureScreenText(hints[i].key, hintSize) +
+        capWidths[i] = std::max(renderer.MeasureScreenText(st.hints[i].key, hintSize) +
                                     kHintKeyPad * s * 2.0f,
                                 capH);
         hintsW += capWidths[i] + kHintTextGap * s +
-                  renderer.MeasureScreenText(hints[i].label, hintSize);
+                  renderer.MeasureScreenText(st.hints[i].label, hintSize);
     }
-    hintsW += kHintSpacing * s * (hintCount - 1);
+    if (hintCount > 0)
+        hintsW += kHintSpacing * s * (hintCount - 1);
 
     float hintX = std::floor((w - hintsW) * 0.5f);
     for (size_t i = 0; i < hintCount; ++i)
     {
+        const Hint& hint = st.hints[i];
         AppendRoundRect(tris, hintX, hintY, capWidths[i], capH, capH * 0.28f,
                         Fade(kTrack, fade));
-        renderer.DrawScreenText(hints[i].key,
+        renderer.DrawScreenText(hint.key,
                                 hintX + (capWidths[i] -
-                                         renderer.MeasureScreenText(hints[i].key, hintSize)) *
+                                         renderer.MeasureScreenText(hint.key, hintSize)) *
                                             0.5f,
                                 hintY + kHintKeyPad * s, hintSize, Fade(kValueColor, fade));
 
         hintX += capWidths[i] + kHintTextGap * s;
-        renderer.DrawScreenText(hints[i].label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
+        renderer.DrawScreenText(hint.label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
                                 Fade(kMutedColor, fade));
-        hintX += renderer.MeasureScreenText(hints[i].label, hintSize) + kHintSpacing * s;
+        hintX += renderer.MeasureScreenText(hint.label, hintSize) + kHintSpacing * s;
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));

@@ -18,15 +18,10 @@ namespace
     constexpr float kMuzzleOffset = 0.7f; // shots start this far ahead of the shooter
     constexpr float kGravity = 9.81f;     // must match Jolt's default gravity magnitude
 
-    // Default bindings. Keys are still hardcoded per action (there's no
-    // rebinding UI or config file yet); naming them keeps the defaults in one
-    // place for when there is one.
-    constexpr int kGrenadeKey = 'F';
-    constexpr int kMeleeKey = 'V';
-    constexpr int kAbilityKey = 'Q';
-    constexpr int kReloadKey = 'R';
-    constexpr int kSpawnNpcKey = 'N';
-    constexpr int kSteadyKey = VK_SHIFT; // either shift, alongside the pad's left trigger
+    // Shorthand for the action names, which are read a dozen times in Update
+    // and once each. The bindings behind them are the player's, and live in
+    // Bindings.h alongside the defaults.
+    using Act = Bindings::Action;
 
     // Grace period on the trigger after a spawn or a class pick, so the click
     // that got the player into the arena doesn't also fire their first shot.
@@ -358,6 +353,11 @@ namespace
 
 void Game::LoadContent(Renderer& renderer)
 {
+    // The player's own layout, if they've made one. A missing or unreadable
+    // file isn't an error worth stopping for — it just means the defaults, which
+    // is what a first run is — so nothing here checks the answer.
+    m_binds.Load();
+
     m_sound.Init(); // loads the wave bank and starts the ambience
 
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
@@ -437,15 +437,39 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             switch (*picked)
             {
-            case MainMenu::Choice::Deploy: m_phase = Phase::ClassSelect; break;
-            case MainMenu::Choice::Quit:   m_quit = true; break;
+            case MainMenu::Choice::Deploy:   m_phase = Phase::ClassSelect; break;
+            case MainMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
+            case MainMenu::Choice::Quit:     m_quit = true; break;
             }
+        }
+        return;
+    }
+
+    // The settings screen edits the bindings in place; the write to disk
+    // happens here, once, on the way out. A save per keystroke would put a file
+    // write in the middle of a player trying three keys to see which feels
+    // right, and there's nothing to lose by waiting until they're done.
+    if (m_phase == Phase::KeyBinds)
+    {
+        if (m_bindMenu.Update(input, m_binds, camera.ViewportWidth(), camera.ViewportHeight()))
+        {
+            m_binds.Save();
+            m_phase = Phase::MainMenu;
         }
         return;
     }
 
     if (m_phase == Phase::ClassSelect)
     {
+        // Escape backs out to the menu rather than closing the game, now that
+        // there's a menu to back out to. It's the same key that ends the game
+        // from inside the arena, one level further in — out of the screen you're
+        // on, and then out of the game.
+        if (input.KeyPressed(VK_ESCAPE))
+        {
+            m_phase = Phase::MainMenu;
+            return;
+        }
         if (const auto picked =
                 m_classSelect.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
         {
@@ -461,6 +485,17 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
         }
+        return;
+    }
+
+    // In the arena, escape still ends the game outright, which is what it did
+    // from the window procedure before there were any screens to back out
+    // through. It's the honest state of things: there's no pause menu to fall
+    // into yet, and quietly making the key do nothing would be worse than the
+    // bluntness of what it does.
+    if (input.KeyPressed(VK_ESCAPE))
+    {
+        m_quit = true;
         return;
     }
 
@@ -484,7 +519,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // --- Steady: held, not toggled, because it's a posture and not a mode. A
     // toggle would leave the player standing in it having forgotten, and the
     // whole cost of the thing is that it's a decision you're currently making ---
-    const bool steady = input.Key(kSteadyKey) || input.pad.triggers.left > 0.5f;
+    const bool steady = m_binds.Down(input, Act::Steady) || input.pad.triggers.left > 0.5f;
 
     // --- Movement: WASD relative to the screen ---
     const Vector3 upG = camera.ScreenUpOnGround();
@@ -492,10 +527,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     m_screenRight = rightG;
 
     float moveUp = 0.0f, moveRight = 0.0f;
-    if (input.Key('W')) moveUp += 1.0f;
-    if (input.Key('S')) moveUp -= 1.0f;
-    if (input.Key('D')) moveRight += 1.0f;
-    if (input.Key('A')) moveRight -= 1.0f;
+    if (m_binds.Down(input, Act::MoveForward)) moveUp += 1.0f;
+    if (m_binds.Down(input, Act::MoveBack)) moveUp -= 1.0f;
+    if (m_binds.Down(input, Act::MoveRight)) moveRight += 1.0f;
+    if (m_binds.Down(input, Act::MoveLeft)) moveRight -= 1.0f;
     moveUp += input.pad.thumbSticks.leftY;
     moveRight += input.pad.thumbSticks.leftX;
 
@@ -574,7 +609,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_sound.Play("reload", 1.0f, 0.25f); // mag in, a note above mag out
         }
     }
-    else if (input.KeyPressed(kReloadKey) || input.padEvents.x == PadTracker::PRESSED)
+    else if (m_binds.Pressed(input, Act::Reload) || input.padEvents.x == PadTracker::PRESSED)
     {
         BeginReload();
     }
@@ -590,7 +625,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     // --- Firing ---
     m_fireCooldown -= dt;
-    if ((input.MouseDown(0) || input.MousePressed(0) || input.Key(VK_SPACE) ||
+    if ((m_binds.Down(input, Act::Fire) || m_binds.Pressed(input, Act::Fire) ||
          input.pad.triggers.right > 0.5f) &&
         m_fireCooldown <= 0.0f && m_reloadTimer <= 0.0f && m_ammo > 0)
     {
@@ -611,7 +646,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // mid-reload: caught empty, a player has one thing left to do. Thrown
     // on the key's press edge, which with a single grenade also stops a held
     // key from throwing it before the player means to ---
-    if ((input.KeyPressed(kGrenadeKey) || input.padEvents.leftShoulder == PadTracker::PRESSED) &&
+    if ((m_binds.Pressed(input, Act::Grenade) ||
+         input.padEvents.leftShoulder == PadTracker::PRESSED) &&
         m_grenades > 0)
     {
         SpawnShot(kGrenade, m_playerPos, m_aimDir, m_team, m_aimDist);
@@ -646,7 +682,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_meleeCharges = kMelee.charges;
         }
     }
-    if ((input.Key(kMeleeKey) || input.pad.IsRightShoulderPressed()) &&
+    if ((m_binds.Down(input, Act::Melee) || input.pad.IsRightShoulderPressed()) &&
         m_meleeCooldown <= 0.0f && m_meleeCharges > 0)
     {
         SwingMelee();
@@ -659,7 +695,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // and what taking a weapon back costs. All this end of it owns is the two
     // inputs and the answer to who's on the field ---
     const bool abilityPressed =
-        input.KeyPressed(kAbilityKey) || input.padEvents.b == PadTracker::PRESSED;
+        m_binds.Pressed(input, Act::Ability) || input.padEvents.b == PadTracker::PRESSED;
     const Ability::Def& ability = m_class->ability;
     if (Ability::Update(ability, m_ability, AbilityScene(), dt, abilityPressed, weaponUsed) &&
         ability.startSound)
@@ -669,13 +705,14 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_sound.Play(ability.startSound);
     }
 
-    // --- NPCs: debug spawning and AI. Held shift puts the soldier on the
+    // --- NPCs: debug spawning and AI. Holding steady puts the soldier on the
     // player's own team instead of the other one, which is the only way to get
     // a squadmate onto the field so far — and the only way to have anything for
-    // the medic's dressing to reach. It doubles up with the steady key, which
-    // costs a spawning player a moment at walking pace and nothing else ---
-    if (input.KeyPressed(kSpawnNpcKey) || input.padEvents.y == PadTracker::PRESSED)
-        SpawnNpc(input.Key(kSteadyKey) ? m_team : EnemyTeam());
+    // the medic's dressing to reach. It's the steady control itself and not a
+    // second reading of the same key, so a player who moves steady somewhere
+    // else takes the spawn modifier with them ---
+    if (m_binds.Pressed(input, Act::SpawnNpc) || input.padEvents.y == PadTracker::PRESSED)
+        SpawnNpc(steady ? m_team : EnemyTeam());
     UpdateNpcs(dt);
 
     // --- Projectiles (simulated by Jolt) ---
@@ -1529,9 +1566,15 @@ void Game::Render(Renderer& renderer)
         return;
     }
 
+    if (m_phase == Phase::KeyBinds)
+    {
+        m_bindMenu.Render(renderer, m_binds);
+        return;
+    }
+
     if (m_phase == Phase::ClassSelect)
     {
-        m_classSelect.Render(renderer);
+        m_classSelect.Render(renderer, m_binds);
         return;
     }
 
@@ -1802,6 +1845,33 @@ void Game::RenderHud(Renderer& renderer)
         m_npcs.begin(), m_npcs.end(), [this](const Npc& n) { return n.team != m_team; }));
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;
+
+    // The key-cap row. The ability leads it, named after what it does rather
+    // than after the slot it sits in — FIELD DRESSING says more about the class
+    // than ABILITY ever would, and it's the only cap here a player might not
+    // already know. The rest is the standard kit every soldier carries, and the
+    // ally spawn is two controls at once because that's what it takes.
+    //
+    // The caps are the player's own bindings, so a rebind is on the HUD the
+    // moment they leave the settings screen and nothing here has to be told.
+    Hud::Hint hints[kMaxHints];
+    size_t hintCount = 0;
+    const auto addHint = [&](std::string key, const char* label) {
+        m_hintKeys[hintCount] = std::move(key);
+        hints[hintCount] = { m_hintKeys[hintCount].c_str(), label };
+        ++hintCount;
+    };
+    if (hud.ability)
+        addHint(m_binds.Label(Act::Ability), m_class->ability.name);
+    addHint(m_binds.Label(Act::Reload), "RELOAD");
+    addHint(m_binds.Label(Act::Grenade), "GRENADE");
+    addHint(m_binds.Label(Act::Melee), "MELEE");
+    addHint(m_binds.Label(Act::Steady), "STEADY");
+    addHint(m_binds.Label(Act::SpawnNpc), "SPAWN FOE");
+    addHint(m_binds.Label(Act::Steady) + "+" + m_binds.Label(Act::SpawnNpc), "SPAWN ALLY");
+
+    hud.hints = hints;
+    hud.hintCount = hintCount;
     Hud::Render(renderer, hud);
 
     // Respawn countdown, centered and big: while it's up there's nothing else
