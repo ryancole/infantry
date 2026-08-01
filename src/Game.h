@@ -29,11 +29,12 @@
 // movement, mouse aim, and projectiles. This is the seed for Infantry-style
 // systems (vehicles, weapons, teams, net play) to grow from.
 //
-// Everyone on the field but the local player is an NPC today, but the shape of
-// the thing is already the shape a server would keep: each side has a fixed
-// number of slots, a slot that empties is refilled after a wait, and the local
-// player is simply the one slot this machine is driving. When soldiers start
-// arriving over a socket, they take slots that the AI is filling now.
+// The roster is one list of Units, and it is the shape a server would keep:
+// each side has a fixed number of slots, a slot that empties is refilled after
+// a wait, and who drives a slot is a fact *about* the soldier in it rather
+// than a difference in what a soldier is. The local player is the one unit
+// carrying Controller::Local; everyone else thinks with a Brain. When soldiers
+// start arriving over a socket, they'll be one more controller.
 class Game
 {
 public:
@@ -108,28 +109,56 @@ private:
         bool blood = false;
     };
 
-    // A computer-controlled soldier. NPCs share the player's class table, so
-    // every weapon can be tested from both ends: fired at them, and dodged when
-    // they fire it back.
+    // One soldier on the field, whoever is driving it. The player used to be a
+    // dozen loose m_player* fields and everyone else an Npc struct, which meant
+    // every system that dealt damage or picked a target had to say everything
+    // twice — and a server can't work that way: to it a match is ten of the
+    // same thing, and which machine steers which is bookkeeping. So the roster
+    // is one shape, and the controller is one more fact about a soldier.
     //
-    // They are not all hostile. An NPC on the player's own team is a squadmate
+    // They are not all hostile. A unit on the player's own team is a squadmate
     // — it fights the same enemies, soaks the same rounds, and is the thing a
     // medic's dressing has to have in front of it to be worth anything. Which
-    // side an NPC is on is `team`, and every system that deals damage or picks
-    // a target reads it rather than assuming, the way they all used to.
-    struct Npc
+    // side a unit is on is `team`, and every system that deals damage or picks
+    // a target reads it rather than assuming.
+    struct Unit
     {
+        // Who decides what this soldier does next: a Brain, or this machine's
+        // input. Nothing below the controller differs by it — a networked
+        // player joins this enum, not this struct.
+        enum class Controller
+        {
+            Ai,
+            Local,
+        };
+
         const ClassDef* cls;
+        Controller controller;
         int team;
         Vector3 pos;
+        // Ground momentum: the keys steer it, they aren't it. Only the local
+        // player moves on it today — the AI still walks on speed alone, and
+        // giving it weight is a change to how it steers, not one more field
+        // to read.
+        Vector3 moveVel;
         Vector3 aimDir;
         float hp;
         float fireCooldown;
         int ammo;          // rounds left in the magazine
         float reloadTimer; // > 0 while reloading, and unable to shoot back
-        // Whatever this soldier's brain remembers between frames. Meaningless
-        // out here on purpose: which mind it is comes off the class, and what
-        // it keeps in there is that mind's business.
+        // The rest of the kit, issued to every controller alike: today's
+        // brains never throw the grenade, swing the blade, or carry a class
+        // with an ability, but that's a fact about the brains, not about what
+        // an AI soldier is issued.
+        int grenades;
+        int meleeCharges;
+        float meleeRecover;  // > 0 while the charges are coming back
+        float meleeCooldown; // time until the next swing
+        Ability::Runtime ability;
+        // Whatever this soldier's brain remembers between frames, and nothing
+        // at all while the controller is Local. Meaningless out here on
+        // purpose: which mind it is comes off the class, and what it keeps in
+        // there is that mind's business.
         Brain::Memory mind;
         float walkPhase;   // leg-swing angle for the soldier model, advances with distance
         float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
@@ -191,42 +220,57 @@ private:
     // `targetDist` away, up to the weapon's max range.
     void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
                    float targetDist);
-    // Starts the player's reload: empties the rest of the magazine into the
-    // timer and plays the mag-out click. A no-op if one is already running or
-    // the magazine is full, so the reload key can be leaned on harmlessly.
-    void BeginReload();
-    // Spends a melee charge on a swing through the arc in front of the player
-    // and strikes the nearest enemy standing in it, if any. The charge goes
-    // whether or not it lands.
-    void SwingMelee();
-    // What the player's ability is allowed to act on this frame: the player
+    // Starts `unit`'s reload: empties the rest of the magazine into the timer
+    // and plays the mag-out click. A no-op if one is already running or the
+    // magazine is full, so the reload key can be leaned on harmlessly.
+    void BeginReload(Unit& unit);
+    // Spends one of `attacker`'s melee charges on a swing through the arc in
+    // front of them and strikes the nearest enemy standing in it, if any. The
+    // charge goes whether or not it lands.
+    void SwingMelee(Unit& attacker);
+    // What `user`'s ability is allowed to act on this frame: the user
     // themselves, and every living squadmate they can currently see. The sight
     // rule is applied here rather than inside the ability because the fog is
     // this class's business and an ability has never heard of a wall — which is
     // also what keeps "can a medic treat someone through cover" answered in
     // exactly one place. Rebuilt per call into m_abilityAllies, which is kept
     // around so the per-frame list costs no allocation.
-    Ability::Scene AbilityScene();
-    void SpawnNpc(int team);
-    // Puts both sides on the field at full strength. Called once, when the
-    // player commits to a class, because that's the moment the match starts —
-    // nothing simulates until then and there's nobody for a squad to fight.
+    Ability::Scene AbilityScene(Unit& user);
+    // The unit this machine is driving, or null while there isn't one — before
+    // a class is picked, and for the length of the respawn wait. Dying really
+    // does take the player off the roster: the systems that sweep it (shots,
+    // blasts, sights) stop finding them without any of them asking who's alive.
+    Unit* LocalUnit();
+    const Unit* LocalUnit() const;
+    // Deals the next class off `team`'s rotation and puts an AI soldier on the
+    // field with it.
+    void SpawnAi(int team);
+    // Puts the player's own unit on the field: the class they picked, at their
+    // team's spawn, with the whole loadout issued fresh off the class table.
+    // Both the match start and every respawn come through here, which is what
+    // makes a respawn a new soldier rather than a checklist of things to
+    // remember to put back.
+    void SpawnLocal();
+    // Puts both sides on the field at full strength, the local player among
+    // them. Called once, when the player commits to a class, because that's
+    // the moment the match starts — nothing simulates until then and there's
+    // nobody for a squad to fight.
     void FillRosters();
     // Runs the queue of waiting slots down and puts a soldier back on the field
     // when one comes due, unless the side is somehow already up to strength.
     void UpdateReinforcements(float dt);
-    // How many computer soldiers `team` is meant to be fielding: its share of
-    // the roster, less the slot the local player holds on their own side. The
+    // How many AI soldiers `team` is meant to be fielding: its share of the
+    // roster, less the slot the local player holds on their own side. The
     // player's slot is theirs whether they're alive or waiting to respawn, so
     // nothing fills in for them and nothing has to be sent away when they're
     // back.
-    int NpcQuota(int team) const
+    int AiQuota(int team) const
     {
         return kTeamSize - (team == m_team ? 1 : 0);
     }
-    // Living computer soldiers currently on `team`.
-    int NpcCount(int team) const;
-    void UpdateNpcs(float dt);
+    // Living AI soldiers currently on `team`.
+    int AiCount(int team) const;
+    void UpdateUnits(float dt);
     void UpdateProjectiles(float dt);
     // Turns whatever died this frame into a corpse and takes it off the
     // roster. Runs once, after every system that can deal damage has had its
@@ -261,10 +305,6 @@ private:
     // Puts the player back on their team's spawn with a fresh loadout and
     // returns to Phase::Playing; the camera cuts rather than sweeps across.
     void Respawn(IsoCamera& camera);
-    // Whether there's a live player body to shoot at. Dying takes the player
-    // out of the world for the respawn wait, so bullets, blasts and NPC AI
-    // all have nothing to aim at until they're back.
-    bool PlayerOnField() const;
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
@@ -321,9 +361,13 @@ private:
     // respawn/teammate logic reads from the same table.
     std::vector<Vector3> m_teamSpawns;
     int m_team = 0;
-    Vector3 m_playerPos;
-    Vector3 m_moveVel;                 // current ground velocity; the keys steer it, they aren't it
-    Vector3 m_aimDir = Vector3::UnitX;
+    // Where the player is looking from: their unit's position while they have
+    // one, frozen on the spot they died for the length of the wait. The fog,
+    // the culling, and the ear all read it, which is what keeps a dead
+    // player's view — and what they can hear moving through it — anchored to
+    // the body instead of snapping to nowhere when the unit comes off the
+    // roster.
+    Vector3 m_eyePos;
     // Which way is right on screen, in world space, taken off the camera during
     // Update because Render isn't handed one. It's what stands a health bar
     // square to the view. Read a frame later than it's written, which costs
@@ -331,46 +375,29 @@ private:
     // the draw can turn the camera.
     Vector3 m_screenRight = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
-    float m_fireCooldown = 0.0f;
-    // The magazine, and the wait to refill it. A reload starts on the last
-    // round automatically or on the reload key, and until it finishes the
-    // trigger does nothing — no ammo pool behind it, so the only cost of a
-    // reload is the time.
-    int m_ammo = 0;
-    float m_reloadTimer = 0.0f; // > 0 while reloading
-    int m_grenades = kGrenadesPerLife; // same issue for every class; refilled on respawn
-    // The blade, on its own charges and its own recovery — both entirely off
-    // the magazine, which is what leaves it in the player's hands during a
-    // reload. The flash is the swing the arc indicator draws, and it keeps the
-    // direction it was swung in so aiming away mid-swing doesn't drag it round.
-    int m_meleeCharges = kMelee.charges;
-    float m_meleeRecover = 0.0f;  // > 0 while the charges are coming back
-    float m_meleeCooldown = 0.0f; // time until the next swing
-    float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
+    // The swing the arc indicator draws, kept in the direction it was swung so
+    // aiming away mid-swing doesn't drag it round. Presentation rather than
+    // soldier state — it's the mark of the local player's last swing, which is
+    // the only one drawn — so it stays out of Unit until a brain learns the
+    // blade and somebody else's swing is worth seeing.
+    float m_meleeFlash = 0.0f; // seconds of swing arc left to draw
     Vector3 m_meleeSwingDir = Vector3::UnitX;
-    // The class ability's clocks — off the magazine like the grenade and the
-    // blade, so a reload never takes it away. What they mean and what runs them
-    // is Ability's business; all that's kept here is that they belong to this
-    // soldier, and that a respawn hands back a fresh set.
-    Ability::Runtime m_ability;
     std::vector<Ability::Target> m_abilityAllies; // reused per frame; see AbilityScene
-    std::vector<Brain::Contact> m_contacts;       // reused per NPC; see UpdateNpcs
-    float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
-    float m_moveBlend = 0.0f;
-    float m_playerHp = kMaxHealth;
-    float m_frameMs = 0.0f;        // smoothed wall-clock frame time, for the HUD
-    float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
+    std::vector<Brain::Contact> m_contacts;       // reused per unit; see UpdateUnits
+    float m_frameMs = 0.0f;      // smoothed wall-clock frame time, for the HUD
+    float m_rumbleTime = 0.0f;   // gamepad vibration left on a damage pulse
     float m_respawnTimer = 0.0f; // seconds left of the wait, while Phase::Dead
-    bool m_playerDied = false;   // set by projectile hits, handled in Update
-    Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 
-    std::vector<Npc> m_npcs;
+    // The roster: every soldier on the field, whichever machine or mind is
+    // driving them. Dead units are swept off it by ReapDead, so anything
+    // holding a pointer or index into it is good for one frame at most.
+    std::vector<Unit> m_units;
     // Where each side has got to in the class table. Per team rather than
     // global so both squads are dealt from the same rotation and come out with
     // the same makeup, however many soldiers each of them is owed — which is
     // not the same number, since the player fills one of the slots on their
     // own side. Sized to the level's team count in LoadContent.
-    std::vector<int> m_nextNpcClass;
+    std::vector<int> m_nextAiClass;
     std::vector<Reinforcement> m_reinforcements; // slots waiting to be refilled
     std::mt19937 m_rng{ std::random_device{}() };
 

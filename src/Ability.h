@@ -36,7 +36,7 @@
 // answers who is on the field and who can be seen, since it owns the roster and
 // the fog; the ability answers what happens to them. That's why Scene below
 // hands over a flat list of soldiers rather than the roster, and why nothing in
-// here has ever heard of an Npc, a team, or a wall.
+// here has ever heard of a Unit, a team, or a wall.
 namespace Ability
 {
     using DirectX::SimpleMath::Vector3;
@@ -107,8 +107,10 @@ namespace Ability
     // One soldier an ability can act on. Deliberately not the caller's own
     // soldier type: an ability doesn't care what a soldier is made of, only
     // about where they are and the health it's about to change. Keeping it to
-    // those two facts is what lets the player — who isn't an NPC and never will
-    // be — be handed over on exactly the same terms as anyone else.
+    // those two facts once meant the player — then a different type from an
+    // NPC — could be handed over on the same terms as anyone else; the roster
+    // is one type now, and the boundary stays because it's about knowledge,
+    // not convenience.
     struct Target
     {
         Vector3 pos;
