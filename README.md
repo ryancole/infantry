@@ -11,7 +11,8 @@ Prototype scaffold with a working game loop:
 - Fixed-angle isometric camera (orthographic, smoothed follow, mouse-wheel zoom)
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
-- Per-class primary weapons plus one grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
+- Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
+- One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
 - Ragdoll corpses: the soldier model is built from seven jointed segments, so a killed soldier is handed to Jolt as a ragdoll that keeps the pose it died in, is thrown by the blow that killed it, and falls where it stood
 
 Dependencies are fetched and built automatically by CMake (`FetchContent`) on first configure.
@@ -23,6 +24,7 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | `W` `A` `S` `D` | Move (screen-relative) |
 | Mouse | Aim |
 | Left mouse / `Space` | Fire |
+| `R` | Reload (automatic when the magazine empties) |
 | `F` | Throw grenade (every class, one per life) |
 | Mouse wheel | Zoom |
 | `Esc` | Quit |

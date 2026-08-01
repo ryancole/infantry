@@ -97,6 +97,32 @@ for ($i = 0; $i -lt $n; $i++) {
 }
 Write-Wav (Join-Path $OutDir "explode.wav") $explode
 
+# reload: a dry mechanical clack for a magazine leaving or entering the well.
+# One clip covers both ends of the reload — the game plays it flat when the mag
+# drops and pitched up when the fresh one seats, so the pair brackets the wait.
+# Short and quiet: it fires twice per magazine, so it has to sit under the
+# gunfire rather than announce itself.
+$n = [int](0.09 * $SampleRate)
+$reload = [float[]]::new($n)
+$phase = 0.0
+$hp = 0.0
+$prev = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    # High-passed noise: the rattle of the catch, with none of the body a
+    # low-passed burst would give it (that's the thud).
+    $white = 2.0 * $rng.NextDouble() - 1.0
+    $hp = 0.7 * ($hp + $white - $prev)
+    $prev = $white
+    $click = $hp * [Math]::Exp(-$t * 90.0)
+    # A short metallic ring under it, so it reads as a part seating in metal.
+    $freq = 900.0 * [Math]::Exp(-$t * 8.0) + 240.0
+    $phase += 2.0 * [Math]::PI * $freq / $SampleRate
+    $ring = 0.5 * [Math]::Sin($phase) * [Math]::Exp(-$t * 55.0)
+    $reload[$i] = 0.5 * ($click + $ring)
+}
+Write-Wav (Join-Path $OutDir "reload.wav") $reload
+
 # death: a longer descending tone, slightly overdriven so it stands out from
 # the hit sound even in a firefight.
 $n = [int](0.5 * $SampleRate)
