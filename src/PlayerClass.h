@@ -46,12 +46,30 @@ struct WeaponDef
     bool explodes;           // impact plays the explosion effect + boom, not a thud
 };
 
+// How a class carries itself on the ground. Split out of ClassDef for the same
+// reason WeaponDef was: the three numbers are one idea and they're read
+// together, so they're worth a name and a brace rather than three more loose
+// fields in a row that's already long.
+//
+// The rates are how fast the walk converges on what the keys are asking for
+// (1/s, so the time constant is their reciprocal): `accel` is what getting
+// under way or hauling round onto a new heading costs, `stop` is how quickly a
+// released key settles. Keeping them per-class is what lets weight be a stat
+// rather than a global feel — top speed says how fast a soldier travels, and
+// these say how much of a body has to be moved to get there.
+struct MoveDef
+{
+    float speed; // units per second
+    float accel; // 1/s; higher answers the keys sooner
+    float stop;  // 1/s; higher plants harder
+};
+
 struct ClassDef
 {
     const char* name;  // uppercase: the debug line font has no lowercase
     const char* blurb;
     DirectX::XMFLOAT4 color; // player body + UI accent
-    float moveSpeed;         // units per second
+    MoveDef move;
     WeaponDef primary;
 };
 
@@ -74,11 +92,28 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // instead is one shot that has to count, and a wait long enough that missing
     // it is felt. The sniper waits longest, as it did when it carried five: the
     // deadliest shot in the game pays the highest price for the next one.
-    // name         blurb              color                            move  | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f },    9.0f, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false } },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f },   11.0f, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false } },
-    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f },    7.0f, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false } },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f },    7.5f, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  } },
+    // Weight is its own axis, and it does not follow top speed. The medic is
+    // the light one at both ends — quickest onto its speed and quickest off it
+    // — because a class whose job is crossing open ground to reach someone
+    // should be able to change its mind. The grenadier is the heavy one, slow
+    // to set off and carrying the longest coast: it lobs from a spot it chose,
+    // and being hard to reposition is what it pays for the blast. The sniper
+    // splits them. It sets off slowest of all, but plants harder than anyone,
+    // which is the pair of numbers that matches what it does — a class that
+    // takes one shot at a time wants to be stopped the moment it decides to
+    // be, and doesn't much care how long the walk over took. The marine sits
+    // in the middle of both, and is still the class the others are read
+    // against.
+    //
+    // Coast on release runs from about a third of a unit (sniper) to a little
+    // under six tenths (grenadier), against a soldier 0.8 wide — so the spread
+    // between the lightest class and the heaviest is roughly a third of a body.
+    // It is meant to be felt in the hands rather than seen from the camera.
+    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false } },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false } },
+    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false } },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  } },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine

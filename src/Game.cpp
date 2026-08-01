@@ -51,6 +51,20 @@ namespace
     constexpr float kStrideRate = 2.2f;
     constexpr float kMoveBlendRate = 8.0f;
 
+    // A soldier carries their own weight: the walk chases the keys rather than
+    // being them, so getting under way takes a stride and letting go costs a
+    // coast. The two are not the same cost. Getting a body moving is work and
+    // the slower of the two, and a direction change pays it again, which is
+    // what stops a reversal from being free. Stopping is the body's own weight
+    // going the way it was already headed, and only takes the moment it takes
+    // — short enough that a dodge still answers on the frame it's asked for.
+    // Both rates are MoveDef's, since how much body there is to get moving is
+    // a class trait; what's left here is the floor the drift is snapped away
+    // at, which is arithmetic rather than feel. Exponential decay never quite
+    // reaches zero, and without a floor a released key leaves a soldier
+    // creeping for the rest of the round at a speed too small to see.
+    constexpr float kMoveStopSpeed = 0.1f; // units per second
+
     // Turning is not free: the soldier's facing chases the aim direction at a
     // fixed angular rate rather than snapping to it, so whipping the cursor
     // across the screen costs a moment spent pointed the wrong way. A full
@@ -457,19 +471,35 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveRight += input.pad.thumbSticks.leftX;
 
     Vector3 move = upG * moveUp + rightG * moveRight;
-    const bool moving = move.LengthSquared() > 1e-10f;
-    const float speed = m_class->moveSpeed * (steady ? kSteadyMoveScale : 1.0f);
-    if (moving)
-    {
+    const MoveDef& gait = m_class->move;
+    const float speed = gait.speed * (steady ? kSteadyMoveScale : 1.0f);
+    const bool pushing = move.LengthSquared() > 1e-10f;
+    if (pushing)
         move.Normalize();
-        m_playerPos += move * (speed * dt);
-    }
+    else
+        move = Vector3::Zero;
+
+    // The keys ask for a velocity; the body eases onto it. Framed as a decay
+    // toward the wanted velocity rather than a step of acceleration so the
+    // feel holds at any frame rate. Which rate it decays at is decided by
+    // whether anything is being asked for at all, not by whether the answer
+    // happens to be faster or slower: a soldier hauling themselves round onto
+    // a new heading is doing the work of starting, even though their speed
+    // never changed, and it should cost what starting costs.
+    const float response = pushing ? gait.accel : gait.stop;
+    m_moveVel += (move * speed - m_moveVel) * (1.0f - std::exp(-response * dt));
+    if (m_moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
+        m_moveVel = Vector3::Zero;
+    m_playerPos += m_moveVel * dt;
     ResolveObstacles(m_playerPos);
 
     // Stride off the speed actually travelled, not the class's, so the feet
-    // keep up with the ground at either pace instead of skating over it.
-    if (moving)
-        m_walkPhase += speed * kStrideRate * dt;
+    // keep up with the ground at either pace instead of skating over it — and
+    // so the legs keep walking through the coast rather than stopping with the
+    // key while the body is still sliding.
+    const float travelSpeed = m_moveVel.Length();
+    const bool moving = travelSpeed > 0.0f;
+    m_walkPhase += travelSpeed * kStrideRate * dt;
     m_moveBlend = std::clamp(m_moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
                              0.0f, 1.0f);
 
@@ -695,6 +725,7 @@ void Game::Respawn(IsoCamera& camera)
     m_meleeCooldown = 0.0f;
     m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
     m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
+    m_moveVel = Vector3::Zero;          // and without the momentum they died carrying
     m_phase = Phase::Playing;
     // A cut, not a sweep: the spawn is somewhere else entirely, and panning
     // the whole arena to get there would take longer than the wait did.
@@ -865,7 +896,10 @@ void Game::UpdateNpcs(float dt)
                                                         m_occluders);
 
         Vector3 move;
-        float speed = npc.cls->moveSpeed;
+        // NPCs still move on the speed alone — the momentum rates are the
+        // player's, and giving the AI weight is a change to how it steers
+        // rather than one more field to read.
+        float speed = npc.cls->move.speed;
         const WeaponDef& weapon = npc.cls->primary;
         if (engaged)
         {

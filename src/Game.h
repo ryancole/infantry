@@ -219,6 +219,7 @@ private:
     std::vector<Vector3> m_teamSpawns;
     int m_team = 0;
     Vector3 m_playerPos;
+    Vector3 m_moveVel;                 // current ground velocity; the keys steer it, they aren't it
     Vector3 m_aimDir = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     float m_fireCooldown = 0.0f;

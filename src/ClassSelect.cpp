@@ -20,13 +20,13 @@ namespace
     constexpr XMFLOAT4 kCardBgHover = { 0.10f, 0.14f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kBarBg = { 0.14f, 0.17f, 0.23f, 1.0f };
 
-    // Normalizers for the stat bars, chosen so the strongest class in each
-    // stat fills its bar. The fire rate one is computed from the class table
-    // rather than written down, because the number it has to beat is a reload
-    // and a cadence together and no longer reads off any single field.
-    constexpr float kMaxMoveSpeed = 11.0f;
-    constexpr float kMaxProjectileSpeed = 80.0f;
-
+    // Normalizers for the stat bars: whatever the strongest class in a stat
+    // has, that's a full bar. All three are folded out of the class table
+    // rather than written down. A hand-copied maximum is a second place the
+    // balance lives, and it fails quietly in both directions — raise a class
+    // past it and the fill runs off the end of its background, drop the class
+    // that set it and nothing on the screen ever reaches full again. Neither
+    // shows up anywhere near the table being edited.
     constexpr float MaxSustainedFireRate()
     {
         float best = 0.0f;
@@ -34,7 +34,23 @@ namespace
             best = std::max(best, SustainedFireRate(def.primary));
         return best;
     }
+    constexpr float MaxMoveSpeed()
+    {
+        float best = 0.0f;
+        for (const ClassDef& def : kClassDefs)
+            best = std::max(best, def.move.speed);
+        return best;
+    }
+    constexpr float MaxProjectileSpeed()
+    {
+        float best = 0.0f;
+        for (const ClassDef& def : kClassDefs)
+            best = std::max(best, def.primary.projectileSpeed);
+        return best;
+    }
     constexpr float kMaxFireRate = MaxSustainedFireRate();
+    constexpr float kMaxMoveSpeed = MaxMoveSpeed();
+    constexpr float kMaxProjectileSpeed = MaxProjectileSpeed();
 
     XMFLOAT4 Dim(const XMFLOAT4& c, float f)
     {
@@ -180,7 +196,7 @@ void ClassSelect::Render(Renderer& renderer)
             float fraction;
         };
         const Bar bars[3] = {
-            { "SPD", def.moveSpeed / kMaxMoveSpeed },
+            { "SPD", def.move.speed / kMaxMoveSpeed },
             { "ROF", SustainedFireRate(def.primary) / kMaxFireRate },
             { "RNG", def.primary.projectileSpeed / kMaxProjectileSpeed },
         };
