@@ -28,13 +28,32 @@ struct Input
     float mouseY = 0.0f;
     float wheel = 0.0f; // scroll notches this frame
 
+    // The toolkit resolves shift/ctrl/alt to the side that was actually
+    // pressed and never stores the generic virtual key, so asking for one
+    // directly would always come back false — silently, since it's a perfectly
+    // valid code. Fold it back to "either side" so a binding can name the
+    // modifier without caring which hand is on it.
     bool Key(int vk) const
     {
+        switch (vk)
+        {
+        case VK_SHIFT:   return Key(VK_LSHIFT) || Key(VK_RSHIFT);
+        case VK_CONTROL: return Key(VK_LCONTROL) || Key(VK_RCONTROL);
+        case VK_MENU:    return Key(VK_LMENU) || Key(VK_RMENU);
+        default:         break;
+        }
         return kb.IsKeyDown(static_cast<DirectX::Keyboard::Keys>(vk));
     }
 
     bool KeyPressed(int vk) const
     {
+        switch (vk)
+        {
+        case VK_SHIFT:   return KeyPressed(VK_LSHIFT) || KeyPressed(VK_RSHIFT);
+        case VK_CONTROL: return KeyPressed(VK_LCONTROL) || KeyPressed(VK_RCONTROL);
+        case VK_MENU:    return KeyPressed(VK_LMENU) || KeyPressed(VK_RMENU);
+        default:         break;
+        }
         return kbEvents.IsKeyPressed(static_cast<DirectX::Keyboard::Keys>(vk));
     }
 
