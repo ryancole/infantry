@@ -50,6 +50,13 @@ namespace
     constexpr float kStrideRate = 2.2f;
     constexpr float kMoveBlendRate = 8.0f;
 
+    // Turning is not free: the soldier's facing chases the aim direction at a
+    // fixed angular rate rather than snapping to it, so whipping the cursor
+    // across the screen costs a moment spent pointed the wrong way. Fast
+    // enough to stay responsive — a full about-face lands in just under half a
+    // second — but slow enough that being flanked is a real problem.
+    constexpr float kTurnRate = 8.0f; // radians per second
+
     // Bounding sphere used to skip soldiers that fall outside the viewport.
     // Generous on purpose: it has to cover the model at full stride, and
     // popping in at the screen edge is far worse than submitting a few extra
@@ -246,6 +253,19 @@ namespace
         if (flat.LengthSquared() > 1e-8f)
             flat.Normalize();
         return flat * strength + Vector3(0.0f, kCorpseLift, 0.0f);
+    }
+
+    // Swings `from` toward `to` about Y by at most `maxStep` radians, snapping
+    // to `to` once it's within reach. Both are unit vectors on the ground
+    // plane. The cross product against the dot gives the signed angle between
+    // them; CreateRotationY turns the opposite way, hence the negated step.
+    Vector3 TurnToward(const Vector3& from, const Vector3& to, float maxStep)
+    {
+        const float delta = std::atan2(from.x * to.z - from.z * to.x, from.Dot(to));
+        if (std::abs(delta) <= maxStep)
+            return to;
+        return Vector3::Transform(from,
+                                  Matrix::CreateRotationY(-std::copysign(maxStep, delta)));
     }
 
     // Horizontal muzzle speed for a shot aimed to come down targetDist away:
@@ -450,7 +470,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         // fall back to full range, like aiming past max range with the mouse.
         m_aimDist = stick.LengthSquared() > 0.1f ? 1e9f : aim.Length();
         aim.Normalize();
-        m_aimDir = aim;
+        // The cursor is where the player wants to be pointed, not where they
+        // are pointed — the body has to come around to it. Everything that
+        // reads the aim, including the shots and the aim ring, follows the
+        // facing rather than the cursor, so what's drawn is what will fire.
+        m_aimDir = TurnToward(m_aimDir, aim, kTurnRate * dt);
     }
 
     using PadTracker = DirectX::GamePad::ButtonStateTracker;
