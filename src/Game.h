@@ -73,6 +73,10 @@ private:
         float maxLife; // spawn value of life, for the shrink fraction
         float size;    // edge length at full life
         DirectX::XMFLOAT4 color;
+        // Blood: instead of settling and shrinking away, the drop is spent
+        // the moment it touches the floor and leaves a stain behind (see
+        // Game::SpawnSplat).
+        bool blood = false;
     };
 
     // A computer-controlled enemy soldier. NPCs share the player's class
@@ -142,6 +146,14 @@ private:
     void SpawnImpactBurst(const Vector3& pos, float scale);
     // Grenade detonation: core flash plus a wide fire/smoke burst.
     void SpawnExplosion(const Vector3& pos);
+    // Blood off a soldier hit at `pos`: a spray of drops thrown along `dir`
+    // (the blow), sized by the damage done and thrown hardest by a fatal one.
+    // Each drop stains the ground where it lands.
+    void SpawnBlood(const Vector3& pos, const Vector3& dir, float damage, bool fatal);
+    // Stains the floor under `pos` with a patch of blood. Splats never fade —
+    // the ground keeps a record of the fight — so the field holds a fixed
+    // number of them and the oldest is dropped once it's full.
+    void SpawnSplat(const Vector3& pos);
     // Ends `shot` at `pos`: splash damage for explosives, then the impact
     // effect and sound (which differ for a hit on `hitUnit` vs. world geometry).
     void Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit);
@@ -231,6 +243,11 @@ private:
     std::vector<Prop> m_props;
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     std::vector<Vertex> m_gridVerts;   // static, built once
+    // Blood on the floor, kept as finished geometry rather than as splats to
+    // rebuild: a stain never moves or fades once it lands, so the vertices it
+    // was born with are the vertices it dies with. Oldest first, so the cap
+    // sheds the stalest patch.
+    std::vector<Vertex> m_splatVerts;
     std::vector<Vertex> m_scratch;     // reused per draw
     std::vector<Vector3> m_aimArc;     // aim indicator trajectory, reused per frame
 };

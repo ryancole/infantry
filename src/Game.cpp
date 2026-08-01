@@ -73,6 +73,31 @@ namespace
     constexpr float kCorpseLift = 3.0f;
     constexpr float kCorpseSpin = 7.0f; // random angular velocity, radians/sec
 
+    // Blood. A hit throws drops along the blow, and each one stains the floor
+    // where it lands, so the mess a fight leaves points back at where the
+    // shooting came from. The stains don't fade: an arena that has been fought
+    // over should look like it, and a corridor of old blood is a real reading
+    // of where the fighting has been. What is bounded is how many the field
+    // holds at once — past the cap the oldest patch is dropped.
+    //
+    // The cap is set by the renderer, not by taste: the whole floor goes down
+    // as one dynamic batch, and Renderer::DrawTrianglesAlpha silently drops a
+    // batch bigger than 16384 vertices, so the stains have to fit inside that
+    // with room to spare. At 24 vertices each that leaves well over ten deaths
+    // of history — dozens for the automatics, whose individual rounds bleed
+    // far less than the shot that ends someone.
+    constexpr float kBloodDropsPerDamage = 0.35f;
+    constexpr int kBloodMinDrops = 4;
+    constexpr int kBloodMaxDrops = 22;
+    constexpr float kBloodSpread = 1.1f;   // radians off the blow, either way
+    constexpr float kBloodDropLife = 1.5f; // long enough that every drop lands
+    constexpr int kSplatSegments = 8;      // fan segments per stain
+    constexpr int kSplatVerts = kSplatSegments * 3;
+    constexpr size_t kMaxSplats = 512;
+    constexpr float kSplatHeight = 0.012f;    // over the grid lines, under the fog quads
+    constexpr float kSplatMinRadius = 0.10f;
+    constexpr float kSplatMaxRadius = 0.30f;
+
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
     // Below this speed a bouncing grenade's contacts are a roll, not a bounce,
@@ -105,6 +130,11 @@ namespace
     constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
     constexpr float kAimRingHeight = 0.05f;    // above the fog quads, so it isn't dimmed
     constexpr float kGrenadeMarkRadius = 0.5f; // first-bounce marker, not the blast size
+    // Wet and bright in the air, dark and matte once it has soaked into the
+    // floor. The stain is translucent, so overlapping ones deepen where a fight
+    // stayed in one place.
+    constexpr XMFLOAT4 kBloodColor = { 0.62f, 0.06f, 0.07f, 1.0f };
+    constexpr XMFLOAT4 kSplatColor = { 0.30f, 0.03f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
@@ -800,6 +830,72 @@ void Game::SpawnExplosion(const Vector3& pos)
     }
 }
 
+void Game::SpawnBlood(const Vector3& pos, const Vector3& dir, float damage, bool fatal)
+{
+    // The spray goes the way the blow was travelling — a round that goes
+    // through a soldier takes the blood out the far side — spread wide enough
+    // that it lands as a scatter rather than a line. How much comes off scales
+    // with the damage, and a killing blow lets go of everything at once.
+    Vector3 flat(dir.x, 0.0f, dir.z);
+    if (flat.LengthSquared() > 1e-8f)
+        flat.Normalize();
+    else
+        flat = Vector3::UnitX; // straight-down blow (a blast overhead): any way will do
+    const float heading = std::atan2(flat.z, flat.x);
+
+    int count = std::clamp(static_cast<int>(damage * kBloodDropsPerDamage), kBloodMinDrops,
+                           kBloodMaxDrops);
+    if (fatal)
+        count *= 2;
+
+    for (int i = 0; i < count; ++i)
+    {
+        const float yaw = heading + Rand(-kBloodSpread, kBloodSpread);
+        const float speed = Rand(1.5f, 5.5f);
+        Particle p;
+        p.pos = pos;
+        p.vel = { std::cos(yaw) * speed, Rand(1.5f, 4.5f), std::sin(yaw) * speed };
+        p.maxLife = p.life = kBloodDropLife;
+        p.size = Rand(0.05f, 0.11f);
+        p.color = kBloodColor;
+        p.blood = true;
+        m_particles.push_back(p);
+    }
+}
+
+void Game::SpawnSplat(const Vector3& pos)
+{
+    // Drops that carry over the arena wall have nothing to land on.
+    if (std::abs(pos.x) > m_arenaHalf || std::abs(pos.z) > m_arenaHalf)
+        return;
+
+    if (m_splatVerts.size() >= kMaxSplats * kSplatVerts)
+        m_splatVerts.erase(m_splatVerts.begin(), m_splatVerts.begin() + kSplatVerts);
+
+    // A ragged fan around the landing point: the rim wanders in and out per
+    // segment and the whole patch starts at a random angle, so no two stains
+    // read as the same circle stamped twice.
+    const XMFLOAT3 center = { pos.x, kSplatHeight, pos.z };
+    const float radius = Rand(kSplatMinRadius, kSplatMaxRadius);
+    float rim[kSplatSegments];
+    for (float& r : rim)
+        r = radius * Rand(0.5f, 1.0f);
+
+    const float spin = Rand(0.0f, XM_2PI);
+    for (int i = 0; i < kSplatSegments; ++i)
+    {
+        const float a0 = spin + XM_2PI * i / kSplatSegments;
+        const float a1 = spin + XM_2PI * (i + 1) / kSplatSegments;
+        const float r0 = rim[i];
+        const float r1 = rim[(i + 1) % kSplatSegments];
+        m_splatVerts.push_back({ center, kSplatColor });
+        m_splatVerts.push_back({ XMFLOAT3{ center.x + std::cos(a0) * r0, kSplatHeight,
+                                           center.z + std::sin(a0) * r0 }, kSplatColor });
+        m_splatVerts.push_back({ XMFLOAT3{ center.x + std::cos(a1) * r1, kSplatHeight,
+                                           center.z + std::sin(a1) * r1 }, kSplatColor });
+    }
+}
+
 void Game::ApplyBlast(const Vector3& center, float radius, float damage, int team)
 {
     // Linear falloff from full damage at the center to nothing at the rim,
@@ -828,6 +924,9 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
             // Blown outward from the blast, as hard as the share of it they
             // caught: a body at the rim topples, one on top of it is thrown.
             npc.knock = CorpseKnock(npc.pos - center, kCorpseBlastKnock * (dmg / damage));
+            // Blood goes the same way the blast threw them, out of the middle.
+            SpawnBlood({ npc.pos.x, kPlayerHalf, npc.pos.z }, npc.pos - center, dmg,
+                       npc.hp <= 0.0f);
             PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
         }
     }
@@ -840,6 +939,8 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
         {
             m_playerHp -= dmg;
             m_deathKnock = CorpseKnock(m_playerPos - center, kCorpseBlastKnock * (dmg / damage));
+            SpawnBlood({ m_playerPos.x, kPlayerHalf, m_playerPos.z }, m_playerPos - center, dmg,
+                       m_playerHp <= 0.0f);
             m_rumbleTime = 0.25f;
             if (m_playerHp <= 0.0f)
                 m_playerDied = true;
@@ -879,6 +980,14 @@ void Game::UpdateParticles(float dt)
         const float half = p.size * 0.5f;
         if (p.pos.y < half)
         {
+            // A drop of blood is spent the moment it touches down: what's
+            // left of it is the stain, and that stays.
+            if (p.blood)
+            {
+                SpawnSplat(p.pos);
+                p.life = 0.0f;
+                continue;
+            }
             p.pos.y = half;
             p.vel = { p.vel.x * 0.6f, 0.0f, p.vel.z * 0.6f };
         }
@@ -927,6 +1036,9 @@ void Game::UpdateProjectiles(float dt)
                     {
                         npc.hp -= shot.damage;
                         npc.knock = CorpseKnock(travel, kCorpseKnock);
+                        // Sprayed from where the round went in, carrying on
+                        // the way it was going.
+                        SpawnBlood(pos, travel, shot.damage, npc.hp <= 0.0f);
                         PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
                     }
                     shot.life = 0.0f;
@@ -945,6 +1057,7 @@ void Game::UpdateProjectiles(float dt)
                 {
                     m_playerHp -= shot.damage;
                     m_deathKnock = CorpseKnock(travel, kCorpseKnock);
+                    SpawnBlood(pos, travel, shot.damage, m_playerHp <= 0.0f);
                     m_rumbleTime = 0.25f;
                     if (m_playerHp <= 0.0f)
                         m_playerDied = true;
@@ -1232,6 +1345,13 @@ void Game::Render(Renderer& renderer)
                                XMMatrixTranslation(prop.pos.x, prop.pos.y, prop.pos.z);
         renderer.DrawModel(*prop.model, world);
     }
+
+    // Blood, laid flat on the floor. It goes down after every opaque thing has
+    // written depth, so a stain behind a wall is hidden by the wall rather than
+    // painted over it, and before the fog, so blood out of sight is dimmed
+    // along with the ground it's on.
+    renderer.DrawTrianglesAlpha(m_splatVerts.data(), static_cast<uint32_t>(m_splatVerts.size()),
+                                identity);
 
     // Fog of war goes on after all opaque geometry so it blends over the
     // floor while walls (which wrote depth) still punch through it.
