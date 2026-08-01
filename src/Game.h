@@ -139,9 +139,17 @@ private:
     // timer and plays the mag-out click. A no-op if one is already running or
     // the magazine is full, so the reload key can be leaned on harmlessly.
     void BeginReload();
+    // Spends a melee charge on a swing through the arc in front of the player
+    // and strikes the nearest enemy standing in it, if any. The charge goes
+    // whether or not it lands.
+    void SwingMelee();
     void SpawnNpc();
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
+    // Turns whatever died this frame into a corpse and takes it off the
+    // roster. Runs once, after every system that can deal damage has had its
+    // turn, so it doesn't matter which of them landed the killing blow.
+    void ReapDead();
     // Debris burst where a projectile dies; `scale` is the projectile radius.
     void SpawnImpactBurst(const Vector3& pos, float scale);
     // Grenade detonation: core flash plus a wide fire/smoke burst.
@@ -221,6 +229,15 @@ private:
     int m_ammo = 0;
     float m_reloadTimer = 0.0f; // > 0 while reloading
     int m_grenades = kGrenadesPerLife; // same issue for every class; refilled on respawn
+    // The blade, on its own charges and its own recovery — both entirely off
+    // the magazine, which is what leaves it in the player's hands during a
+    // reload. The flash is the swing the arc indicator draws, and it keeps the
+    // direction it was swung in so aiming away mid-swing doesn't drag it round.
+    int m_meleeCharges = kMelee.charges;
+    float m_meleeRecover = 0.0f;  // > 0 while the charges are coming back
+    float m_meleeCooldown = 0.0f; // time until the next swing
+    float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
+    Vector3 m_meleeSwingDir = Vector3::UnitX;
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;

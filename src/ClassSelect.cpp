@@ -138,6 +138,11 @@ void ClassSelect::Render(Renderer& renderer)
     // only what separates one class from another.
     DrawCentered(renderer, "EMPTY RELOADS ITSELF - R TO RELOAD EARLY", w * 0.5f, h * 0.86f,
                  h * 0.022f, kHintColor);
+    // Nor is the blade: every soldier carries the same one, and it's the answer
+    // to the range no class's primary covers, so it belongs down here with the
+    // rest of what they all have in common.
+    DrawCentered(renderer, "THREE MELEE SWINGS, THEN A WAIT - V TO SWING", w * 0.5f, h * 0.90f,
+                 h * 0.022f, kHintColor);
 
     for (size_t i = 0; i < kClassCount; ++i)
     {

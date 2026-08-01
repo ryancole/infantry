@@ -21,6 +21,15 @@ namespace Hud
         int ammo;
         int magazine;         // rounds a full magazine holds; 0 = not magazine-fed
         float reloadFraction; // 0..1 progress through a reload; < 0 when not reloading
+        int melee;            // melee swings left
+        int meleeCharges;     // swings a full recovery gives back
+        // 0..1 progress through the melee recovery, and < 0 whenever there's a
+        // swing left to make — the charges also come back from a partial spend,
+        // but that isn't a wait, so it isn't reported as one. Kept separate
+        // from reloadFraction because the two run independently: the blade is
+        // what a soldier has left mid-reload, so both readouts can be counting
+        // at once and neither can stand in for the other.
+        float meleeRecoverFraction;
         int grenades;
         int npcs;
         DirectX::XMFLOAT4 accent; // class color, for the panel's edge light

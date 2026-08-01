@@ -54,6 +54,7 @@ namespace
     constexpr XMFLOAT4 kHealthLow = { 0.92f, 0.28f, 0.22f, 1.0f };
     constexpr XMFLOAT4 kAmmoColor = { 0.95f, 0.80f, 0.35f, 1.0f };
     constexpr XMFLOAT4 kReloadColor = { 0.95f, 0.52f, 0.18f, 1.0f };
+    constexpr XMFLOAT4 kMeleeColor = { 0.66f, 0.80f, 0.94f, 1.0f }; // bare steel
     constexpr XMFLOAT4 kGrenadeColor = { 0.58f, 0.72f, 0.42f, 1.0f };
     constexpr XMFLOAT4 kContactColor = { 0.80f, 0.38f, 0.34f, 1.0f };
     constexpr XMFLOAT4 kSpentColor = { 0.32f, 0.36f, 0.44f, 1.0f }; // an empty slot's icon
@@ -97,6 +98,19 @@ namespace
         out.push_back({ XMFLOAT3{ x0, y0, 0.0f }, c });
         out.push_back({ XMFLOAT3{ x1, y1, 0.0f }, c });
         out.push_back({ XMFLOAT3{ x2, y2, 0.0f }, c });
+    }
+
+    // A quad that isn't axis-aligned: centered on (x, y) at one end, running
+    // `length` along the unit direction (dx, dy) and `width` across it.
+    // Everything else in the cluster sits square to the panel; this is here for
+    // the one icon that doesn't.
+    void AppendOrientedQuad(std::vector<Vertex>& out, float x, float y, float dx, float dy,
+                            float length, float width, const XMFLOAT4& c)
+    {
+        const float px = -dy * width * 0.5f, py = dx * width * 0.5f;
+        const float ex = x + dx * length, ey = y + dy * length;
+        AppendTriangle(out, x - px, y - py, x + px, y + py, ex + px, ey + py, c);
+        AppendTriangle(out, x - px, y - py, ex + px, ey + py, ex - px, ey - py, c);
     }
 
     // Angles are screen-space: y runs down, so they sweep clockwise from +x.
@@ -174,6 +188,28 @@ namespace
                         size * 0.04f, Shade(c, 0.55f));
     }
 
+    // A combat knife on the diagonal: a tapered blade up to the point at the
+    // top right, a crossguard over its neck, and the grip below. The angle is
+    // what earns it its own silhouette — stood upright, a blade and the
+    // cartridge two modules along are the same pointed shape at this size.
+    void DrawMeleeIcon(std::vector<Vertex>& out, float x, float y, float size, const XMFLOAT4& c)
+    {
+        constexpr float kDx = 0.7071f, kDy = -0.7071f; // blade axis: up and right
+        const float gx = x + size * 0.34f, gy = y + size * 0.66f; // the guard
+        const float halfW = size * 0.10f;
+
+        // Grip, running back down the axis from the guard.
+        AppendOrientedQuad(out, gx, gy, -kDx, -kDy, size * 0.30f, size * 0.15f, Shade(c, 0.58f));
+        // Blade: a spike off the guard, full width at the base and nothing at
+        // the point.
+        const float px = -kDy * halfW, py = kDx * halfW;
+        AppendTriangle(out, gx - px, gy - py, gx + px, gy + py, gx + kDx * size * 0.68f,
+                       gy + kDy * size * 0.68f, c);
+        // Crossguard, laid across the neck on top of both.
+        AppendOrientedQuad(out, gx + kDy * size * 0.20f, gy - kDx * size * 0.20f, -kDy, kDx,
+                           size * 0.40f, size * 0.09f, Shade(c, 0.78f));
+    }
+
     // A fragmentation grenade: body, banded waist, and the lever off the neck.
     void DrawGrenadeIcon(std::vector<Vertex>& out, float x, float y, float size, const XMFLOAT4& c)
     {
@@ -200,6 +236,7 @@ namespace
     {
         Health,
         Ammo,
+        Melee,
         Grenade,
         Contact,
     };
@@ -211,6 +248,7 @@ namespace
         {
         case Icon::Health: DrawHealthIcon(out, x, y, size, c); break;
         case Icon::Ammo: DrawAmmoIcon(out, x, y, size, c); break;
+        case Icon::Melee: DrawMeleeIcon(out, x, y, size, c); break;
         case Icon::Grenade: DrawGrenadeIcon(out, x, y, size, c); break;
         case Icon::Contact: DrawContactIcon(out, x, y, size, c); break;
         }
@@ -250,6 +288,7 @@ namespace
     constexpr Hint kHints[] = {
         { "R", "RELOAD" },
         { "F", "GRENADE" },
+        { "V", "MELEE" },
         { "N", "SPAWN NPC" },
     };
 }
@@ -312,6 +351,31 @@ void Hud::Render(Renderer& renderer, const State& st)
                                1.0f);
     }
 
+    // The blade's charges get the pip row a small magazine gets, and the same
+    // sweep while they're coming back: it is a magazine, whatever it holds, and
+    // reading it should cost the same glance. It sits next to the ammo module
+    // because that's the pairing that matters — when one of them is empty, the
+    // other is the whole answer to what the player can still do.
+    const bool recovering = st.meleeRecoverFraction >= 0.0f;
+
+    Module melee;
+    melee.icon = Icon::Melee;
+    melee.iconColor = recovering ? kReloadColor : kMeleeColor;
+    melee.value = std::to_string(st.melee);
+    melee.valueColor = recovering ? kMutedColor : kValueColor;
+    melee.barColor = recovering ? kReloadColor : kMeleeColor;
+    if (recovering)
+    {
+        melee.bar = Bar::Fill;
+        melee.fill = std::clamp(st.meleeRecoverFraction, 0.0f, 1.0f);
+    }
+    else if (st.meleeCharges > 0)
+    {
+        melee.bar = Bar::Pips;
+        melee.pips = st.meleeCharges;
+        melee.pipsFull = std::clamp(st.melee, 0, st.meleeCharges);
+    }
+
     // Spent equipment greys out rather than disappearing: the slot is still
     // part of the loadout, it just has nothing in it until the next life.
     Module grenade;
@@ -326,7 +390,7 @@ void Hud::Render(Renderer& renderer, const State& st)
     contacts.value = std::to_string(st.npcs);
     contacts.valueColor = st.npcs > 0 ? kValueColor : kMutedColor;
 
-    Module modules[] = { health, ammo, grenade, contacts };
+    Module modules[] = { health, ammo, melee, grenade, contacts };
     constexpr size_t kModuleCount = std::size(modules);
 
     // --- Layout ---
