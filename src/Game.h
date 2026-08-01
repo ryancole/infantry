@@ -37,11 +37,13 @@ public:
 
 private:
     // Players must pick a class before they spawn; the arena only starts
-    // simulating once the choice is made.
+    // simulating once the choice is made. Dying drops back out of Playing for
+    // the respawn wait: the arena keeps running, the player just isn't in it.
     enum class Phase
     {
         ClassSelect,
         Playing,
+        Dead,
     };
 
     using Vector2 = DirectX::SimpleMath::Vector2;
@@ -147,6 +149,13 @@ private:
     // the corpse cap the oldest body on the field is recycled.
     void SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
                      const DirectX::XMFLOAT4& color, const Vector3& knock);
+    // Puts the player back on their team's spawn with a fresh loadout and
+    // returns to Phase::Playing; the camera cuts rather than sweeps across.
+    void Respawn(IsoCamera& camera);
+    // Whether there's a live player body to shoot at. Dying takes the player
+    // out of the world for the respawn wait, so bullets, blasts and NPC AI
+    // all have nothing to aim at until they're back.
+    bool PlayerOnField() const;
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
@@ -167,6 +176,10 @@ private:
     // Grenades are issued per life, not recharged: spend it and there isn't
     // another until you respawn, which is what makes the throw a decision.
     static constexpr int kGrenadesPerLife = 1;
+    // Dying costs time as well as position: long enough that a death is felt,
+    // short enough that watching it out isn't the game. A placeholder value
+    // until there's something to tune it against (round length, ticket bleed).
+    static constexpr float kRespawnDelay = 5.0f;
 
     Physics m_physics;
     Sound m_sound;
@@ -190,6 +203,7 @@ private:
     float m_frameMs = 0.0f;        // smoothed wall-clock frame time, for the HUD
     float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
     float m_deathFlashTime = 0.0f; // grayscale post flash after dying
+    float m_respawnTimer = 0.0f;   // seconds left of the wait, while Phase::Dead
     bool m_playerDied = false;     // set by projectile hits, handled in Update
     Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 

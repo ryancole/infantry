@@ -332,6 +332,22 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
+    // Dead: the arena runs on without the player — NPCs keep fighting, shots
+    // keep flying, the corpse keeps falling — but nothing reads input and the
+    // camera holds on the spot where the body dropped until the wait is up.
+    if (m_phase == Phase::Dead)
+    {
+        m_respawnTimer -= dt;
+        UpdateNpcs(dt);
+        m_physics.Step(dt);
+        UpdateProjectiles(dt);
+        UpdateParticles(dt);
+        UpdateCorpses(dt);
+        if (m_respawnTimer <= 0.0f)
+            Respawn(camera);
+        return;
+    }
+
     // --- Movement: WASD relative to the screen ---
     const Vector3 upG = camera.ScreenUpOnGround();
     const Vector3 rightG = camera.ScreenRightOnGround();
@@ -417,16 +433,34 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_playerDied = false;
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
-        m_playerHp = kMaxHealth;
-        m_playerPos = m_teamSpawns[m_team];
-        m_grenades = kGrenadesPerLife; // respawn is a fresh loadout
-        m_deathFlashTime = 0.6f; // brief grayscale flash while respawning
-        camera.SetTarget(m_playerPos);
-        camera.SnapToTarget();
+        m_phase = Phase::Dead;
+        m_respawnTimer = kRespawnDelay;
+        m_deathFlashTime = 0.6f; // brief grayscale flash on the way down
         return;
     }
 
     camera.SetTarget(m_playerPos);
+}
+
+void Game::Respawn(IsoCamera& camera)
+{
+    m_playerHp = kMaxHealth;
+    m_playerPos = m_teamSpawns[m_team];
+    m_grenades = kGrenadesPerLife; // respawn is a fresh loadout
+    m_fireCooldown = 0.3f;         // brief grace, as after the class pick
+    m_moveBlend = 0.0f;            // stands still on arrival instead of resuming mid-stride
+    m_phase = Phase::Playing;
+    // A cut, not a sweep: the spawn is somewhere else entirely, and panning
+    // the whole arena to get there would take longer than the wait did.
+    camera.SetTarget(m_playerPos);
+    camera.SnapToTarget();
+}
+
+bool Game::PlayerOnField() const
+{
+    // The health test also covers the frame the player dies on: the phase only
+    // flips at the end of Update, so until then hp is what says they're down.
+    return m_phase == Phase::Playing && m_playerHp > 0.0f;
 }
 
 void Game::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
@@ -562,7 +596,7 @@ void Game::UpdateNpcs(float dt)
         const float dist = toPlayer.Length();
         // NPCs obey the same sight rules as the player's fog of war, so they
         // can't shoot through walls the player can't see through either.
-        const bool engaged = dist < kNpcEngageRange && dist > 1e-3f &&
+        const bool engaged = PlayerOnField() && dist < kNpcEngageRange && dist > 1e-3f &&
                              Visibility::IsPointVisible({ npc.pos.x, npc.pos.z }, playerXZ,
                                                         m_occluders);
 
@@ -719,8 +753,10 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
     }
     else
     {
+        if (!PlayerOnField())
+            return; // already down: nothing on the field to catch the blast
         const float dmg = splash({ m_playerPos.x, kPlayerHalf, m_playerPos.z });
-        if (dmg > 0.0f && m_playerHp > 0.0f)
+        if (dmg > 0.0f)
         {
             m_playerHp -= dmg;
             m_deathKnock = CorpseKnock(m_playerPos - center, kCorpseBlastKnock * (dmg / damage));
@@ -820,7 +856,7 @@ void Game::UpdateProjectiles(float dt)
                 }
             }
         }
-        else if (shot.life > 0.0f)
+        else if (shot.life > 0.0f && PlayerOnField())
         {
             const XMFLOAT3 center = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
             if (SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
@@ -1017,7 +1053,10 @@ void Game::Render(Renderer& renderer)
                                    XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
                                kObstacleColor);
 
-    DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color);
+    // Nothing of the player is drawn while they're dead — what's standing at
+    // m_playerPos is their corpse, and the view stays on it.
+    if (m_phase == Phase::Playing)
+        DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
     // a wall disappears until it re-emerges. The player's own soldier needs no
@@ -1123,7 +1162,9 @@ void Game::Render(Renderer& renderer)
     // ending where the shot really stops (max range, the first wall the arc
     // can't clear, or the ground). A bright tick crosses the end point, lobbed
     // weapons get a landing circle, and the grenade gets a marker where the
-    // throw touches down. Drawn after the fog pass so it stays bright.
+    // throw touches down. Drawn after the fog pass so it stays bright. There's
+    // nothing to aim while dead, so it goes with the soldier.
+    if (m_phase == Phase::Playing)
     {
         PredictShotStop(m_class->primary, m_playerPos, m_aimDir, m_aimDist, &m_aimArc);
 
@@ -1176,10 +1217,25 @@ void Game::RenderHud(Renderer& renderer)
     const float y = h - size * 2.0f;
     // Grenades read as a count, not a timer: there's nothing to wait out, so
     // what matters is whether one is left.
-    const std::string status = "HP " + std::to_string(static_cast<int>(std::ceil(m_playerHp))) +
-                               "   NADES " + std::to_string(m_grenades) +
-                               "   NPCS " + std::to_string(m_npcs.size());
+    const std::string status =
+        "HP " + std::to_string(static_cast<int>(std::ceil(std::max(m_playerHp, 0.0f)))) +
+        "   NADES " + std::to_string(m_grenades) +
+        "   NPCS " + std::to_string(m_npcs.size());
     renderer.DrawScreenText(status, size, y, size, kHudColor);
+
+    // Respawn countdown, centered and big: while it's up there's nothing else
+    // to do, so it's the one thing on screen worth reading. Counts whole
+    // seconds remaining, so it reaches 1 for the last second and never shows a
+    // 0 the player can't act on.
+    if (m_phase == Phase::Dead)
+    {
+        const std::string countdown =
+            "RESPAWNING IN " + std::to_string(static_cast<int>(std::ceil(m_respawnTimer)));
+        const float countSize = size * 1.6f;
+        renderer.DrawScreenText(countdown,
+                                (w - renderer.MeasureScreenText(countdown, countSize)) * 0.5f,
+                                h * 0.42f, countSize, kHudColor);
+    }
 
     // Perf counters in the top-left corner, clear of the gameplay HUD. FRAME is
     // wall clock and pins to the refresh rate while there's headroom; CPU
