@@ -199,6 +199,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     }
 
     app.rendererReady = false;
+    app.game.Shutdown();
     app.renderer.Shutdown();
     return 0;
 }

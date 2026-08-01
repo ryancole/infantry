@@ -31,6 +31,10 @@ public:
     void Update(float dt, const Input& input, IsoCamera& camera);
     void Render(Renderer& renderer);
 
+    // Stops the game's hold on anything that outlives a frame; call once the
+    // loop is done, before the window and devices go away.
+    void Shutdown();
+
 private:
     // Players must pick a class before they spawn; the arena only starts
     // simulating once the choice is made.
