@@ -25,10 +25,17 @@ public:
     // can skip Play3D entirely beyond it.
     static constexpr float kRange = 45.0f;
 
+    ~Sound();
+
     // Call once at startup; loads the wave bank and starts the ambience.
     // Throws std::runtime_error on real engine failure or a missing/corrupt
     // wave bank, not on missing audio hardware.
     void Init();
+
+    // Tears the audio graph down in an order XAudio2 can survive; call at exit
+    // before the rest of the game goes away. Safe to call twice, and the
+    // destructor calls it, so an early-out startup path is still covered.
+    void Shutdown();
 
     // Pump the engine and reap finished 3D voices; call once per frame.
     // Recovers when the default audio device changes or disappears.
@@ -55,9 +62,10 @@ private:
     DirectX::AudioListener m_listener;
 
     // Wind ambience: submitted buffers must stay alive until the voice has
-    // consumed them, so generation rotates through a small ring.
-    std::unique_ptr<DirectX::DynamicSoundEffectInstance> m_wind;
+    // consumed them, so generation rotates through a small ring. The ring is
+    // declared ahead of the voice so it also outlives it on the way out.
     std::array<std::vector<uint8_t>, 4> m_windRing;
+    std::unique_ptr<DirectX::DynamicSoundEffectInstance> m_wind;
     size_t m_windNext = 0;
     float m_windLp1 = 0.0f; // two cascaded one-pole low-passes shape the noise
     float m_windLp2 = 0.0f;

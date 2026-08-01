@@ -298,6 +298,11 @@ void Game::LoadContent(Renderer& renderer)
     }
 }
 
+void Game::Shutdown()
+{
+    m_sound.Shutdown();
+}
+
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
     m_sound.Update();

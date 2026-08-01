@@ -1,6 +1,7 @@
 #include "Sound.h"
 
 #include <objbase.h>
+#include <windows.h>
 
 #include <cmath>
 
@@ -17,6 +18,17 @@ namespace
     constexpr int kWindRate = 22050;         // Hz, mono 16-bit
     constexpr size_t kWindSamples = 4096;    // per generated buffer (~185 ms)
     constexpr float kWindVolume = 0.08f;
+
+    // Shutdown waits this long, at most, for in-flight one-shots to finish.
+    // Clips are half a second at the outside, so the cap only ever fires if
+    // the device has stopped consuming buffers at all.
+    constexpr int kDrainSteps = 100;
+    constexpr DWORD kDrainStepMs = 10;
+}
+
+Sound::~Sound()
+{
+    Shutdown();
 }
 
 void Sound::Init()
@@ -34,6 +46,45 @@ void Sound::Init()
         m_engine.get(), [this](DynamicSoundEffectInstance* i) { FeedWind(i); }, kWindRate, 1, 16);
     m_wind->SetVolume(kWindVolume);
     m_wind->Play();
+}
+
+// The engine is the last thing to go, and nothing may still be pointing into
+// the graph when it does. Voices we hold are easy: dropping them destroys the
+// underlying XAudio2 voice while the engine is still there to take it back.
+// The one-shots from Play() are the trap — the engine owns those, each queued
+// buffer carries a raw pointer back to the wave bank, and the engine only
+// notices they finished inside Update(). Free the bank with one still in
+// flight and XAudio2 delivers its completion callback into freed memory as it
+// stops the engine, which reads as a crash on exit after a noisy session.
+// So: pump until the bank reports no one-shots left, which means every
+// callback has already been delivered, and only then take the bank away.
+void Sound::Shutdown()
+{
+    if (!m_engine)
+        return;
+
+    if (m_wind)
+    {
+        m_wind->Stop(true);
+        m_wind.reset();
+    }
+    m_active.clear();
+
+    for (int i = 0; i < kDrainSteps; ++i)
+    {
+        if (!m_engine->Update()) // silent mode or a dead device: nothing to drain
+            break;
+        if (m_engine->GetStatistics().playingOneShots == 0)
+            break;
+        Sleep(kDrainStepMs);
+    }
+    // One more pass to retire the voices the last callbacks freed up, then
+    // hand their now-idle voices back so none outlive the engine.
+    m_engine->Update();
+    m_engine->TrimVoicePool();
+
+    m_bank.reset();
+    m_engine.reset();
 }
 
 void Sound::Update()
