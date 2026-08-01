@@ -54,17 +54,16 @@ namespace
     // A soldier carries their own weight: the walk chases the keys rather than
     // being them, so getting under way takes a stride and letting go costs a
     // coast. The two are not the same cost. Getting a body moving is work and
-    // the slower of the two, near a fifth of a second to most of the class
-    // speed and about a body length behind where a stepped-on key would have
-    // put them; a direction change pays it again, which is what stops a
-    // reversal from being free. Stopping is the body's own weight going the
-    // way it was already headed, and only takes the moment it takes — short
-    // enough that a dodge still answers on the frame it's asked for. Below the
-    // floor speed the drift is snapped away, so a released key settles rather
-    // than creeping on forever.
-    constexpr float kMoveAccelRate = 8.0f;  // 1/s; ~0.13s to answer the keys
-    constexpr float kMoveStopRate = 20.0f;  // 1/s; ~0.05s of coast on release
-    constexpr float kMoveStopSpeed = 0.1f;  // units per second
+    // the slower of the two, and a direction change pays it again, which is
+    // what stops a reversal from being free. Stopping is the body's own weight
+    // going the way it was already headed, and only takes the moment it takes
+    // — short enough that a dodge still answers on the frame it's asked for.
+    // Both rates are MoveDef's, since how much body there is to get moving is
+    // a class trait; what's left here is the floor the drift is snapped away
+    // at, which is arithmetic rather than feel. Exponential decay never quite
+    // reaches zero, and without a floor a released key leaves a soldier
+    // creeping for the rest of the round at a speed too small to see.
+    constexpr float kMoveStopSpeed = 0.1f; // units per second
 
     // Turning is not free: the soldier's facing chases the aim direction at a
     // fixed angular rate rather than snapping to it, so whipping the cursor
@@ -472,7 +471,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveRight += input.pad.thumbSticks.leftX;
 
     Vector3 move = upG * moveUp + rightG * moveRight;
-    const float speed = m_class->moveSpeed * (steady ? kSteadyMoveScale : 1.0f);
+    const MoveDef& gait = m_class->move;
+    const float speed = gait.speed * (steady ? kSteadyMoveScale : 1.0f);
     const bool pushing = move.LengthSquared() > 1e-10f;
     if (pushing)
         move.Normalize();
@@ -486,7 +486,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // happens to be faster or slower: a soldier hauling themselves round onto
     // a new heading is doing the work of starting, even though their speed
     // never changed, and it should cost what starting costs.
-    const float response = pushing ? kMoveAccelRate : kMoveStopRate;
+    const float response = pushing ? gait.accel : gait.stop;
     m_moveVel += (move * speed - m_moveVel) * (1.0f - std::exp(-response * dt));
     if (m_moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
         m_moveVel = Vector3::Zero;
@@ -896,7 +896,10 @@ void Game::UpdateNpcs(float dt)
                                                         m_occluders);
 
         Vector3 move;
-        float speed = npc.cls->moveSpeed;
+        // NPCs still move on the speed alone — the momentum rates are the
+        // player's, and giving the AI weight is a change to how it steers
+        // rather than one more field to read.
+        float speed = npc.cls->move.speed;
         const WeaponDef& weapon = npc.cls->primary;
         if (engaged)
         {
