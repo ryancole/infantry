@@ -169,14 +169,15 @@ namespace
     // see is where the blade went, not a standing promise of where it would go.
     constexpr XMFLOAT4 kMeleeArcColor = { 0.82f, 0.90f, 1.00f, 0.85f };
     constexpr float kMeleeFlashTime = 0.13f;
-    // Which soldiers are on the player's side. Class color says what someone is
-    // and has to go on saying it — a friendly medic and a hostile one are the
-    // same white — so the team is a separate mark rather than a tint: a thin
-    // ring on the ground under everyone friendly. Only the player's own side is
-    // marked, on the grounds that a soldier with nothing under them is someone
-    // to shoot, which is the assumption that was already true before squadmates
-    // existed and stays true for anyone who never looks down.
-    constexpr XMFLOAT4 kFriendlyRingColor = { 0.35f, 0.68f, 1.00f, 0.45f };
+    // Which soldiers are on the player's side, said a second time: a thin ring
+    // on the ground under everyone friendly. The armor is the real answer now
+    // that a body wears its team's color, and this is the backup — a soldier
+    // half-behind a crate, or one crossing at the edge of the fog, is a few
+    // pixels of plate and a ring is easier to catch than a hue. It's drawn in
+    // the player's own team color rather than a fixed blue so the two marks
+    // never disagree about what "your side" looks like. Only the player's side
+    // gets one: a soldier with nothing under them is someone to shoot.
+    constexpr float kFriendlyRingAlpha = 0.45f;
     constexpr float kFriendlyRingRadius = 0.55f;
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
@@ -265,7 +266,7 @@ namespace
     // placed at `pos` facing `aimDir`. A corpse draws the same parts, its
     // segments posed by the ragdoll instead (see Game::Render).
     void DrawSoldier(Renderer& renderer, const Vector3& pos, const Vector3& aimDir,
-                     float walkPhase, float moveBlend, const XMFLOAT4& color)
+                     float walkPhase, float moveBlend, int team, const XMFLOAT4& classColor)
     {
         XMMATRIX local[Soldier::SegmentCount];
         Soldier::Pose(local, walkPhase, moveBlend);
@@ -275,7 +276,7 @@ namespace
         for (int i = 0; i < Soldier::SegmentCount; ++i)
             world[i] = local[i] * base;
 
-        Soldier::Draw(renderer, world, color);
+        Soldier::Draw(renderer, world, TeamColor(team), classColor);
     }
 
     // Velocity a killing blow hands to the corpse it makes: a shove along the
@@ -740,7 +741,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         // treated, which is what the line going out says.
         Ability::Drop(m_ability);
         // The body stays where it fell — the player respawns out of it.
-        SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
+        SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, TeamColor(m_team),
+                    m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
         m_respawnTimer = kRespawnDelay;
         return;
@@ -1475,8 +1477,8 @@ void Game::ReapDead()
     for (const Npc& npc : m_npcs)
         if (npc.hp <= 0.0f)
         {
-            SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color,
-                        npc.knock);
+            SpawnCorpse(npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, TeamColor(npc.team),
+                        npc.cls->color, npc.knock);
             // The soldier is gone, but the slot they held isn't: their side is
             // owed a body, and it comes back on the same clock the player's
             // does. Whether it's actually sent is settled when the wait is up
@@ -1487,7 +1489,7 @@ void Game::ReapDead()
 }
 
 void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
-                       const XMFLOAT4& color, const Vector3& knock)
+                       const XMFLOAT4& teamColor, const XMFLOAT4& classColor, const Vector3& knock)
 {
     if (m_corpses.size() >= kMaxCorpses)
         RemoveCorpse(0);
@@ -1500,7 +1502,8 @@ void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhas
     const XMMATRIX base = Soldier::Base(pos, aimDir);
 
     Corpse corpse;
-    corpse.color = color;
+    corpse.teamColor = teamColor;
+    corpse.classColor = classColor;
     corpse.life = kCorpseLife;
 
     XMMATRIX world[Soldier::SegmentCount];
@@ -1636,7 +1639,8 @@ void Game::Render(Renderer& renderer)
     // Nothing of the player is drawn while they're dead — what's standing at
     // m_playerPos is their corpse, and the view stays on it.
     if (m_phase == Phase::Playing)
-        DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color);
+        DrawSoldier(renderer, m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_team,
+                    m_class->color);
 
     // NPCs and projectiles the player can't see stay hidden — an enemy behind
     // a wall disappears until it re-emerges. The player's own soldier needs no
@@ -1652,7 +1656,8 @@ void Game::Render(Renderer& renderer)
             continue;
         if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
             continue;
-        DrawSoldier(renderer, npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.cls->color);
+        DrawSoldier(renderer, npc.pos, npc.aimDir, npc.walkPhase, npc.moveBlend, npc.team,
+                    npc.cls->color);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
     // with every segment placed by the physics body it was built from. Same
@@ -1679,7 +1684,7 @@ void Game::Render(Renderer& renderer)
             world[i] = XMMatrixRotationQuaternion(XMLoadFloat4(&t.rot)) *
                        XMMatrixTranslation(t.pos.x, t.pos.y - sink, t.pos.z);
         }
-        Soldier::Draw(renderer, world, corpse.color);
+        Soldier::Draw(renderer, world, corpse.teamColor, corpse.classColor);
     }
 
     for (const Projectile& shot : m_projectiles)
@@ -1819,6 +1824,8 @@ void Game::Render(Renderer& renderer)
         // on their own side. Same visibility rule the bodies themselves get —
         // a marker that showed through a wall would be a squadmate radar, which
         // is a different feature and one the fog of war exists to deny.
+        const XMFLOAT4& teamTint = TeamColor(m_team);
+        const XMFLOAT4 ringColor = { teamTint.x, teamTint.y, teamTint.z, kFriendlyRingAlpha };
         for (const Npc& npc : m_npcs)
         {
             if (npc.team != m_team)
@@ -1829,7 +1836,7 @@ void Game::Render(Renderer& renderer)
             if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
                 continue;
             AppendCircle(m_scratch, { npc.pos.x, kAimRingHeight, npc.pos.z }, kFriendlyRingRadius,
-                         kFriendlyRingColor);
+                         ringColor);
         }
 
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
@@ -1892,6 +1899,12 @@ void Game::RenderHud(Renderer& renderer)
         return n.team != m_team && n.hp > 0.0f;
     }));
     hud.teamSize = kTeamSize;
+    // The same two colors the soldiers are wearing, so the corner and the field
+    // agree. With two sides the enemy is simply the other one; a third team
+    // would need this to be something better than "not mine", but it would need
+    // a third row too, and the panel is built for a pair.
+    hud.allyColor = TeamColor(m_team);
+    hud.enemyColor = TeamColor(m_team + 1);
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;
 

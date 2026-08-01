@@ -13,6 +13,7 @@
 #include "Renderer.h"
 #include "Soldier.h"
 #include "Sound.h"
+#include "Team.h"
 #include "Visibility.h"
 
 #include <DirectXMath.h>
@@ -143,7 +144,12 @@ private:
     struct Corpse
     {
         Physics::BodyHandle parts[Soldier::SegmentCount];
-        DirectX::XMFLOAT4 color;
+        // The two colors the body was wearing, kept rather than looked up: a
+        // corpse has outlived the soldier it came from, so there's no team and
+        // no class left to ask. It also means a dead soldier still says whose
+        // side it was on, which is most of what a body on the ground is for.
+        DirectX::XMFLOAT4 teamColor;
+        DirectX::XMFLOAT4 classColor;
         float life; // seconds until it's cleaned up
     };
 
@@ -250,7 +256,8 @@ private:
     // and launched with `knock` so it falls away from the killing blow. Past
     // the corpse cap the oldest body on the field is recycled.
     void SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
-                     const DirectX::XMFLOAT4& color, const Vector3& knock);
+                     const DirectX::XMFLOAT4& teamColor, const DirectX::XMFLOAT4& classColor,
+                     const Vector3& knock);
     // Puts the player back on their team's spawn with a fresh loadout and
     // returns to Phase::Playing; the camera cuts rather than sweeps across.
     void Respawn(IsoCamera& camera);

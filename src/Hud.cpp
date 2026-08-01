@@ -72,13 +72,14 @@ namespace
     // module doesn't read as either of the things it sits between. Matches the
     // ring the game draws round a soldier using it.
     constexpr XMFLOAT4 kAbilityColor = { 0.35f, 0.85f, 0.70f, 1.0f };
-    // The two sides, in the colors the arena already marks them with: the ring
-    // the game draws under a squadmate, and the red everything hostile has
-    // been. Friend or foe is answered the same way whether it's read off the
-    // ground or out of the corner, which is the whole point of taking them from
-    // there rather than picking two that look nice together.
-    constexpr XMFLOAT4 kAllyColor = { 0.38f, 0.68f, 1.00f, 1.0f };
-    constexpr XMFLOAT4 kContactColor = { 0.80f, 0.38f, 0.34f, 1.0f };
+    // The two sides come in off the game (State::allyColor / enemyColor) in the
+    // colors their armor is painted, so friend or foe is answered the same way
+    // whether it's read off a body or out of the corner. Armor colors are
+    // chosen to hold up at arena distance, though, and a 12-pixel icon on a
+    // near-black panel wants more light than that — so they're mixed a quarter
+    // of the way to white on the way in. Hue is untouched; nothing here is
+    // allowed to change which side a color means.
+    constexpr float kSideLift = 0.25f;
     constexpr XMFLOAT4 kSpentColor = { 0.32f, 0.36f, 0.44f, 1.0f }; // an empty slot's icon
 
     constexpr float kDeadFade = 0.35f; // whole cluster, during the respawn wait
@@ -93,6 +94,14 @@ namespace
     XMFLOAT4 Shade(const XMFLOAT4& c, float f)
     {
         return { c.x * f, c.y * f, c.z * f, c.w };
+    }
+
+    // Mixes `f` of the way to white. Unlike Shade, which scales toward black
+    // and eventually loses a dark color entirely, this can only make a color
+    // easier to see — which is what a small mark on a dark panel needs.
+    XMFLOAT4 Lift(const XMFLOAT4& c, float f)
+    {
+        return { c.x + (1.0f - c.x) * f, c.y + (1.0f - c.y) * f, c.z + (1.0f - c.z) * f, c.w };
     }
 
     void AppendQuad(std::vector<Vertex>& out, float x, float y, float w, float h,
@@ -644,7 +653,8 @@ void Hud::Render(Renderer& renderer, const State& st)
         int up;
         XMFLOAT4 color;
     };
-    const Side sides[2] = { { st.allies, kAllyColor }, { st.enemies, kContactColor } };
+    const Side sides[2] = { { st.allies, Lift(st.allyColor, kSideLift) },
+                            { st.enemies, Lift(st.enemyColor, kSideLift) } };
 
     // One count column wide enough for either row, so the two pip strips line
     // up under each other. A roster whose bars didn't share an edge would be a

@@ -145,10 +145,11 @@ XMMATRIX Soldier::Base(const Vector3& pos, const Vector3& aimDir)
            XMMatrixTranslation(pos.x, pos.y, pos.z);
 }
 
-void Soldier::Draw(Renderer& renderer, const XMMATRIX world[SegmentCount], const XMFLOAT4& color)
+void Soldier::Draw(Renderer& renderer, const XMMATRIX world[SegmentCount], const XMFLOAT4& team,
+                   const XMFLOAT4& cls)
 {
-    const XMFLOAT4 plate = color;
-    const XMFLOAT4 plateDark = { color.x * 0.55f, color.y * 0.55f, color.z * 0.55f, 1.0f };
+    const XMFLOAT4 plate = team;
+    const XMFLOAT4 plateDark = { team.x * 0.55f, team.y * 0.55f, team.z * 0.55f, 1.0f };
     const XMFLOAT4 suit = { 0.15f, 0.16f, 0.19f, 1.0f };
     const XMFLOAT4 metal = { 0.09f, 0.10f, 0.12f, 1.0f };
     const XMFLOAT4 visor = { 0.35f, 0.95f, 1.00f, 1.0f };
@@ -190,7 +191,12 @@ void Soldier::Draw(Renderer& renderer, const XMMATRIX world[SegmentCount], const
     part(Torso, Shape::CylinderLow, // neck seal
          XMMatrixScaling(0.11f, 0.08f, 0.11f) * XMMatrixTranslation(0.0f, 0.15f, 0.04f), suit);
 
-    part(Head, Shape::SphereMed, XMMatrixScaling(0.27f, 0.27f, 0.27f), plate);
+    // The helmet is the class mark: the one piece of a soldier that isn't
+    // painted for their side. It's small — a quarter of a body — but it sits at
+    // the top of the model, which under an isometric camera is the part least
+    // likely to be behind anything, and it's the part a player is already
+    // looking at when they line up a shot.
+    part(Head, Shape::SphereMed, XMMatrixScaling(0.27f, 0.27f, 0.27f), cls);
     part(Head, Shape::SphereLow, // visor, bulging out of the helmet's front
          XMMatrixScaling(0.17f, 0.10f, 0.12f) * XMMatrixTranslation(0.0f, 0.0f, 0.09f), visor);
 
