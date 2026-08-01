@@ -195,7 +195,7 @@ void ClassSelect::Render(Renderer& renderer)
         // Classes without one say so outright — a blank row would read as a
         // card that failed to draw, and "not yet" is the truth about where the
         // prototype is rather than something to hide.
-        const bool hasAbility = def.ability.kind != AbilityKind::None;
+        const bool hasAbility = def.ability.kind != Ability::Kind::None;
         const std::string abilityLine =
             hasAbility ? "Q - " + std::string(def.ability.name) : "NO ABILITY YET";
         DrawCentered(renderer, abilityLine, r.x + r.w * 0.5f, r.y + r.h * 0.505f, r.w * 0.042f,

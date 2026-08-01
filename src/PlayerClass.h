@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Ability.h"
+
 #include <DirectXMath.h>
 #include <cstddef>
 
@@ -64,52 +66,16 @@ struct MoveDef
     float stop;  // 1/s; higher plants harder
 };
 
-// The one thing a class can do that no other class can. Everything else in this
-// file is standard issue with the numbers moved around — the same shape of
-// rifle, the same grenade, the same blade — so a class is currently a stat line
-// and not a job. This is where that changes.
+// The abilities the table below hands out. What an ability *is* — and what it
+// does when the key goes down — lives in Ability.h; what's here is the tuning,
+// because that's the half a balance pass wants to read, and it wants to read it
+// next to the speeds and the magazines it trades against.
 //
-// One ability, on one key, on one clock. A soldier with three buttons is a
-// soldier you have to study before you can play them, and the whole promise of
-// picking one off a card is that you already know what you got.
+// Only the medic has one so far. The other three carry Ability::kNone, and that
+// isn't a placeholder for a system that hasn't landed — it's an accurate
+// statement of what those three classes are today.
 //
-// `kind` says what the ability does; the numbers under it are read by that kind
-// and mean nothing without it. Only the medic has one so far, so this is a
-// one-entry enum next to the None the other three carry — and that None isn't a
-// placeholder for a system that hasn't landed, it's an accurate statement of
-// what those three classes are today.
-enum class AbilityKind
-{
-    None,
-    // Puts `amount` health back into the user over `duration` seconds, and the
-    // same again into one friendly inside the reach and arc below — delivered
-    // by the second rather than in a lump at the end.
-    Heal,
-};
-
-struct AbilityDef
-{
-    AbilityKind kind;
-    const char* name; // uppercase, for the class card and the key hint
-    float duration;   // seconds it runs for; must be > 0 for any kind but None
-    // Measured from when the ability *ends*, not from when it started, so being
-    // cut short costs the whole cooldown rather than a shortened one. Nothing
-    // else in the loadout works this way, and it's why letting go of the
-    // ability is a decision instead of a free look at it.
-    float cooldown;
-    float amount; // what it delivers over the duration; read by the kind
-    // How far the ability reaches somebody who isn't the user, and how far off
-    // the aim direction still counts as being pointed at them. 0 reach means it
-    // only ever touches the user. Same shape as MeleeDef's pair, and read the
-    // same way — a cone in front of the soldier — but at a range that crosses a
-    // room rather than one that barely clears two bodies.
-    float reach;
-    float arc; // half-angle, radians
-};
-
-inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-
-// The medic's, and the first ability in the game. It patches up the medic and
+// The medic's is the first ability in the game. It patches up the medic and
 // one other soldier at once: whoever on their side they happen to be pointed at
 // that instant, out to seven units and a little under half a radian either way.
 // Both get the full sixty over the two and a half seconds — the friendly isn't
@@ -134,9 +100,9 @@ inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.
 // The reach is deliberately short of the range anything shoots at. A medic has
 // to close most of the way to the soldier they're treating, which is the walk
 // the class's speed exists to pay for.
-inline constexpr AbilityDef kFieldDressing = {
-    // kind               name              duration cooldown amount reach arc
-    AbilityKind::Heal, "FIELD DRESSING",    2.5f,    14.0f,   60.0f, 7.0f, 0.45f
+inline constexpr Ability::Def kFieldDressing = {
+    // kind                  name              duration cooldown sound  | amount reach arc
+    Ability::Kind::Heal, "FIELD DRESSING",     2.5f,    14.0f,   "heal", { 60.0f, 7.0f, 0.45f }
 };
 
 struct ClassDef
@@ -146,7 +112,7 @@ struct ClassDef
     DirectX::XMFLOAT4 color; // player body + UI accent
     MoveDef move;
     WeaponDef primary;
-    AbilityDef ability;
+    Ability::Def ability;
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
@@ -186,10 +152,10 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // between the lightest class and the heaviest is roughly a third of a body.
     // It is meant to be felt in the hands rather than seen from the camera.
     // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, kNoAbility },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  9.0f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone },
     { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, { 11.0f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing },
-    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, kNoAbility },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, kNoAbility },
+    { "SNIPER",    "LONG RANGE",       { 0.30f, 0.60f, 0.95f, 1.0f }, {  7.0f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.95f, 0.55f, 0.20f, 1.0f }, {  7.5f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine

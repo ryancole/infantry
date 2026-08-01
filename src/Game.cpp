@@ -171,13 +171,6 @@ namespace
     // see is where the blade went, not a standing promise of where it would go.
     constexpr XMFLOAT4 kMeleeArcColor = { 0.82f, 0.90f, 1.00f, 0.85f };
     constexpr float kMeleeFlashTime = 0.13f;
-    // A running ability draws a ring closing round the user's feet, one sweep
-    // over its whole duration. It's deliberately something an enemy can read
-    // too: a medic patching up is a medic who can't shoot back for the next two
-    // seconds, and that's worth knowing from across the arena. The green is the
-    // HUD's health color, because so far the only ability there is is a heal.
-    constexpr XMFLOAT4 kAbilityRingColor = { 0.35f, 0.85f, 0.70f, 0.75f };
-    constexpr float kAbilityRingRadius = 0.9f; // just clear of the soldier's shoulders
     // Which soldiers are on the player's side. Class color says what someone is
     // and has to go on saying it — a friendly medic and a hostile one are the
     // same white — so the team is a separate mark rather than a tint: a thin
@@ -187,21 +180,6 @@ namespace
     // existed and stays true for anyone who never looks down.
     constexpr XMFLOAT4 kFriendlyRingColor = { 0.35f, 0.68f, 1.00f, 0.45f };
     constexpr float kFriendlyRingRadius = 0.55f;
-    // The line to whoever is being treated, plus a ring around them. Brighter
-    // than the friendly marker underneath it, since this is the one soldier on
-    // the field the dressing is actually reaching.
-    constexpr XMFLOAT4 kAbilityLinkColor = { 0.45f, 0.95f, 0.78f, 0.80f };
-    constexpr float kAbilityLinkHeight = 0.75f; // chest height, so it reads as a line between two people
-
-    // Squadmate health bars, which only a class that can do something about
-    // them gets to see. Small: it's a glance that has to survive several of
-    // them being on screen at once, and a soldier is 0.8 wide, so a bar a
-    // little narrower than that reads as belonging to the body under it.
-    constexpr float kHealthBarHeight = 1.70f; // clear of the helmet (head sits at 1.05)
-    constexpr float kHealthBarWidth = 0.70f;
-    constexpr float kHealthBarThickness = 0.11f;
-    constexpr float kHealthBarEdge = 0.02f; // dark surround, so a red bar still reads against blood
-    constexpr XMFLOAT4 kHealthBarBack = { 0.03f, 0.04f, 0.06f, 0.72f };
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -283,32 +261,6 @@ namespace
                       const XMFLOAT4& color)
     {
         AppendArc(out, center, radius, 0.0f, XM_2PI, 24, color);
-    }
-
-    // An upright quad in the world, `origin` its bottom-left corner, running
-    // `width` along `right` and `height` straight up. Billboarding the cheap
-    // way: the horizontal axis follows the camera and the vertical one is
-    // simply world up, which under an orthographic camera that never rolls is
-    // all it takes to stand something square to the screen. A proper billboard
-    // would also tilt back by the camera's pitch; at this size the difference
-    // is a bar that looks very slightly foreshortened, which is the correct
-    // amount of effort to spend on it.
-    void AppendUprightQuad(std::vector<Vertex>& out, const Vector3& origin, const Vector3& right,
-                           float width, float height, const XMFLOAT4& color)
-    {
-        if (width <= 0.0f || height <= 0.0f)
-            return;
-        const Vector3 across = right * width;
-        const XMFLOAT3 p0 = origin;
-        const XMFLOAT3 p1 = origin + across;
-        const XMFLOAT3 p2 = origin + across + Vector3(0.0f, height, 0.0f);
-        const XMFLOAT3 p3 = origin + Vector3(0.0f, height, 0.0f);
-        out.push_back({ p0, color });
-        out.push_back({ p1, color });
-        out.push_back({ p2, color });
-        out.push_back({ p0, color });
-        out.push_back({ p2, color });
-        out.push_back({ p3, color });
     }
 
     // Draws a living soldier: the model's segments posed by the walk cycle and
@@ -487,8 +439,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_meleeCharges = kMelee.charges;
             m_meleeRecover = 0.0f;
             m_meleeCooldown = 0.0f;
-            m_abilityTime = 0.0f;
-            m_abilityCooldown = 0.0f;
+            m_ability = {};
             m_fireCooldown = kFireGrace; // so the selection click doesn't fire a shot
             camera.SetTarget(m_playerPos);
             camera.SnapToTarget();
@@ -685,61 +636,20 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         weaponUsed = true;
     }
 
-    // --- Ability: the one thing this class can do that the others can't. Off
-    // the magazine like the grenade and the blade, so a reload never takes it
-    // away, and on a press edge rather than a hold — it isn't a trigger, and a
-    // second press is what stops it.
-    //
-    // Nothing else in the loadout stops for it: the medic dressing a wound can
-    // still run, still turn, still be shot at. What it costs is the weapon —
-    // firing, throwing or swinging drops the dressing where it stands. Since
-    // the cooldown is measured from the end rather than the start, being
-    // interrupted costs the whole ability rather than the part that was left,
-    // which is what makes deciding to see it out a decision.
-    //
-    // It goes last, after everything a weapon can do this frame, so that a
-    // press arriving on the same frame as a shot is a press that never started
-    // anything, rather than one that started something and immediately paid for
-    // losing it ---
-    const AbilityDef& ability = m_class->ability;
-    m_abilityCooldown = std::max(0.0f, m_abilityCooldown - dt);
+    // --- Ability: the one thing this class can do that the others can't, on a
+    // press edge rather than a hold — it isn't a trigger. Everything it decides
+    // it decides in Ability::Update: when it starts, what it does with the time,
+    // and what taking a weapon back costs. All this end of it owns is the two
+    // inputs and the answer to who's on the field ---
     const bool abilityPressed =
         input.KeyPressed(kAbilityKey) || input.padEvents.b == PadTracker::PRESSED;
-    if (weaponUsed || abilityPressed)
-        EndAbility(); // a no-op unless something was running
-    if (m_abilityTime > 0.0f)
+    const Ability::Def& ability = m_class->ability;
+    if (Ability::Update(ability, m_ability, AbilityScene(), dt, abilityPressed, weaponUsed) &&
+        ability.startSound)
     {
-        const float step = std::min(dt, m_abilityTime);
-        m_abilityTime -= step;
-        m_abilityReached = false;
-        // Paid out by the second, not banked until the end. A dressing that
-        // only settled up on completion would be worth exactly nothing in the
-        // moment it's most likely to be interrupted, which is the moment it's
-        // most likely to be needed.
-        //
-        // The friendly gets the same share the medic does rather than half of
-        // it, so treating someone is strictly worth more than treating nobody
-        // and the reach is a thing to work for. Who that is gets asked again
-        // every frame: the healing follows the aim, so a medic can sweep it
-        // across two wounded soldiers and genuinely split it, and one who turns
-        // away has stopped treating whoever they turned away from.
-        if (ability.kind == AbilityKind::Heal)
-        {
-            const float given = ability.amount * step / ability.duration;
-            m_playerHp = std::min(kMaxHealth, m_playerHp + given);
-            if (Npc* mate = AbilityTarget())
-            {
-                mate->hp = std::min(kMaxHealth, mate->hp + given);
-                m_abilityTargetPos = mate->pos;
-                m_abilityReached = true;
-            }
-        }
-        if (m_abilityTime <= 0.0f)
-            EndAbility();
-    }
-    else if (abilityPressed && !weaponUsed)
-    {
-        BeginAbility();
+        // At the listener, not in the world: it's the player's own kit, heard
+        // the way the reload is.
+        m_sound.Play(ability.startSound);
     }
 
     // --- NPCs: debug spawning and AI. Held shift puts the soldier on the
@@ -771,11 +681,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_meleeFlash = 0.0f;
         // A dressing dies with the soldier too, and the ring it was drawing
         // goes with it. It doesn't pay the cooldown on the way out — the
-        // respawn hands back a fresh loadout regardless — so the timer is
-        // simply dropped rather than ended. Whoever was being treated stops
-        // being treated, which is what the line going out says.
-        m_abilityTime = 0.0f;
-        m_abilityReached = false;
+        // respawn hands back a fresh loadout regardless — so the ability is
+        // dropped rather than ended. Whoever was being treated stops being
+        // treated, which is what the line going out says.
+        Ability::Drop(m_ability);
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
@@ -854,79 +763,35 @@ void Game::SwingMelee()
     PlaySoundAt(target->hp <= 0.0f ? "death" : "hit", target->pos);
 }
 
-void Game::BeginAbility()
+Ability::Scene Game::AbilityScene()
 {
-    const AbilityDef& ability = m_class->ability;
-    if (ability.kind == AbilityKind::None || m_abilityTime > 0.0f || m_abilityCooldown > 0.0f)
-        return;
-    // Nothing to dress. Spending fourteen seconds of cooldown on health nobody
-    // is missing is never what the key meant, so it does nothing at all rather
-    // than something worthless — the same courtesy BeginReload does for a full
-    // magazine. "Nobody" has to include whoever the medic is pointed at: an
-    // unhurt medic standing over a wounded squadmate is the exact situation the
-    // ability exists for, and testing their own health alone would refuse it.
-    if (ability.kind == AbilityKind::Heal && m_playerHp >= kMaxHealth)
-    {
-        const Npc* mate = AbilityTarget();
-        if (!mate || mate->hp >= kMaxHealth)
-            return;
-    }
-
-    m_abilityTime = ability.duration;
-    // At the listener, not in the world: it's the player's own kit, heard the
-    // way the reload is.
-    m_sound.Play("heal");
-}
-
-void Game::EndAbility()
-{
-    if (m_abilityTime <= 0.0f)
-        return;
-    m_abilityTime = 0.0f;
-    m_abilityReached = false;
-    m_abilityCooldown = m_class->ability.cooldown;
-}
-
-Game::Npc* Game::AbilityTarget()
-{
-    const AbilityDef& ability = m_class->ability;
-    if (ability.reach <= 0.0f)
-        return nullptr;
-
-    // Of everyone standing in the cone, the one the medic is most nearly
-    // pointed at — not the nearest, which is what the blade picks. The two
-    // rules differ because the two cones do: a swing reaches barely past the
-    // body in front of it, so distance is the only thing that separates two
-    // targets inside it, while a dressing reaches across a room, where a
-    // soldier three units off to the side and one directly ahead are plainly
-    // not the same choice. Pointing is what "looking at" means at this range.
+    // Everyone on the player's side they can actually see. The sight test is
+    // the one the blast and the NPC AI use, applied here because the fog is
+    // this class's business: an ability decides what happens to a soldier, not
+    // whether there's a wall in the way, and doing it here is what stops
+    // "treating someone through cover" from being answerable in two places.
     //
-    // The sight test is the same one the blast and the AI use. Treating someone
-    // through a wall would be the only thing in the game that could.
+    // The list points straight into the roster, so it's good for exactly as
+    // long as nothing is added to or taken out of m_npcs. Every caller uses it
+    // and drops it inside the same statement, which is the only reason that's
+    // safe — and the reason this returns a value rather than keeping one.
+    m_abilityAllies.clear();
     const Vector2 playerXZ = { m_playerPos.x, m_playerPos.z };
-    const float cosArc = std::cos(ability.arc);
-    Npc* target = nullptr;
-    float bestDot = 0.0f;
-    for (Npc& npc : m_npcs)
+    // Three of the four classes have no ability, and a sight test per squadmate
+    // per frame isn't free enough to spend on nobody.
+    if (m_class->ability.kind != Ability::Kind::None)
     {
-        if (npc.hp <= 0.0f || npc.team != m_team)
-            continue;
-        Vector3 toward = npc.pos - m_playerPos;
-        toward.y = 0.0f;
-        const float dist = toward.Length();
-        if (dist > ability.reach || dist < 1e-4f)
-            continue;
-        const float dot = toward.Dot(m_aimDir) / dist;
-        if (dot < cosArc)
-            continue;
-        if (target && dot <= bestDot)
-            continue;
-        if (!Visibility::IsPointVisible(playerXZ, { npc.pos.x, npc.pos.z }, m_occluders))
-            continue;
-        target = &npc;
-        bestDot = dot;
+        for (Npc& npc : m_npcs)
+        {
+            if (npc.team != m_team || npc.hp <= 0.0f)
+                continue;
+            if (!Visibility::IsPointVisible(playerXZ, { npc.pos.x, npc.pos.z }, m_occluders))
+                continue;
+            m_abilityAllies.push_back({ npc.pos, &npc.hp });
+        }
     }
-    return target;
+
+    return { { m_playerPos, &m_playerHp }, m_aimDir, kMaxHealth, &m_abilityAllies };
 }
 
 void Game::Respawn(IsoCamera& camera)
@@ -939,8 +804,7 @@ void Game::Respawn(IsoCamera& camera)
     m_meleeCharges = kMelee.charges;    // all three swings, likewise
     m_meleeRecover = 0.0f;
     m_meleeCooldown = 0.0f;
-    m_abilityTime = 0.0f;               // and the ability off its cooldown, however it was left
-    m_abilityCooldown = 0.0f;
+    m_ability = {};                     // and the ability off its cooldown, however it was left
     m_fireCooldown = kFireGrace;        // brief grace, as after the class pick
     m_moveBlend = 0.0f;                 // stands still on arrival instead of resuming mid-stride
     m_moveVel = Vector3::Zero;          // and without the momentum they died carrying
@@ -1797,51 +1661,16 @@ void Game::Render(Renderer& renderer)
     renderer.DrawTrianglesAlpha(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
                                 identity);
 
-    // Squadmate health, over the heads of the ones who have lost some. Only a
-    // class that can put it back gets to see it: this is the medic's job made
-    // visible, and on anyone else it would be a free readout of information
-    // they have no way to act on. So it's gated on the ability rather than on
-    // the class name — whoever can heal is whoever can see who needs healing,
-    // and if a second class ever gets a dressing it inherits this with it.
-    //
-    // Only the wounded get a bar. "Who should I heal" is the question being
-    // answered, and a row of full bars would bury the answer in soldiers who
-    // aren't part of it; the friendly ring is already under everyone, so a ring
-    // with nothing over it reads as a soldier who's fine. It also means the bar
-    // going away is what says a treatment finished.
-    //
-    // Same viewport and sight tests the bodies get. A bar is not allowed to be
-    // the thing that tells a medic where someone is standing — that would make
-    // the class see through walls, which is a different power from the one
-    // being handed out here.
-    if (m_phase == Phase::Playing && m_class->ability.kind == AbilityKind::Heal)
+    // What the player's ability lets them see that nobody else does — for the
+    // medic, squadmate health over the heads of the wounded. Which soldiers are
+    // in that list is settled by AbilityScene, so a mark can never be the thing
+    // that tells a medic where somebody is standing: it draws over the ones
+    // they can already see and nobody else. What it draws is the ability's own
+    // business, and no kind of it is named here.
+    if (m_phase == Phase::Playing)
     {
         m_scratch.clear();
-        for (const Npc& npc : m_npcs)
-        {
-            if (npc.team != m_team || npc.hp <= 0.0f || npc.hp >= kMaxHealth)
-                continue;
-            if (!renderer.IsSphereVisible({ npc.pos.x, kSoldierBoundsY, npc.pos.z },
-                                          kSoldierBoundsRadius))
-                continue;
-            if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
-                continue;
-
-            const float frac = std::clamp(npc.hp / kMaxHealth, 0.0f, 1.0f);
-            const Vector3 left(npc.pos.x - m_screenRight.x * kHealthBarWidth * 0.5f,
-                               kHealthBarHeight,
-                               npc.pos.z - m_screenRight.z * kHealthBarWidth * 0.5f);
-            // Backing plate first, a hair proud of the bar on every side, so a
-            // nearly-empty red bar doesn't have to be read against whatever
-            // happens to be behind it.
-            AppendUprightQuad(m_scratch,
-                              left - m_screenRight * kHealthBarEdge -
-                                  Vector3(0.0f, kHealthBarEdge, 0.0f),
-                              m_screenRight, kHealthBarWidth + kHealthBarEdge * 2.0f,
-                              kHealthBarThickness + kHealthBarEdge * 2.0f, kHealthBarBack);
-            AppendUprightQuad(m_scratch, left, m_screenRight, kHealthBarWidth * frac,
-                              kHealthBarThickness, Hud::HealthColor(frac));
-        }
+        Ability::AppendVision(m_class->ability, AbilityScene(), m_screenRight, m_scratch);
         renderer.DrawTrianglesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                     identity);
     }
@@ -1909,34 +1738,12 @@ void Game::Render(Renderer& renderer)
                       color);
         }
 
-        // A running ability, drawn as a ring closing round the user's feet over
-        // its whole duration. Unlike the melee arc this is a promise rather than
-        // a record: it says how much of the thing is left to run, which is the
-        // only number that matters while it runs — for the player deciding
-        // whether they can afford the rest of it, and for anyone watching who
-        // now knows exactly how long this soldier can't shoot back.
-        if (m_abilityTime > 0.0f && m_class->ability.duration > 0.0f)
-        {
-            const float done = 1.0f - m_abilityTime / m_class->ability.duration;
-            const Vector3 center(m_playerPos.x, kAimRingHeight, m_playerPos.z);
-            AppendArc(m_scratch, center, kAbilityRingRadius, -XM_PIDIV2, XM_2PI * done, 28,
-                      kAbilityRingColor);
-        }
-
-        // And who it's reaching, if anyone: a line between the two of them at
-        // chest height with a ring around the far end. Since the target is
-        // picked again every frame, this is also the only thing that tells the
-        // player they have drifted off the soldier they meant to be treating —
-        // the health bar climbing is the other one's, and it isn't on screen.
-        if (m_abilityReached)
-        {
-            const Vector3 from(m_playerPos.x, kAbilityLinkHeight, m_playerPos.z);
-            const Vector3 to(m_abilityTargetPos.x, kAbilityLinkHeight, m_abilityTargetPos.z);
-            m_scratch.push_back({ from, kAbilityLinkColor });
-            m_scratch.push_back({ to, kAbilityLinkColor });
-            AppendCircle(m_scratch, { m_abilityTargetPos.x, kAimRingHeight, m_abilityTargetPos.z },
-                         kAbilityRingRadius, kAbilityLinkColor);
-        }
+        // Whatever the ability has to say about itself: how much of it is left
+        // to run, and who it's reaching. It goes in this batch because it's the
+        // same kind of thing as the aim line and the swing arc — a mark on the
+        // world about what this soldier is doing — but what those marks are is
+        // the ability's own business.
+        Ability::AppendIndicator(m_class->ability, m_ability, m_playerPos, m_scratch);
 
         // Friend or foe, for everyone but the player: a ring under the soldiers
         // on their own side. Same visibility rule the bodies themselves get —
@@ -2000,11 +1807,11 @@ void Game::RenderHud(Renderer& renderer)
     // turn the seconds left into a bar. A class without one hands over nothing
     // and gets no module, rather than getting an empty one — an ability isn't
     // equipment that ran out.
-    hud.ability = m_class->ability.kind != AbilityKind::None ? &m_class->ability : nullptr;
-    hud.abilityFraction = m_abilityTime > 0.0f && m_class->ability.duration > 0.0f
-                              ? 1.0f - m_abilityTime / m_class->ability.duration
+    hud.ability = m_class->ability.kind != Ability::Kind::None ? &m_class->ability : nullptr;
+    hud.abilityFraction = m_ability.time > 0.0f && m_class->ability.duration > 0.0f
+                              ? 1.0f - m_ability.time / m_class->ability.duration
                               : -1.0f;
-    hud.abilityCooldown = m_abilityCooldown;
+    hud.abilityCooldown = m_ability.cooldown;
     // Contacts are hostiles, not bodies on the field: a squadmate is not
     // something the player has to account for, and a count that went up when
     // one arrived would be reporting the opposite of what the icon promises.

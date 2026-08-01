@@ -40,7 +40,7 @@ namespace Hud
         // definition comes over whole because the HUD needs more than a number
         // off it: the name goes on the key hint, and the cooldown is what turns
         // the seconds below into a bar.
-        const AbilityDef* ability;
+        const Ability::Def* ability;
         float abilityFraction; // 0..1 through a use; < 0 when it isn't running
         float abilityCooldown; // seconds until it's ready again; 0 = now
         int npcs;

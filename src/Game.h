@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Ability.h"
 #include "Camera.h"
 #include "ClassSelect.h"
 #include "Input.h"
@@ -150,18 +151,14 @@ private:
     // and strikes the nearest enemy standing in it, if any. The charge goes
     // whether or not it lands.
     void SwingMelee();
-    // Starts the class's ability, if it has one, it's off cooldown, and there's
-    // anything for it to do. A no-op otherwise, so the key can be leaned on.
-    void BeginAbility();
-    // Ends a run of the ability and starts its cooldown. Idempotent, because
-    // every way out of an ability comes through here — running out, being
-    // cancelled, dying — and only the first of them should count.
-    void EndAbility();
-    // The one friendly the player's ability reaches right now: alive, on their
-    // team, inside the ability's cone, and not behind a wall. Null when there
-    // isn't one, which is most of the time. Recomputed every frame the ability
-    // runs, so where the healing goes follows where the medic is looking.
-    Npc* AbilityTarget();
+    // What the player's ability is allowed to act on this frame: the player
+    // themselves, and every living squadmate they can currently see. The sight
+    // rule is applied here rather than inside the ability because the fog is
+    // this class's business and an ability has never heard of a wall — which is
+    // also what keeps "can a medic treat someone through cover" answered in
+    // exactly one place. Rebuilt per call into m_abilityAllies, which is kept
+    // around so the per-frame list costs no allocation.
+    Ability::Scene AbilityScene();
     void SpawnNpc(int team);
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
@@ -271,18 +268,12 @@ private:
     float m_meleeCooldown = 0.0f; // time until the next swing
     float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
     Vector3 m_meleeSwingDir = Vector3::UnitX;
-    // The class ability, on its own key and its own clock — off the magazine
-    // like the grenade and the blade, so a reload never takes it away. Only one
-    // of the two timers ever runs: the ability is doing its work, or it's
-    // coming back. Both are zero for a class that hasn't got one.
-    float m_abilityTime = 0.0f;     // > 0 while it's running
-    float m_abilityCooldown = 0.0f; // > 0 while it's recharging
-    // Where the ability reached somebody else on the frame that just ran, for
-    // the line drawn between the two of them. Kept as a position rather than a
-    // pointer into the NPC roster, which is erased from partway through every
-    // frame; where they were standing is all the drawing needs.
-    Vector3 m_abilityTargetPos;
-    bool m_abilityReached = false;
+    // The class ability's clocks — off the magazine like the grenade and the
+    // blade, so a reload never takes it away. What they mean and what runs them
+    // is Ability's business; all that's kept here is that they belong to this
+    // soldier, and that a respawn hands back a fresh set.
+    Ability::Runtime m_ability;
+    std::vector<Ability::Target> m_abilityAllies; // reused per frame; see AbilityScene
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;
