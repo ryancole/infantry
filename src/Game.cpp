@@ -178,6 +178,20 @@ namespace
     // HUD's health color, because so far the only ability there is is a heal.
     constexpr XMFLOAT4 kAbilityRingColor = { 0.35f, 0.85f, 0.70f, 0.75f };
     constexpr float kAbilityRingRadius = 0.9f; // just clear of the soldier's shoulders
+    // Which soldiers are on the player's side. Class color says what someone is
+    // and has to go on saying it — a friendly medic and a hostile one are the
+    // same white — so the team is a separate mark rather than a tint: a thin
+    // ring on the ground under everyone friendly. Only the player's own side is
+    // marked, on the grounds that a soldier with nothing under them is someone
+    // to shoot, which is the assumption that was already true before squadmates
+    // existed and stays true for anyone who never looks down.
+    constexpr XMFLOAT4 kFriendlyRingColor = { 0.35f, 0.68f, 1.00f, 0.45f };
+    constexpr float kFriendlyRingRadius = 0.55f;
+    // The line to whoever is being treated, plus a ring around them. Brighter
+    // than the friendly marker underneath it, since this is the one soldier on
+    // the field the dressing is actually reaching.
+    constexpr XMFLOAT4 kAbilityLinkColor = { 0.45f, 0.95f, 0.78f, 0.80f };
+    constexpr float kAbilityLinkHeight = 0.75f; // chest height, so it reads as a line between two people
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -660,13 +674,29 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         const float step = std::min(dt, m_abilityTime);
         m_abilityTime -= step;
+        m_abilityReached = false;
         // Paid out by the second, not banked until the end. A dressing that
         // only settled up on completion would be worth exactly nothing in the
         // moment it's most likely to be interrupted, which is the moment it's
         // most likely to be needed.
+        //
+        // The friendly gets the same share the medic does rather than half of
+        // it, so treating someone is strictly worth more than treating nobody
+        // and the reach is a thing to work for. Who that is gets asked again
+        // every frame: the healing follows the aim, so a medic can sweep it
+        // across two wounded soldiers and genuinely split it, and one who turns
+        // away has stopped treating whoever they turned away from.
         if (ability.kind == AbilityKind::Heal)
-            m_playerHp =
-                std::min(kMaxHealth, m_playerHp + ability.amount * step / ability.duration);
+        {
+            const float given = ability.amount * step / ability.duration;
+            m_playerHp = std::min(kMaxHealth, m_playerHp + given);
+            if (Npc* mate = AbilityTarget())
+            {
+                mate->hp = std::min(kMaxHealth, mate->hp + given);
+                m_abilityTargetPos = mate->pos;
+                m_abilityReached = true;
+            }
+        }
         if (m_abilityTime <= 0.0f)
             EndAbility();
     }
@@ -675,9 +705,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         BeginAbility();
     }
 
-    // --- NPCs: debug spawning and AI ---
+    // --- NPCs: debug spawning and AI. Held shift puts the soldier on the
+    // player's own team instead of the other one, which is the only way to get
+    // a squadmate onto the field so far — and the only way to have anything for
+    // the medic's dressing to reach. It doubles up with the steady key, which
+    // costs a spawning player a moment at walking pace and nothing else ---
     if (input.KeyPressed(kSpawnNpcKey) || input.padEvents.y == PadTracker::PRESSED)
-        SpawnNpc();
+        SpawnNpc(input.Key(kSteadyKey) ? m_team : EnemyTeam());
     UpdateNpcs(dt);
 
     // --- Projectiles (simulated by Jolt) ---
@@ -701,8 +735,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         // A dressing dies with the soldier too, and the ring it was drawing
         // goes with it. It doesn't pay the cooldown on the way out — the
         // respawn hands back a fresh loadout regardless — so the timer is
-        // simply dropped rather than ended.
+        // simply dropped rather than ended. Whoever was being treated stops
+        // being treated, which is what the line going out says.
         m_abilityTime = 0.0f;
+        m_abilityReached = false;
         // The body stays where it fell — the player respawns out of it.
         SpawnCorpse(m_playerPos, m_aimDir, m_walkPhase, m_moveBlend, m_class->color, m_deathKnock);
         m_phase = Phase::Dead;
@@ -753,7 +789,7 @@ void Game::SwingMelee()
     float nearest = 0.0f;
     for (Npc& npc : m_npcs)
     {
-        if (npc.hp <= 0.0f)
+        if (npc.hp <= 0.0f || npc.team == m_team) // the blade doesn't cut its own side
             continue;
         Vector3 toward = npc.pos - m_playerPos;
         toward.y = 0.0f;
@@ -786,12 +822,18 @@ void Game::BeginAbility()
     const AbilityDef& ability = m_class->ability;
     if (ability.kind == AbilityKind::None || m_abilityTime > 0.0f || m_abilityCooldown > 0.0f)
         return;
-    // Nothing to dress. Spending fourteen seconds of cooldown on health the
-    // soldier already has is never what the key meant, so it does nothing at
-    // all rather than something worthless — the same courtesy BeginReload does
-    // for a full magazine.
+    // Nothing to dress. Spending fourteen seconds of cooldown on health nobody
+    // is missing is never what the key meant, so it does nothing at all rather
+    // than something worthless — the same courtesy BeginReload does for a full
+    // magazine. "Nobody" has to include whoever the medic is pointed at: an
+    // unhurt medic standing over a wounded squadmate is the exact situation the
+    // ability exists for, and testing their own health alone would refuse it.
     if (ability.kind == AbilityKind::Heal && m_playerHp >= kMaxHealth)
-        return;
+    {
+        const Npc* mate = AbilityTarget();
+        if (!mate || mate->hp >= kMaxHealth)
+            return;
+    }
 
     m_abilityTime = ability.duration;
     // At the listener, not in the world: it's the player's own kit, heard the
@@ -804,7 +846,50 @@ void Game::EndAbility()
     if (m_abilityTime <= 0.0f)
         return;
     m_abilityTime = 0.0f;
+    m_abilityReached = false;
     m_abilityCooldown = m_class->ability.cooldown;
+}
+
+Game::Npc* Game::AbilityTarget()
+{
+    const AbilityDef& ability = m_class->ability;
+    if (ability.reach <= 0.0f)
+        return nullptr;
+
+    // Of everyone standing in the cone, the one the medic is most nearly
+    // pointed at — not the nearest, which is what the blade picks. The two
+    // rules differ because the two cones do: a swing reaches barely past the
+    // body in front of it, so distance is the only thing that separates two
+    // targets inside it, while a dressing reaches across a room, where a
+    // soldier three units off to the side and one directly ahead are plainly
+    // not the same choice. Pointing is what "looking at" means at this range.
+    //
+    // The sight test is the same one the blast and the AI use. Treating someone
+    // through a wall would be the only thing in the game that could.
+    const Vector2 playerXZ = { m_playerPos.x, m_playerPos.z };
+    const float cosArc = std::cos(ability.arc);
+    Npc* target = nullptr;
+    float bestDot = 0.0f;
+    for (Npc& npc : m_npcs)
+    {
+        if (npc.hp <= 0.0f || npc.team != m_team)
+            continue;
+        Vector3 toward = npc.pos - m_playerPos;
+        toward.y = 0.0f;
+        const float dist = toward.Length();
+        if (dist > ability.reach || dist < 1e-4f)
+            continue;
+        const float dot = toward.Dot(m_aimDir) / dist;
+        if (dot < cosArc)
+            continue;
+        if (target && dot <= bestDot)
+            continue;
+        if (!Visibility::IsPointVisible(playerXZ, { npc.pos.x, npc.pos.z }, m_occluders))
+            continue;
+        target = &npc;
+        bestDot = dot;
+    }
+    return target;
 }
 
 void Game::Respawn(IsoCamera& camera)
@@ -932,16 +1017,18 @@ void Game::ResolveObstacles(Vector3& pos) const
     }
 }
 
-void Game::SpawnNpc()
+void Game::SpawnNpc(int team)
 {
-    // NPCs belong to the other team and appear at its spawn point, scattered
-    // a little so repeated presses don't stack them on one tile.
-    const int enemyTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
-
+    // An NPC appears at its own team's spawn point, scattered a little so
+    // repeated presses don't stack them on one tile. Which team that is comes
+    // from the caller now: a squadmate turns up where the player turns up, and
+    // a hostile across the arena, so the two debug keys put soldiers where
+    // those soldiers would actually have come from.
     Npc npc;
     npc.cls = &kClassDefs[m_nextNpcClass];
     m_nextNpcClass = (m_nextNpcClass + 1) % static_cast<int>(kClassCount);
-    npc.pos = m_teamSpawns[enemyTeam];
+    npc.team = team;
+    npc.pos = m_teamSpawns[team];
     npc.pos.x += Rand(-2.0f, 2.0f);
     npc.pos.z += Rand(-2.0f, 2.0f);
     ResolveObstacles(npc.pos);
@@ -961,7 +1048,6 @@ void Game::SpawnNpc()
 
 void Game::UpdateNpcs(float dt)
 {
-    const Vector2 playerXZ = { m_playerPos.x, m_playerPos.z };
     for (Npc& npc : m_npcs)
     {
         npc.fireCooldown -= dt;
@@ -982,14 +1068,43 @@ void Game::UpdateNpcs(float dt)
             }
         }
 
-        Vector3 toPlayer = m_playerPos - npc.pos;
-        toPlayer.y = 0.0f;
-        const float dist = toPlayer.Length();
-        // NPCs obey the same sight rules as the player's fog of war, so they
-        // can't shoot through walls the player can't see through either.
-        const bool engaged = PlayerOnField() && dist < kNpcEngageRange && dist > 1e-3f &&
-                             Visibility::IsPointVisible({ npc.pos.x, npc.pos.z }, playerXZ,
-                                                        m_occluders);
+        // Who this soldier is fighting: the nearest enemy it can actually see.
+        // It used to be the player and nothing else, which was true only while
+        // every NPC on the field was hostile. Now a hostile picks between the
+        // player and the player's squadmates, and a squadmate goes after the
+        // hostiles — same rule, read off `team` instead of assumed.
+        //
+        // The sight test is the one the player's fog of war uses, so nobody
+        // shoots through a wall the player can't see through either. It runs
+        // once per candidate, which makes target selection quadratic in the
+        // squad size; at the handful of soldiers a debug key puts on the field
+        // that's cheaper than the bookkeeping to avoid it.
+        const Vector2 npcXZ = { npc.pos.x, npc.pos.z };
+        bool engaged = false;
+        float dist = 0.0f;
+        Vector3 target;
+        const auto consider = [&](const Vector3& pos) {
+            const float d = Vector2(pos.x - npc.pos.x, pos.z - npc.pos.z).Length();
+            if (d < 1e-3f || d > kNpcEngageRange || (engaged && d >= dist))
+                return;
+            if (!Visibility::IsPointVisible(npcXZ, { pos.x, pos.z }, m_occluders))
+                return;
+            engaged = true;
+            dist = d;
+            target = pos;
+        };
+        if (PlayerOnField() && npc.team != m_team)
+            consider(m_playerPos);
+        for (const Npc& other : m_npcs)
+            if (&other != &npc && other.hp > 0.0f && other.team != npc.team)
+                consider(other.pos);
+
+        Vector3 toEnemy;
+        if (engaged)
+        {
+            toEnemy = target - npc.pos;
+            toEnemy.y = 0.0f;
+        }
 
         Vector3 move;
         // NPCs still move on the speed alone — the momentum rates are the
@@ -999,8 +1114,8 @@ void Game::UpdateNpcs(float dt)
         const WeaponDef& weapon = npc.cls->primary;
         if (engaged)
         {
-            toPlayer /= dist;
-            npc.aimDir = toPlayer;
+            toEnemy /= dist;
+            npc.aimDir = toEnemy;
 
             npc.strafeTimer -= dt;
             if (npc.strafeTimer <= 0.0f)
@@ -1009,9 +1124,9 @@ void Game::UpdateNpcs(float dt)
                 npc.strafeTimer = Rand(1.0f, 2.5f);
             }
             if (dist > kNpcPreferredRange)
-                move = toPlayer;
+                move = toEnemy;
             else
-                move = Vector3(-toPlayer.z, 0.0f, toPlayer.x) * npc.strafeSign;
+                move = Vector3(-toEnemy.z, 0.0f, toEnemy.x) * npc.strafeSign;
             speed *= kNpcCombatSpeed;
 
             if (npc.fireCooldown <= 0.0f && npc.reloadTimer <= 0.0f && npc.ammo > 0)
@@ -1020,10 +1135,9 @@ void Game::UpdateNpcs(float dt)
                 // makes long-range sniper duels survivable.
                 const Vector3 dir = Vector3::Transform(
                     npc.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
-                const int npcTeam = (m_team + 1) % static_cast<int>(m_teamSpawns.size());
-                // NPCs "aim" at the player's feet, so a grenadier's lob comes
-                // down on the player instead of sailing to max range.
-                SpawnShot(weapon, npc.pos, dir, npcTeam, dist);
+                // NPCs "aim" at their target's feet, so a grenadier's lob comes
+                // down on them instead of sailing to max range.
+                SpawnShot(weapon, npc.pos, dir, npc.team, dist);
                 npc.fireCooldown = weapon.fireInterval;
                 if (--npc.ammo == 0)
                 {
@@ -1199,42 +1313,39 @@ void Game::ApplyBlast(const Vector3& center, float radius, float damage, int tea
         return d >= radius ? 0.0f : damage * (1.0f - d / radius);
     };
 
-    // Like direct hits, a blast only hurts the other side.
-    if (team == m_team)
+    // Like direct hits, a blast only hurts the other side — every soldier on
+    // it, which since the roster stopped being uniformly hostile can mean the
+    // player and their squadmates from the same grenade.
+    for (Npc& npc : m_npcs)
     {
-        for (Npc& npc : m_npcs)
-        {
-            if (npc.hp <= 0.0f) // already killed this frame, by the direct hit or an earlier blast
-                continue;
-            const float dmg = splash({ npc.pos.x, kPlayerHalf, npc.pos.z });
-            if (dmg <= 0.0f)
-                continue;
-            npc.hp -= dmg;
-            // Blown outward from the blast, as hard as the share of it they
-            // caught: a body at the rim topples, one on top of it is thrown.
-            npc.knock = CorpseKnock(npc.pos - center, kCorpseBlastKnock * (dmg / damage));
-            // Blood goes the same way the blast threw them, out of the middle.
-            SpawnBlood({ npc.pos.x, kPlayerHalf, npc.pos.z }, npc.pos - center, dmg,
-                       npc.hp <= 0.0f);
-            PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
-        }
+        if (npc.hp <= 0.0f || npc.team == team) // already killed this frame, or on the thrower's side
+            continue;
+        const float dmg = splash({ npc.pos.x, kPlayerHalf, npc.pos.z });
+        if (dmg <= 0.0f)
+            continue;
+        npc.hp -= dmg;
+        // Blown outward from the blast, as hard as the share of it they
+        // caught: a body at the rim topples, one on top of it is thrown.
+        npc.knock = CorpseKnock(npc.pos - center, kCorpseBlastKnock * (dmg / damage));
+        // Blood goes the same way the blast threw them, out of the middle.
+        SpawnBlood({ npc.pos.x, kPlayerHalf, npc.pos.z }, npc.pos - center, dmg, npc.hp <= 0.0f);
+        PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
     }
-    else
+
+    if (team == m_team || !PlayerOnField())
+        return; // the thrower's own side, or already down: nothing left to catch it
+
+    const float dmg = splash({ m_playerPos.x, kPlayerHalf, m_playerPos.z });
+    if (dmg > 0.0f)
     {
-        if (!PlayerOnField())
-            return; // already down: nothing on the field to catch the blast
-        const float dmg = splash({ m_playerPos.x, kPlayerHalf, m_playerPos.z });
-        if (dmg > 0.0f)
-        {
-            m_playerHp -= dmg;
-            m_deathKnock = CorpseKnock(m_playerPos - center, kCorpseBlastKnock * (dmg / damage));
-            SpawnBlood({ m_playerPos.x, kPlayerHalf, m_playerPos.z }, m_playerPos - center, dmg,
-                       m_playerHp <= 0.0f);
-            m_rumbleTime = 0.25f;
-            if (m_playerHp <= 0.0f)
-                m_playerDied = true;
-            m_sound.Play(m_playerDied ? "death" : "hit");
-        }
+        m_playerHp -= dmg;
+        m_deathKnock = CorpseKnock(m_playerPos - center, kCorpseBlastKnock * (dmg / damage));
+        SpawnBlood({ m_playerPos.x, kPlayerHalf, m_playerPos.z }, m_playerPos - center, dmg,
+                   m_playerHp <= 0.0f);
+        m_rumbleTime = 0.25f;
+        if (m_playerHp <= 0.0f)
+            m_playerDied = true;
+        m_sound.Play(m_playerDied ? "death" : "hit");
     }
 }
 
@@ -1313,31 +1424,39 @@ void Game::UpdateProjectiles(float dt)
         // instead, radially out of the detonation.)
         const Vector3 travel(pos.x - shot.prevPos.x, pos.y - shot.prevPos.y,
                              pos.z - shot.prevPos.z);
-        if (shot.life > 0.0f && shot.team == m_team)
+        // Everyone the round could stop in, in one sweep: whoever is on the
+        // other side from whoever fired it. This used to be a choice between
+        // the NPC roster and the player, which was the same thing only while
+        // every NPC was hostile — and a friendly standing in front of the
+        // player would have been shot straight through. Now they aren't, which
+        // means a squadmate can take a round meant for the player, and that is
+        // the correct outcome rather than a side effect to design around.
+        //
+        // NPCs are swept before the player and the first body along the roster
+        // wins, not the first one along the segment. Two soldiers overlapping
+        // in the path of one round is rare enough, and close enough, that
+        // sorting them would be arithmetic nobody could see the result of.
+        for (Npc& npc : m_npcs)
         {
-            for (Npc& npc : m_npcs)
+            if (shot.life <= 0.0f || npc.hp <= 0.0f || npc.team == shot.team)
+                continue;
+            const XMFLOAT3 center = { npc.pos.x, kPlayerHalf, npc.pos.z };
+            if (!SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
+                continue;
+            if (!blast)
             {
-                const XMFLOAT3 center = { npc.pos.x, kPlayerHalf, npc.pos.z };
-                if (npc.hp > 0.0f &&
-                    SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
-                {
-                    if (!blast)
-                    {
-                        npc.hp -= shot.damage;
-                        npc.knock = CorpseKnock(travel, kCorpseKnock);
-                        // Sprayed from where the round went in, carrying on
-                        // the way it was going.
-                        SpawnBlood(pos, travel, shot.damage, npc.hp <= 0.0f);
-                        PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
-                    }
-                    shot.life = 0.0f;
-                    Detonate(shot, pos, true);
-                    detonated = true;
-                    break;
-                }
+                npc.hp -= shot.damage;
+                npc.knock = CorpseKnock(travel, kCorpseKnock);
+                // Sprayed from where the round went in, carrying on the way it
+                // was going.
+                SpawnBlood(pos, travel, shot.damage, npc.hp <= 0.0f);
+                PlaySoundAt(npc.hp <= 0.0f ? "death" : "hit", npc.pos);
             }
+            shot.life = 0.0f;
+            Detonate(shot, pos, true);
+            detonated = true;
         }
-        else if (shot.life > 0.0f && PlayerOnField())
+        if (shot.life > 0.0f && shot.team != m_team && PlayerOnField())
         {
             const XMFLOAT3 center = { m_playerPos.x, kPlayerHalf, m_playerPos.z };
             if (SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
@@ -1718,6 +1837,38 @@ void Game::Render(Renderer& renderer)
                       kAbilityRingColor);
         }
 
+        // And who it's reaching, if anyone: a line between the two of them at
+        // chest height with a ring around the far end. Since the target is
+        // picked again every frame, this is also the only thing that tells the
+        // player they have drifted off the soldier they meant to be treating —
+        // the health bar climbing is the other one's, and it isn't on screen.
+        if (m_abilityReached)
+        {
+            const Vector3 from(m_playerPos.x, kAbilityLinkHeight, m_playerPos.z);
+            const Vector3 to(m_abilityTargetPos.x, kAbilityLinkHeight, m_abilityTargetPos.z);
+            m_scratch.push_back({ from, kAbilityLinkColor });
+            m_scratch.push_back({ to, kAbilityLinkColor });
+            AppendCircle(m_scratch, { m_abilityTargetPos.x, kAimRingHeight, m_abilityTargetPos.z },
+                         kAbilityRingRadius, kAbilityLinkColor);
+        }
+
+        // Friend or foe, for everyone but the player: a ring under the soldiers
+        // on their own side. Same visibility rule the bodies themselves get —
+        // a marker that showed through a wall would be a squadmate radar, which
+        // is a different feature and one the fog of war exists to deny.
+        for (const Npc& npc : m_npcs)
+        {
+            if (npc.team != m_team)
+                continue;
+            if (!renderer.IsSphereVisible({ npc.pos.x, kSoldierBoundsY, npc.pos.z },
+                                          kSoldierBoundsRadius))
+                continue;
+            if (!Visibility::IsPointVisible(eye, { npc.pos.x, npc.pos.z }, m_occluders))
+                continue;
+            AppendCircle(m_scratch, { npc.pos.x, kAimRingHeight, npc.pos.z }, kFriendlyRingRadius,
+                         kFriendlyRingColor);
+        }
+
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                 identity);
     }
@@ -1768,7 +1919,11 @@ void Game::RenderHud(Renderer& renderer)
                               ? 1.0f - m_abilityTime / m_class->ability.duration
                               : -1.0f;
     hud.abilityCooldown = m_abilityCooldown;
-    hud.npcs = static_cast<int>(m_npcs.size());
+    // Contacts are hostiles, not bodies on the field: a squadmate is not
+    // something the player has to account for, and a count that went up when
+    // one arrived would be reporting the opposite of what the icon promises.
+    hud.npcs = static_cast<int>(std::count_if(
+        m_npcs.begin(), m_npcs.end(), [this](const Npc& n) { return n.team != m_team; }));
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;
     Hud::Render(renderer, hud);

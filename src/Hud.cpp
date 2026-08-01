@@ -326,7 +326,8 @@ namespace
         { "F", "GRENADE" },
         { "V", "MELEE" },
         { "SHIFT", "STEADY" },
-        { "N", "SPAWN NPC" },
+        { "N", "SPAWN FOE" },
+        { "SHIFT+N", "SPAWN ALLY" },
     };
     constexpr size_t kMaxHints = std::size(kHints) + 1;
 }

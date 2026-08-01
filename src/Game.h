@@ -79,12 +79,19 @@ private:
         bool blood = false;
     };
 
-    // A computer-controlled enemy soldier. NPCs share the player's class
-    // table, so every weapon can be tested from both ends: fired at them,
-    // and dodged when they fire it back.
+    // A computer-controlled soldier. NPCs share the player's class table, so
+    // every weapon can be tested from both ends: fired at them, and dodged when
+    // they fire it back.
+    //
+    // They are not all hostile. An NPC on the player's own team is a squadmate
+    // — it fights the same enemies, soaks the same rounds, and is the thing a
+    // medic's dressing has to have in front of it to be worth anything. Which
+    // side an NPC is on is `team`, and every system that deals damage or picks
+    // a target reads it rather than assuming, the way they all used to.
     struct Npc
     {
         const ClassDef* cls;
+        int team;
         Vector3 pos;
         Vector3 aimDir;
         float hp;
@@ -150,7 +157,12 @@ private:
     // every way out of an ability comes through here — running out, being
     // cancelled, dying — and only the first of them should count.
     void EndAbility();
-    void SpawnNpc();
+    // The one friendly the player's ability reaches right now: alive, on their
+    // team, inside the ability's cone, and not behind a wall. Null when there
+    // isn't one, which is most of the time. Recomputed every frame the ability
+    // runs, so where the healing goes follows where the medic is looking.
+    Npc* AbilityTarget();
+    void SpawnNpc(int team);
     void UpdateNpcs(float dt);
     void UpdateProjectiles(float dt);
     // Turns whatever died this frame into a corpse and takes it off the
@@ -189,6 +201,13 @@ private:
     // out of the world for the respawn wait, so bullets, blasts and NPC AI
     // all have nothing to aim at until they're back.
     bool PlayerOnField() const;
+    // The side the player isn't on. A two-team arena, so "the other team" is a
+    // single answer rather than a list; when it isn't, this is the one place
+    // that has to learn otherwise.
+    int EnemyTeam() const
+    {
+        return (m_team + 1) % static_cast<int>(m_teamSpawns.size());
+    }
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
@@ -252,6 +271,12 @@ private:
     // coming back. Both are zero for a class that hasn't got one.
     float m_abilityTime = 0.0f;     // > 0 while it's running
     float m_abilityCooldown = 0.0f; // > 0 while it's recharging
+    // Where the ability reached somebody else on the frame that just ran, for
+    // the line drawn between the two of them. Kept as a position rather than a
+    // pointer into the NPC roster, which is erased from partway through every
+    // frame; where they were standing is all the drawing needs.
+    Vector3 m_abilityTargetPos;
+    bool m_abilityReached = false;
     float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
     float m_moveBlend = 0.0f;
     float m_playerHp = kMaxHealth;

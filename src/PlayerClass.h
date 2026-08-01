@@ -81,8 +81,9 @@ struct MoveDef
 enum class AbilityKind
 {
     None,
-    // Puts `amount` health back into the user over `duration` seconds,
-    // delivered by the second rather than in a lump at the end.
+    // Puts `amount` health back into the user over `duration` seconds, and the
+    // same again into one friendly inside the reach and arc below — delivered
+    // by the second rather than in a lump at the end.
     Heal,
 };
 
@@ -97,15 +98,26 @@ struct AbilityDef
     // ability is a decision instead of a free look at it.
     float cooldown;
     float amount; // what it delivers over the duration; read by the kind
+    // How far the ability reaches somebody who isn't the user, and how far off
+    // the aim direction still counts as being pointed at them. 0 reach means it
+    // only ever touches the user. Same shape as MeleeDef's pair, and read the
+    // same way — a cone in front of the soldier — but at a range that crosses a
+    // room rather than one that barely clears two bodies.
+    float reach;
+    float arc; // half-angle, radians
 };
 
-inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.0f };
+inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
-// The medic's, and the first ability in the game. It heals the medic and nobody
-// else, because there is nobody else yet — every other soldier on the field is
-// an enemy. When teammates exist this is the ability that should reach them;
-// until then a self-dressing is the honest version of it, and it's the one that
-// can actually be played against the arena as it stands.
+// The medic's, and the first ability in the game. It patches up the medic and
+// one other soldier at once: whoever on their side they happen to be pointed at
+// that instant, out to seven units and a little under half a radian either way.
+// Both get the full sixty over the two and a half seconds — the friendly isn't
+// paid for out of the medic's share — so a medic who keeps someone in front of
+// them for the whole dressing does twice the work of one who doesn't. That's
+// the skill in it, and it's why the target is picked fresh every frame rather
+// than locked at the start: the healing goes where the medic is looking, and
+// sweeping across two wounded soldiers really does split it between them.
 //
 // Sixty health over two and a half seconds is most of a body brought back, and
 // far faster than the fourteen-second wait says it should be — which is the
@@ -116,10 +128,15 @@ inline constexpr AbilityDef kNoAbility = { AbilityKind::None, "", 0.0f, 0.0f, 0.
 // still run, still turn, still be shot at — because a class built to cross open
 // ground shouldn't be rooted by its own ability. What it hands the player is the
 // same question every time: break contact and come back whole, or hold the
-// trigger and stay hurt.
+// trigger and stay hurt. Doing it for somebody else asks it twice over, since
+// now there are two soldiers standing still in the open instead of one.
+//
+// The reach is deliberately short of the range anything shoots at. A medic has
+// to close most of the way to the soldier they're treating, which is the walk
+// the class's speed exists to pay for.
 inline constexpr AbilityDef kFieldDressing = {
-    // kind               name              duration cooldown amount
-    AbilityKind::Heal, "FIELD DRESSING",    2.5f,    14.0f,   60.0f
+    // kind               name              duration cooldown amount reach arc
+    AbilityKind::Heal, "FIELD DRESSING",    2.5f,    14.0f,   60.0f, 7.0f, 0.45f
 };
 
 struct ClassDef
