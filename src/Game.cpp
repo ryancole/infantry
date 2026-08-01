@@ -53,18 +53,19 @@ namespace
 
     // Turning is not free: the soldier's facing chases the aim direction at a
     // fixed angular rate rather than snapping to it, so whipping the cursor
-    // across the screen costs a moment spent pointed the wrong way. Fast
-    // enough to stay responsive — a full about-face lands in just under half a
-    // second — but slow enough that being flanked is a real problem.
-    constexpr float kTurnRate = 8.0f; // radians per second
+    // across the screen costs a moment spent pointed the wrong way. A full
+    // about-face runs about one and two tenths of a second, which is long
+    // enough that where a soldier is pointed is a commitment rather than a
+    // preference, and being flanked is something to survive rather than answer.
+    constexpr float kTurnRate = 2.67f; // radians per second
 
     // Holding steady trades the two things that get a soldier out of trouble —
     // moving and coming around — for a gun that sits where it's put. At a
     // quarter of the turn rate the facing stops chasing the hand and starts
     // filtering it, so small wobble never reaches the muzzle and a target the
     // cursor crosses isn't one the barrel swept over. What it costs is being
-    // committed: a full about-face is a second and a half, which is long enough
-    // that anyone who reaches the flank while it's held has already won.
+    // committed: a full about-face runs the better part of five seconds, which
+    // means anyone who reaches the flank while it's held has already won.
     constexpr float kSteadyMoveScale = 0.4f;  // fraction of class move speed
     constexpr float kSteadyTurnScale = 0.25f; // fraction of kTurnRate
 
