@@ -12,6 +12,7 @@ Prototype scaffold with a working game loop:
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
 - Per-class primary weapons plus one grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
+- Ragdoll corpses: the soldier model is built from seven jointed segments, so a killed soldier is handed to Jolt as a ragdoll that keeps the pose it died in, is thrown by the blow that killed it, and falls where it stood
 
 Dependencies are fetched and built automatically by CMake (`FetchContent`) on first configure.
 

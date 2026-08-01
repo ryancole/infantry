@@ -55,6 +55,7 @@ add_executable(infantry WIN32
     src/Level.cpp
     src/Model.cpp
     src/Physics.cpp
+    src/Soldier.cpp
     src/Sound.cpp
     src/Visibility.cpp
 )
