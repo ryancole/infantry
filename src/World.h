@@ -91,14 +91,20 @@ struct Unit
     float walkPhase;   // leg-swing angle for the soldier model, advances with distance
     float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
     Vector3 knock;     // launch velocity the last hit would give its corpse
-    // The side that last put damage on this soldier, and so the side that
-    // gets the kill if the next blow is the last one. -1 until somebody has
-    // touched them. Every system that takes health off sets it, which is the
-    // same reason ReapDead can collect the dead without knowing who killed
-    // them: whoever it was said so on the way past. With two sides and no
-    // friendly fire this is always "the other one", but a score is about who
-    // did it rather than about there being exactly two of them.
-    int lastHitTeam = -1;
+    // Which place on the roster this soldier is filling (World::Slot), or -1
+    // on a client's replica, where the roster arrives already counted and no
+    // unit here has ever killed anyone. A unit is one life; a slot is the whole
+    // match, and that is the difference a kill/death record has to be hung on —
+    // a tally kept on the unit would be swept off the field with the body.
+    int slot = -1;
+    // The slot that last put damage on this soldier, and so the one that gets
+    // the kill if the next blow is the last one. -1 until somebody has touched
+    // them. Every system that takes health off sets it, which is the same
+    // reason ReapDead can collect the dead without knowing who killed them:
+    // whoever it was said so on the way past. A slot rather than a side,
+    // because a scoreboard is about who did it — which side they were on is
+    // one lookup away, and the team score is that lookup summed.
+    int lastHitSlot = -1;
 
     // Where this soldier was at the top of the current tick, kept so a
     // renderer can draw the moment between two ticks rather than the stutter
@@ -209,6 +215,41 @@ public:
     // is playing on.
     static constexpr float kIntermission = 15.0f;
 
+    // One place on a side, for the length of a match. A slot is filled by a
+    // succession of soldiers — the AI's dead are replaced on the reinforcement
+    // clock, a player's are replaced by their own respawn — and it is the slot,
+    // not any of them, that the fight is scored against.
+    //
+    // This is the identity the game didn't have. A Unit is one life: it is
+    // erased by ReapDead and the next one comes back under a new id, so a tally
+    // kept there would reset every five seconds and mean nothing. The roster of
+    // slots is created once per match and only ever counted up, which is what
+    // makes "what has this soldier done today" a question with an answer.
+    //
+    // Human or not is a property of the slot rather than of the unit standing
+    // in it, because it survives the wait between lives: a player who is dead
+    // still holds their place, and the AI is not owed a soldier for it. That is
+    // the same claim ClaimSlot used to record as a per-team count; it's here
+    // now, where it can also carry a name and a score.
+    struct Slot
+    {
+        int team;
+        // What the slot is fielding. A human's class is fixed for the match by
+        // the class they picked; an AI slot's is dealt off the team's rotation
+        // and is re-dealt every time the slot refills, so a squad wiped out
+        // comes back with a different makeup. Either way it's what the
+        // scoreboard reads a row's name off, since nobody in this game has one.
+        const ClassDef* cls;
+        bool human;
+        // The player sitting at *this* machine, so a scoreboard can mark their
+        // row. False for every slot on a dedicated server, and set on a client
+        // from the snapshot rather than worked out locally — which slot is
+        // yours is a fact the server holds.
+        bool local;
+        int kills;
+        int deaths;
+    };
+
     // Runtime halves of a level object the simulation cares about: solid
     // objects contribute a collider (physics + soldier push-out). Whether one
     // also has a model is carried along only so a presentation can draw the
@@ -230,6 +271,12 @@ public:
         // outside the simulation reads this rather than the physics world.
         Vector3 pos;
         Vector3 prevPos; // last tick's position, for swept hit tests
+        // Who fired it, and so who is credited if it kills: the shooter's slot
+        // rather than their unit, because a round outlives the soldier who
+        // sent it and a grenade can outlive them by seconds. `team` is that
+        // slot's side, carried alongside because the hit tests ask which side a
+        // shot is on far more often than they ask whose it was.
+        int owner;
         int team;        // whose shot this is; it only hurts the other side
         float damage;
         float radius;
@@ -288,18 +335,34 @@ public:
     // to a client or to solo play, and none of it is one line of special case
     // inside the simulation — a Remote unit is a unit.
 
-    // Reserves one of `team`'s slots for a human. The AI gives the slot up
-    // immediately — a living AI soldier on that side is removed, quietly, no
-    // corpse: they rotate out, they don't die of somebody connecting. The
-    // claim holds through deaths and respawns, exactly like the local
-    // player's; returns the (clamped) team actually claimed.
+    // Reserves one of `team`'s slots for a human and returns its index — the
+    // name the caller holds them by from here on, and the row they'll appear
+    // on. The AI gives the slot up immediately: a living AI soldier standing in
+    // it is removed, quietly, no corpse — they rotate out, they don't die of
+    // somebody connecting. The claim holds through deaths and respawns, exactly
+    // like the local player's.
+    //
+    // A side with no slot left to give gets one more rather than a refusal.
+    // Under the current door policy that can't happen — a server sends every
+    // joiner to the emptier side and shuts the door at kTeamSize a side — and
+    // the day some mode oversubscribes a team, an extra row on the scoreboard
+    // is a better answer than a player with nowhere to stand.
     int ClaimSlot(int team);
-    // Hands a claimed slot back — a disconnect. The side is owed a soldier
-    // again, on the same reinforcement clock a death starts: a leaver's slot
-    // refills the way a casualty's does, not instantly.
-    void ReleaseSlot(int team);
+    // Hands a claimed slot back — a disconnect. It returns to the AI, and the
+    // side is owed a soldier for it on the same reinforcement clock a death
+    // starts: a leaver's slot refills the way a casualty's does, not instantly.
+    // What the leaver did while they held it stays on the board, because it
+    // happened.
+    void ReleaseSlot(int slot);
     // Human claims currently held on `team`, the local player's included.
     int HumanSlots(int team) const;
+    // The side `slot` is on, or -1 for a slot that doesn't exist. What a caller
+    // holding a claim asks when it needs the team it ended up on.
+    int SlotTeam(int slot) const;
+    // Every place on both sides, in the order they were created: one team's
+    // worth, then the next's. This is the scoreboard — a presentation reads it
+    // straight, and on a client it's the server's copy, delivered whole.
+    const std::vector<Slot>& Roster() const { return m_roster; }
     int TeamCount() const { return static_cast<int>(m_teamSpawns.size()); }
 
     // Living soldiers on `team`. Counted off the roster when the roster is
@@ -327,16 +390,21 @@ public:
     // Kills credited to `team` this match — one per enemy soldier its fire
     // brought down. Zero for a team that doesn't exist, so a replica can be
     // asked about a side its snapshot hasn't mentioned.
+    //
+    // Summed off the roster rather than kept alongside it: a side's score is
+    // exactly what the soldiers on it have done, and storing that a second time
+    // is storing a way for the two to disagree. Ten slots, once a frame.
     int Score(int team) const;
     // The side that is ahead, or -1 when two or more are level at the top. A
     // draw is a real outcome of "most kills wins" rather than a tie broken by
     // something the players never saw.
     int Winner() const;
 
-    // Puts a connected player's soldier on the field: `cls` at `team`'s
-    // spawn, full loadout, driven by whatever SetCommand says from now on.
-    // Returns the unit's id — the name the server and the wire know them by.
-    int SpawnRemote(const ClassDef& cls, int team);
+    // Puts a connected player's soldier on the field: `cls` in the slot they
+    // claimed, at their side's spawn, full loadout, driven by whatever
+    // SetCommand says from now on. Returns the unit's id — the name the server
+    // and the wire know them by.
+    int SpawnRemote(const ClassDef& cls, int slot);
     // Takes a soldier off the field without a death: no corpse, no event, no
     // reinforcement. For the body a disconnect leaves behind; a slot released
     // is a separate matter (ReleaseSlot).
@@ -397,18 +465,20 @@ public:
                           float targetDist, std::vector<Vector3>* outArc = nullptr) const;
 
 private:
-    // A slot on a team waiting to be filled again. Queued when an AI soldier
-    // dies and cashed in kRespawnDelay later, which is the same wait the
-    // player serves — a squad is five soldiers, and the only time it isn't is
-    // the moment after one of them is killed.
+    // A slot waiting to be filled again. Queued when an AI soldier dies and
+    // cashed in kRespawnDelay later, which is the same wait the player serves —
+    // a squad is five soldiers, and the only time it isn't is the moment after
+    // one of them is killed.
     //
     // It's a queue rather than one timer per side because each death should
     // start its own clock: a team that loses three at once has three soldiers
     // coming back at the times they died, not one every five seconds while the
-    // other side runs it down.
+    // other side runs it down. It names the slot rather than the side because
+    // the slot is what's empty — which is also what keeps a dead AI's record
+    // attached to the soldier who replaces them.
     struct Reinforcement
     {
-        int team;
+        int slot;
         float timer;
     };
 
@@ -430,33 +500,30 @@ private:
     // front of them and strikes the nearest enemy standing in it, if any. The
     // charge goes whether or not it lands.
     void SwingMelee(Unit& attacker);
-    // Fires `weapon`'s projectile from `from` along `dir`. Bullets always fly
-    // at full speed; lobbed shots (grenades) shorten their toss to come down
-    // `targetDist` away, up to the weapon's max range.
-    void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
+    // Fires `weapon`'s projectile from `from` along `dir`, on behalf of the
+    // slot that pulled the trigger. Bullets always fly at full speed; lobbed
+    // shots (grenades) shorten their toss to come down `targetDist` away, up to
+    // the weapon's max range.
+    void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int owner,
                    float targetDist);
-    // Deals the next class off `team`'s rotation and puts an AI soldier on
-    // the field with it.
-    void SpawnAi(int team);
+    // Deals the next class off the slot's team rotation and puts an AI soldier
+    // in it. The class is re-dealt per life on purpose: an AI slot is a place
+    // in the squad, not a character, and the squad's makeup is the rotation's
+    // business.
+    void SpawnAi(int slot);
     // The one spawn under SpawnLocal and SpawnRemote: a human's soldier —
     // full loadout off the class table, no brain woken — differing only in
     // which controller drives it.
-    int SpawnHuman(const ClassDef& cls, int team, Unit::Controller controller);
-    // How many AI soldiers `team` is meant to be fielding: its share of the
-    // roster, less every slot a human has claimed on it — the local player
-    // and connected ones alike. A claim holds whether its holder is alive or
-    // waiting to respawn, so nothing fills in for them and nothing has to be
-    // sent away when they're back.
-    int AiQuota(int team) const
-    {
-        const int humans =
-            team < static_cast<int>(m_humanSlots.size()) ? m_humanSlots[team] : 0;
-        // A side already full of humans owes the AI nothing — and never a
-        // negative number of soldiers, however oversubscribed it gets.
-        return std::max(0, kTeamSize - humans);
-    }
-    // Living AI soldiers currently on `team`.
-    int AiCount(int team) const;
+    int SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller);
+    // The first slot on `team` the AI still holds and nobody is standing in, or
+    // -1 if the side has none: where a reinforcement goes, and what a joining
+    // player takes over. Preferring an empty slot to a filled one is what lets
+    // ClaimSlot hand a player a place without anyone having to rotate out.
+    int FreeAiSlot(int team) const;
+    // Whether anybody is currently standing in `slot`. A slot with no unit is a
+    // side one soldier short: the AI's are refilled on the reinforcement clock,
+    // a human's when their own respawn comes due.
+    bool SlotFilled(int slot) const;
     void UpdateUnits(float dt);
     void UpdateProjectiles(float dt);
     // Turns whatever died this tick into a Death event and takes it off the
@@ -476,9 +543,10 @@ private:
     // event (which differs for a hit on `hitUnit` vs. world geometry).
     void Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit);
     // Splash damage around `center`, full strength at the middle and falling
-    // off to nothing at `radius`. Only the side opposing `team` is hurt, and
-    // only where the blast has line of sight, so cover still protects.
-    void ApplyBlast(const Vector3& center, float radius, float damage, int team);
+    // off to nothing at `radius`, on behalf of the slot that threw it. Only the
+    // opposing side is hurt, and only where the blast has line of sight, so
+    // cover still protects.
+    void ApplyBlast(const Vector3& center, float radius, float damage, int owner);
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     float Rand(float lo, float hi);
@@ -490,21 +558,25 @@ private:
     const ClassDef* m_localClass = nullptr; // set by StartMatch; null on a server
     int m_localTeam = 0;
     int m_nextUnitId = 1; // 0 never issued, so an uninitialized id matches nobody
-    // Human claims per team (see ClaimSlot); what AiQuota subtracts.
-    std::vector<int> m_humanSlots;
+    // The slot the local player holds for this match, or -1 on a machine
+    // without one — a dedicated server, or a client before it's been welcomed.
+    int m_localSlot = -1;
     // Commands staged for remote units, consumed whole by the next Tick.
     std::vector<std::pair<int, Command>> m_staged;
     // The server's per-team standing counts, held by a replica whose own
     // roster is fog-filtered. Empty on any world whose roster is the truth.
     std::vector<int> m_standingOverride;
-    // The match: what's left of it, whether it's finished, how long the
-    // result has left to stand, and what each side has killed. On a replica
-    // all four arrive in the snapshot rather than being counted here — the
-    // score is the server's word, the same as the standing counts above.
+    // The match: what's left of it, whether it's finished, and how long the
+    // result has left to stand. On a replica all three arrive in the snapshot
+    // rather than being counted here — the clock is the server's word, the same
+    // as the standing counts above, and so is the roster the score comes off.
     float m_matchTime = kMatchLength;
     float m_intermission = 0.0f;
     bool m_matchOver = false;
-    std::vector<int> m_scores; // kills per team, indexed by team id
+    // Every place on the field for this match: who holds it, and what they've
+    // done with it. Built by StartMatch, only ever added to (see ClaimSlot),
+    // and on a client replaced wholesale by each snapshot.
+    std::vector<Slot> m_roster;
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id.
     std::vector<Vector3> m_teamSpawns;

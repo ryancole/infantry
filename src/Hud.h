@@ -105,6 +105,51 @@ namespace Hud
 
     void Render(Renderer& renderer, const State& state);
 
+    // --- The scoreboard, held up over the arena while the player asks for it.
+    //
+    // The corner panel says how the two sides are doing; this says how everyone
+    // in them is doing, which is a different question and gets a different
+    // amount of screen. It's the only readout here that covers soldiers the
+    // player can't see — the fog hides bodies, not the board — so it's also the
+    // only one that has to arrive from the simulation rather than from what's
+    // on screen.
+
+    // One row: a soldier's place on a side for the whole match, and what
+    // they've made of it.
+    struct ScoreRow
+    {
+        int team;
+        // What has been standing in the slot. Nobody in this game has a name,
+        // so the class is the name — and for an AI slot it's the honest one,
+        // since the class really is re-dealt every time the slot refills.
+        const char* name;
+        bool human;
+        bool you;
+        int kills;
+        int deaths;
+    };
+
+    struct Scoreboard
+    {
+        // Every slot on the field, in whatever order they arrive. The panel
+        // splits them by side and sorts each column itself, because how a
+        // scoreboard is ordered is a fact about scoreboards.
+        const ScoreRow* rows;
+        size_t rowCount;
+        // The two sides, in the order their columns are drawn: the player's
+        // first. Names and colors come in rather than being looked up, the same
+        // as the corner panel's, so the board can't disagree with the arena
+        // about which side is which.
+        const char* teamNames[2];
+        DirectX::XMFLOAT4 teamColors[2];
+        int teams[2]; // team ids, to match rows against
+        int teamScores[2];
+        float clock;
+        bool matchOver;
+    };
+
+    void RenderScoreboard(Renderer& renderer, const Scoreboard& board);
+
     // Green -> amber -> red for a 0..1 share of health, thresholds a hit or two
     // apart at typical damage. Exposed because the panel is no longer the only
     // place health gets drawn: a medic sees their squadmates' health over their

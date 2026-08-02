@@ -40,7 +40,7 @@ namespace Net
     // Join, and a mismatch is refused outright — two builds disagreeing about
     // what a byte means should fail at the door, not decode each other into
     // nonsense mid-match.
-    constexpr uint8_t kProtocolVersion = 3;
+    constexpr uint8_t kProtocolVersion = 4;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -282,6 +282,20 @@ namespace Net
         float abilityCooldown = 0.0f;
     };
 
+    // One place on the roster as the wire sees it: who holds it and what
+    // they've done with it. The client can't count any of this for itself — the
+    // kills happen to soldiers it will never see through the fog — so the whole
+    // board comes down, unfiltered, every snapshot.
+    struct SnapSlot
+    {
+        uint8_t team;
+        uint8_t classId;
+        bool human;
+        bool you; // the receiving player's own row
+        uint16_t kills;
+        uint16_t deaths;
+    };
+
     struct Snapshot
     {
         uint32_t tick = 0;
@@ -295,10 +309,11 @@ namespace Net
         // only counted what you can see would say "outnumbered" every time
         // you were alone.
         std::vector<uint8_t> standing;
-        // Kills per team, in the same order. The thing the match is decided
-        // on, so it travels with the standing counts and is filtered by
+        // Every place on both sides. The thing the match is decided on lives in
+        // here now — a team's score is the sum of its slots' kills — so it
+        // travels on the same terms the standing counts do and is filtered by
         // nothing: both sides' scores are known to both sides.
-        std::vector<uint16_t> scores;
+        std::vector<SnapSlot> roster;
         std::vector<SnapUnit> units;
         std::vector<SnapProjectile> projectiles;
         SnapOwn own;
@@ -315,26 +330,44 @@ namespace Net
     // be known.
     //
     // Built per client rather than shared, which is what buys the filter; at
-    // ten soldiers a match the redundant serialization is nothing.
+    // ten soldiers a match the redundant serialization is nothing. `ownSlot` is
+    // the place this client holds — the one thing about the roster that differs
+    // between recipients, and the reason it's a parameter rather than something
+    // the World could be asked.
     inline void WriteSnapshotVisible(Writer& w, const World& world, uint32_t tick,
-                                     const DirectX::SimpleMath::Vector2& viewer, int ownId)
+                                     const DirectX::SimpleMath::Vector2& viewer, int ownId,
+                                     int ownSlot)
     {
         w.U8(static_cast<uint8_t>(MsgType::Snapshot));
         w.U32(tick);
 
         // The match: the clock in tenths of a second (a countdown wants to
         // look continuous, not to be accurate to the frame — and fifteen
-        // minutes of tenths still fits a uint16 with room to spare), whether
-        // it has run out, and what each side has killed.
+        // minutes of tenths still fits a uint16 with room to spare), and
+        // whether it has run out.
         const float clock = world.MatchOver() ? world.Intermission() : world.MatchTime();
         w.U16(static_cast<uint16_t>(std::clamp(std::lround(clock * 10.0f), 0l, 65535l)));
         w.U8(world.MatchOver() ? 1 : 0);
 
         w.U8(static_cast<uint8_t>(world.TeamCount()));
         for (int team = 0; team < world.TeamCount(); ++team)
-        {
             w.U8(static_cast<uint8_t>(world.Standing(team)));
-            w.U16(static_cast<uint16_t>(std::clamp(world.Score(team), 0, 65535)));
+
+        // The scoreboard, whole. A slot that has never been filled has no class
+        // to name yet, which rides as the same 0xff a classless event uses.
+        const std::vector<World::Slot>& roster = world.Roster();
+        w.U8(static_cast<uint8_t>(std::min<size_t>(roster.size(), 255)));
+        for (size_t i = 0; i < roster.size() && i < 255; ++i)
+        {
+            const World::Slot& slot = roster[i];
+            w.U8(static_cast<uint8_t>(slot.team));
+            w.U8(slot.cls ? static_cast<uint8_t>(slot.cls - kClassDefs) : 0xff);
+            uint8_t bits = 0;
+            if (slot.human) bits |= 1 << 0;
+            if (static_cast<int>(i) == ownSlot) bits |= 1 << 1;
+            w.U8(bits);
+            w.U16(static_cast<uint16_t>(std::clamp(slot.kills, 0, 65535)));
+            w.U16(static_cast<uint16_t>(std::clamp(slot.deaths, 0, 65535)));
         }
 
         const auto visible = [&](float x, float z) {
@@ -408,9 +441,20 @@ namespace Net
         snap.matchOver = r.U8() != 0;
         const int teamCount = r.U8();
         for (int i = 0; i < teamCount && r.ok; ++i)
-        {
             snap.standing.push_back(r.U8());
-            snap.scores.push_back(r.U16());
+        const int slotCount = r.U8();
+        snap.roster.reserve(slotCount);
+        for (int i = 0; i < slotCount && r.ok; ++i)
+        {
+            SnapSlot slot;
+            slot.team = r.U8();
+            slot.classId = r.U8();
+            const uint8_t bits = r.U8();
+            slot.human = bits & (1 << 0);
+            slot.you = bits & (1 << 1);
+            slot.kills = r.U16();
+            slot.deaths = r.U16();
+            snap.roster.push_back(slot);
         }
         const int unitCount = r.U8();
         snap.units.reserve(unitCount);

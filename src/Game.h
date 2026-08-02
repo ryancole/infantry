@@ -7,6 +7,7 @@
 #include "Command.h"
 #include "Input.h"
 #include "Discovery.h"
+#include "Hud.h"
 #include "JoinMenu.h"
 #include "MainMenu.h"
 #include "NetClient.h"
@@ -307,6 +308,13 @@ private:
     float m_frameMs = 0.0f;      // smoothed wall-clock frame time, for the HUD
     float m_rumbleTime = 0.0f;   // gamepad vibration left on a damage pulse
     float m_respawnTimer = 0.0f; // seconds left of the wait, while Phase::Dead
+    // Whether the scoreboard key is down. Held rather than toggled, and stored
+    // rather than read at draw time because Render isn't handed the input.
+    bool m_showScores = false;
+    // The board's rows, rebuilt each frame it's up. A member rather than a
+    // local so the frames it isn't up cost nothing but a capacity that's
+    // already been paid for.
+    std::vector<Hud::ScoreRow> m_scoreRows;
 
     // The seam between render time and simulation time. Frames deposit their
     // dt in the accumulator and the simulation spends it in whole ticks;

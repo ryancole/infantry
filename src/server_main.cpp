@@ -45,10 +45,17 @@ namespace
     // One connected player: the peer, the slot they claimed, and the soldier
     // they're currently driving (unitId is -1 for the length of the respawn
     // wait, same as the local player's absence from a solo roster).
+    //
+    // The slot is what makes them a player rather than a succession of
+    // soldiers: it holds their place through every death, it's what their kills
+    // and deaths are counted against, and it's the row they occupy on every
+    // client's scoreboard. `team` is the side that slot is on, kept alongside
+    // because it's asked for far more often than it changes.
     struct Session
     {
         ENetPeer* peer = nullptr;
         bool joined = false;
+        int slot = -1;
         int team = -1;
         uint8_t classId = 0;
         int unitId = -1;
@@ -228,9 +235,10 @@ int main(int argc, char** argv)
                         for (int t = 1; t < world.TeamCount(); ++t)
                             if (world.HumanSlots(t) < world.HumanSlots(team))
                                 team = t;
-                        session->team = world.ClaimSlot(team);
+                        session->slot = world.ClaimSlot(team);
+                        session->team = world.SlotTeam(session->slot);
                         session->unitId =
-                            world.SpawnRemote(kClassDefs[session->classId], session->team);
+                            world.SpawnRemote(kClassDefs[session->classId], session->slot);
                         if (const Unit* me = world.UnitById(session->unitId))
                             session->viewPos = { me->pos.x, me->pos.z };
                         session->joined = true;
@@ -272,7 +280,7 @@ int main(int argc, char** argv)
                         // to the AI on the reinforcement clock.
                         if (session->unitId >= 0)
                             world.RemoveUnit(session->unitId);
-                        world.ReleaseSlot(session->team);
+                        world.ReleaseSlot(session->slot);
                         std::printf("player left team %d\n", session->team);
                     }
                     netEvent.peer->data = nullptr;
@@ -318,7 +326,7 @@ int main(int argc, char** argv)
             if (session->respawnTimer <= 0.0f)
             {
                 session->unitId =
-                    world.SpawnRemote(kClassDefs[session->classId], session->team);
+                    world.SpawnRemote(kClassDefs[session->classId], session->slot);
                 Net::Writer w;
                 Net::WriteRespawned(w, session->unitId);
                 SendReliable(session->peer, w);
@@ -418,9 +426,10 @@ int main(int argc, char** argv)
                 {
                     if (!session->joined)
                         continue;
-                    session->team = world.ClaimSlot(session->team);
+                    session->slot = world.ClaimSlot(session->team);
+                    session->team = world.SlotTeam(session->slot);
                     session->unitId =
-                        world.SpawnRemote(kClassDefs[session->classId], session->team);
+                        world.SpawnRemote(kClassDefs[session->classId], session->slot);
                     session->respawnTimer = 0.0f;
                     session->queue.clear();
                     session->held = {};
@@ -469,8 +478,8 @@ int main(int argc, char** argv)
                 }
 
                 Net::Writer snap;
-                Net::WriteSnapshotVisible(snap, world, tick, session->viewPos,
-                                          session->unitId);
+                Net::WriteSnapshotVisible(snap, world, tick, session->viewPos, session->unitId,
+                                          session->slot);
                 Net::WriteSnapshotOwn(snap,
                                       session->unitId >= 0
                                           ? world.UnitById(session->unitId)

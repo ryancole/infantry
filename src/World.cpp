@@ -163,8 +163,6 @@ void World::Init(const LevelData& level)
     for (const LevelData::Spawn& spawn : level.spawns)
         m_teamSpawns.push_back(spawn.pos);
     m_nextAiClass.assign(m_teamSpawns.size(), 0);
-    m_humanSlots.assign(m_teamSpawns.size(), 0);
-    m_scores.assign(m_teamSpawns.size(), 0);
 
     // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
     // despawn on their first contact with anything solid.
@@ -199,9 +197,9 @@ void World::Reset()
     m_reinforcements.clear();
     m_staged.clear();
     m_standingOverride.clear();
-    m_humanSlots.assign(m_teamSpawns.size(), 0);
+    m_roster.clear();
+    m_localSlot = -1;
     m_nextAiClass.assign(m_teamSpawns.size(), 0);
-    m_scores.assign(m_teamSpawns.size(), 0);
     m_matchTime = kMatchLength;
     m_intermission = 0.0f;
     m_matchOver = false;
@@ -218,18 +216,32 @@ void World::StartMatch(const ClassDef* localClass, int localTeam)
     m_matchTime = kMatchLength;
     m_intermission = 0.0f;
     m_matchOver = false;
-    m_scores.assign(m_teamSpawns.size(), 0);
+
+    // The roster, laid out before anybody stands in it: kTeamSize places a
+    // side, all of them the AI's until something claims one. Every slot starts
+    // at nothing, which is the scoreboard being reset — there is nowhere else
+    // for a previous match's kills to be hiding.
+    m_roster.clear();
+    m_localSlot = -1;
+    for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
+        for (int i = 0; i < kTeamSize; ++i)
+            m_roster.push_back({ team, nullptr, false, false, 0, 0 });
 
     m_localClass = localClass;
     m_localTeam = std::min(localTeam, static_cast<int>(m_teamSpawns.size()) - 1);
     if (m_localClass)
     {
-        m_localTeam = ClaimSlot(m_localTeam);
+        m_localSlot = ClaimSlot(m_localTeam);
+        m_localTeam = SlotTeam(m_localSlot);
+        m_roster[m_localSlot].local = true;
         SpawnLocal();
     }
-    for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
-        for (int i = AiCount(team); i < AiQuota(team); ++i)
-            SpawnAi(team);
+    // Whatever the humans didn't take is the AI's, and every one of those
+    // places gets a soldier now: the sides come up to strength together at the
+    // start of a match rather than trickling in off the reinforcement queue.
+    for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
+        if (!m_roster[slot].human)
+            SpawnAi(slot);
 }
 
 void World::SpawnLocal()
@@ -238,21 +250,30 @@ void World::SpawnLocal()
     // server calls StartMatch with no local and never comes back here.
     if (!m_localClass)
         return;
-    SpawnHuman(*m_localClass, m_localTeam, Unit::Controller::Local);
+    SpawnHuman(*m_localClass, m_localSlot, Unit::Controller::Local);
 }
 
-int World::SpawnRemote(const ClassDef& cls, int team)
+int World::SpawnRemote(const ClassDef& cls, int slot)
 {
-    return SpawnHuman(cls, team, Unit::Controller::Remote);
+    return SpawnHuman(cls, slot, Unit::Controller::Remote);
 }
 
-int World::SpawnHuman(const ClassDef& cls, int team, Unit::Controller controller)
+int World::SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller)
 {
+    if (slot < 0 || slot >= static_cast<int>(m_roster.size()))
+        return -1;
+    // The class the player picked is what their slot is fielding from here on:
+    // a scoreboard row says MARINE because that is what has been standing in
+    // it, and a human's answer to that doesn't change between lives.
+    m_roster[slot].cls = &cls;
+    const int team = m_roster[slot].team;
+
     Unit unit = {};
     unit.id = m_nextUnitId++;
     unit.cls = &cls;
     unit.controller = controller;
     unit.team = team;
+    unit.slot = slot;
     unit.pos = m_teamSpawns[team];
     unit.aimDir = Vector3::UnitX;
     unit.hp = kMaxHealth;
@@ -272,39 +293,71 @@ int World::SpawnHuman(const ClassDef& cls, int team, Unit::Controller controller
 int World::ClaimSlot(int team)
 {
     team = std::clamp(team, 0, TeamCount() - 1);
-    ++m_humanSlots[team];
-    // The AI hands the slot over now rather than on its next death: a living
-    // AI soldier on the side is removed outright — no corpse, no event,
-    // nobody watching a squadmate evaporate would call it a death, because
-    // it isn't one. Whoever is furthest down the roster rotates out.
-    while (AiCount(team) > AiQuota(team))
+
+    int slot = FreeAiSlot(team);
+    if (slot < 0)
     {
-        for (size_t i = m_units.size(); i-- > 0;)
-        {
-            Unit& u = m_units[i];
-            if (u.controller == Unit::Controller::Ai && u.team == team && u.hp > 0.0f)
-            {
-                m_units.erase(m_units.begin() + i);
-                break;
-            }
-        }
+        // Nothing free on that side. Rather than turn the player away, the
+        // roster grows by one — see the header for why this can't happen today
+        // and why an extra row is the right answer when it does.
+        m_roster.push_back({ team, nullptr, false, false, 0, 0 });
+        slot = static_cast<int>(m_roster.size()) - 1;
     }
-    return team;
+
+    // The AI hands the slot over now rather than on its next death: a living
+    // AI soldier standing in it is removed outright — no corpse, no event,
+    // nobody watching a squadmate evaporate would call it a death, because it
+    // isn't one. Any wait queued against the slot goes with them; it was a
+    // promise to put an AI back, and the slot is no longer the AI's to fill.
+    std::erase_if(m_units, [slot](const Unit& u) { return u.slot == slot; });
+    std::erase_if(m_reinforcements, [slot](const Reinforcement& r) { return r.slot == slot; });
+
+    m_roster[slot].human = true;
+    return slot;
 }
 
-void World::ReleaseSlot(int team)
+void World::ReleaseSlot(int slot)
 {
-    team = std::clamp(team, 0, TeamCount() - 1);
-    if (m_humanSlots[team] > 0)
-        --m_humanSlots[team];
+    if (slot < 0 || slot >= static_cast<int>(m_roster.size()))
+        return;
+    m_roster[slot].human = false;
     // The side is owed a soldier again, on the same clock a death starts: a
-    // leaver's slot refills the way a casualty's does, not instantly.
-    m_reinforcements.push_back({ team, kRespawnDelay });
+    // leaver's slot refills the way a casualty's does, not instantly. What the
+    // leaver did with it stays on the row — the kills happened, and the AI
+    // that takes the place over adds to the same tally, exactly as the next AI
+    // does after one of them is killed.
+    m_reinforcements.push_back({ slot, kRespawnDelay });
 }
 
 int World::HumanSlots(int team) const
 {
-    return team < static_cast<int>(m_humanSlots.size()) ? m_humanSlots[team] : 0;
+    return static_cast<int>(std::count_if(m_roster.begin(), m_roster.end(), [team](const Slot& s) {
+        return s.team == team && s.human;
+    }));
+}
+
+int World::SlotTeam(int slot) const
+{
+    return slot >= 0 && slot < static_cast<int>(m_roster.size()) ? m_roster[slot].team : -1;
+}
+
+bool World::SlotFilled(int slot) const
+{
+    return std::any_of(m_units.begin(), m_units.end(),
+                       [slot](const Unit& u) { return u.slot == slot; });
+}
+
+int World::FreeAiSlot(int team) const
+{
+    // An empty one first, so a joining player takes a place nobody is standing
+    // in before turning a living AI soldier out of theirs.
+    for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
+        if (m_roster[slot].team == team && !m_roster[slot].human && !SlotFilled(slot))
+            return slot;
+    for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
+        if (m_roster[slot].team == team && !m_roster[slot].human)
+            return slot;
+    return -1;
 }
 
 int World::Standing(int team) const
@@ -333,8 +386,12 @@ void World::SetCommand(int id, const Command& cmd)
     m_staged.push_back({ id, cmd });
 }
 
-void World::SpawnAi(int team)
+void World::SpawnAi(int slot)
 {
+    if (slot < 0 || slot >= static_cast<int>(m_roster.size()))
+        return;
+    const int team = m_roster[slot].team;
+
     // An AI soldier appears at its own team's spawn point, scattered a little
     // so a squad arriving at once doesn't stack on one tile. A squadmate turns
     // up where the player turns up and a hostile across the arena, because the
@@ -342,9 +399,11 @@ void World::SpawnAi(int team)
     Unit unit = {};
     unit.id = m_nextUnitId++;
     unit.cls = &kClassDefs[m_nextAiClass[team]];
+    m_roster[slot].cls = unit.cls;
     m_nextAiClass[team] = (m_nextAiClass[team] + 1) % static_cast<int>(kClassCount);
     unit.controller = Unit::Controller::Ai;
     unit.team = team;
+    unit.slot = slot;
     unit.pos = m_teamSpawns[team];
     unit.pos.x += Rand(-2.0f, 2.0f);
     unit.pos.z += Rand(-2.0f, 2.0f);
@@ -443,18 +502,34 @@ void World::EndMatch()
 
 int World::Score(int team) const
 {
-    return team >= 0 && team < static_cast<int>(m_scores.size()) ? m_scores[team] : 0;
+    int total = 0;
+    for (const Slot& slot : m_roster)
+        if (slot.team == team)
+            total += slot.kills;
+    return total;
 }
 
 int World::Winner() const
 {
-    if (m_scores.empty())
+    if (m_roster.empty())
         return -1;
-    const auto top = std::max_element(m_scores.begin(), m_scores.end());
-    // Level at the top is a draw, however many sides are sitting there.
-    if (std::count(m_scores.begin(), m_scores.end(), *top) > 1)
-        return -1;
-    return static_cast<int>(top - m_scores.begin());
+    int best = -1;
+    int bestScore = -1;
+    bool level = false;
+    for (int team = 0; team < TeamCount(); ++team)
+    {
+        const int score = Score(team);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = team;
+            level = false;
+        }
+        // Level at the top is a draw, however many sides are sitting there.
+        else if (score == bestScore)
+            level = true;
+    }
+    return level ? -1 : best;
 }
 
 Unit* World::Local()
@@ -476,13 +551,6 @@ Unit* World::UnitById(int id)
         if (unit.id == id)
             return &unit;
     return nullptr;
-}
-
-int World::AiCount(int team) const
-{
-    return static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [team](const Unit& u) {
-        return u.controller == Unit::Controller::Ai && u.team == team && u.hp > 0.0f;
-    }));
 }
 
 void World::TickClocks(Unit& unit, float dt)
@@ -587,7 +655,7 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
     // --- Firing ---
     if (cmd.fire && unit.fireCooldown <= 0.0f && unit.reloadTimer <= 0.0f && unit.ammo > 0)
     {
-        SpawnShot(unit.cls->primary, unit.pos, unit.aimDir, unit.team, cmd.aimDist);
+        SpawnShot(unit.cls->primary, unit.pos, unit.aimDir, unit.slot, cmd.aimDist);
         // Carry the overshoot, so a cadence that isn't a whole number of ticks
         // still averages the class table's number instead of rounding up to
         // the next tick every shot — but never more than one tick of credit,
@@ -611,7 +679,7 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
     // throwing it before the player means to ---
     if (cmd.grenade && unit.grenades > 0)
     {
-        SpawnShot(kGrenade, unit.pos, unit.aimDir, unit.team, cmd.aimDist);
+        SpawnShot(kGrenade, unit.pos, unit.aimDir, unit.slot, cmd.aimDist);
         --unit.grenades;
         weaponUsed = true;
     }
@@ -723,7 +791,7 @@ void World::SwingMelee(Unit& attacker)
     // blade was travelling, and the same knock on the corpse it may leave. The
     // body itself is collected by ReapDead at the end of the tick.
     target->hp -= kMelee.damage;
-    target->lastHitTeam = attacker.team;
+    target->lastHitSlot = attacker.slot;
     target->knock = CorpseKnock(attacker.aimDir, kCorpseKnock);
     Event hit;
     hit.type = Event::Type::Hit;
@@ -757,7 +825,7 @@ Ability::Scene World::AbilityScene(Unit& user)
     return { { user.pos, &user.hp }, user.aimDir, kMaxHealth, &m_abilityAllies };
 }
 
-void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
+void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int owner,
                       float targetDist)
 {
     Vector3 pos = from + dir * kMuzzleOffset;
@@ -770,8 +838,8 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
         dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
                                                         weapon.projectileMass, weapon.bounce),
-                              weapon.projectileLife, pos, pos, team, weapon.damage,
-                              weapon.projectileRadius, weapon.blastRadius,
+                              weapon.projectileLife, pos, pos, owner, SlotTeam(owner),
+                              weapon.damage, weapon.projectileRadius, weapon.blastRadius,
                               weapon.bounce > 0.0f, weapon.explodes });
 
     Event ev;
@@ -859,20 +927,21 @@ void World::UpdateReinforcements(float dt)
     // happen between deciding a slot is due and forgetting about it, and doing
     // all three in one loop would mean adding to one list while erasing from
     // another.
-    for (Reinforcement& slot : m_reinforcements)
-        slot.timer -= dt;
+    for (Reinforcement& due : m_reinforcements)
+        due.timer -= dt;
 
-    for (const Reinforcement& slot : m_reinforcements)
+    for (const Reinforcement& due : m_reinforcements)
     {
-        // Counted fresh each time, so two slots coming due on the same tick
-        // both get filled. The quota is checked rather than assumed because the
-        // roster is what says how many a side fields — the queue only says when
-        // — and a wait that outlived its slot should be dropped, not honored.
-        if (slot.timer <= 0.0f && AiCount(slot.team) < AiQuota(slot.team))
-            SpawnAi(slot.team);
+        // Checked rather than assumed, because the wait may have outlived the
+        // thing it was waiting on: a player claimed the slot while the clock
+        // ran, or a second wait against the same slot already filled it. Either
+        // way the promise is dropped, not honored twice.
+        if (due.timer <= 0.0f && SlotTeam(due.slot) >= 0 && !m_roster[due.slot].human &&
+            !SlotFilled(due.slot))
+            SpawnAi(due.slot);
     }
 
-    std::erase_if(m_reinforcements, [](const Reinforcement& slot) { return slot.timer <= 0.0f; });
+    std::erase_if(m_reinforcements, [](const Reinforcement& due) { return due.timer <= 0.0f; });
 }
 
 void World::UpdateUnits(float dt)
@@ -942,7 +1011,7 @@ void World::UpdateUnits(float dt)
                 unit.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
             // NPCs "aim" at what they're shooting at rather than at max range,
             // so a grenadier's lob comes down on them.
-            SpawnShot(weapon, unit.pos, dir, unit.team, intent.fireDist);
+            SpawnShot(weapon, unit.pos, dir, unit.slot, intent.fireDist);
             // Same overshoot carry as the command path, for the same cadence.
             unit.fireCooldown = std::max(unit.fireCooldown, -kTickDt) + weapon.fireInterval;
             if (--unit.ammo == 0)
@@ -984,8 +1053,10 @@ void World::UpdateUnits(float dt)
         }
 }
 
-void World::ApplyBlast(const Vector3& center, float radius, float damage, int team)
+void World::ApplyBlast(const Vector3& center, float radius, float damage, int owner)
 {
+    const int team = SlotTeam(owner);
+
     // Linear falloff from full damage at the center to nothing at the rim,
     // measured to the body's middle so a blast overhead still counts. A wall
     // between the two eats it: same sight test the fog of war and NPC AI use,
@@ -1010,7 +1081,7 @@ void World::ApplyBlast(const Vector3& center, float radius, float damage, int te
         if (dmg <= 0.0f)
             continue;
         unit.hp -= dmg;
-        unit.lastHitTeam = team;
+        unit.lastHitSlot = owner;
         // Blown outward from the blast, as hard as the share of it they
         // caught: a body at the rim topples, one on top of it is thrown.
         unit.knock = CorpseKnock(unit.pos - center, kCorpseBlastKnock * (dmg / damage));
@@ -1030,7 +1101,7 @@ void World::ApplyBlast(const Vector3& center, float radius, float damage, int te
 void World::Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit)
 {
     if (shot.blastRadius > 0.0f)
-        ApplyBlast(pos, shot.blastRadius, shot.damage, shot.team);
+        ApplyBlast(pos, shot.blastRadius, shot.damage, shot.owner);
 
     Event ev;
     ev.type = Event::Type::Detonation;
@@ -1093,7 +1164,7 @@ void World::UpdateProjectiles(float dt)
             if (!blast)
             {
                 unit.hp -= shot.damage;
-                unit.lastHitTeam = shot.team;
+                unit.lastHitSlot = shot.owner;
                 unit.knock = CorpseKnock(travel, kCorpseKnock);
                 // Sprayed from where the round went in, carrying on the way it
                 // was going.
@@ -1176,18 +1247,28 @@ void World::ReapDead()
             ev.team = unit.team;
             ev.cls = unit.cls;
             Emit(ev);
-            // The kill goes on the board here rather than where the damage
-            // was dealt, for the same reason the corpse does: a soldier is
-            // killed by whatever emptied their health, and only this end of
-            // the tick knows which blow that turned out to be.
-            if (unit.lastHitTeam >= 0 && unit.lastHitTeam < static_cast<int>(m_scores.size()))
-                ++m_scores[unit.lastHitTeam];
+            // Both halves of the record go on the board here rather than where
+            // the damage was dealt, for the same reason the corpse does: a
+            // soldier is killed by whatever emptied their health, and only this
+            // end of the tick knows which blow that turned out to be. The death
+            // is charged to the slot that was standing here and the kill to the
+            // slot that last touched them — from which the team score follows,
+            // since that is only ever the sum of what a side's soldiers did.
+            //
+            // A killer whose slot changed hands in the meantime (they
+            // disconnected while the round was in the air) credits whoever holds
+            // it now. The alternative is dropping the kill, and a soldier who
+            // was shot down was shot down by somebody.
+            if (unit.slot >= 0 && unit.slot < static_cast<int>(m_roster.size()))
+                ++m_roster[unit.slot].deaths;
+            if (unit.lastHitSlot >= 0 && unit.lastHitSlot < static_cast<int>(m_roster.size()))
+                ++m_roster[unit.lastHitSlot].kills;
             // The soldier is gone, but the slot they held isn't. An AI slot is
             // owed back to its side on the respawn clock; the local player's
             // return is their phase machine's business, which is what keeps
             // one death from being paid back twice.
             if (unit.controller == Unit::Controller::Ai)
-                m_reinforcements.push_back({ unit.team, kRespawnDelay });
+                m_reinforcements.push_back({ unit.slot, kRespawnDelay });
         }
     std::erase_if(m_units, [](const Unit& u) { return u.hp <= 0.0f; });
 }
@@ -1203,7 +1284,22 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
     m_matchOver = snap.matchOver;
     m_matchTime = m_matchOver ? 0.0f : snap.clock;
     m_intermission = m_matchOver ? snap.clock : 0.0f;
-    m_scores.assign(snap.scores.begin(), snap.scores.end());
+
+    // The scoreboard arrives whole, the same as the standing counts and for the
+    // same reason: what a side has killed happened mostly to soldiers this
+    // client never saw. Which row is this player's is the server's word too —
+    // a client holds a unit id, and between lives it doesn't even hold that.
+    m_roster.clear();
+    m_localSlot = -1;
+    m_roster.reserve(snap.roster.size());
+    for (const Net::SnapSlot& slot : snap.roster)
+    {
+        if (slot.you)
+            m_localSlot = static_cast<int>(m_roster.size());
+        m_roster.push_back({ slot.team,
+                             slot.classId < kClassCount ? &kClassDefs[slot.classId] : nullptr,
+                             slot.human, slot.you, slot.kills, slot.deaths });
+    }
 
     // Rebuild the roster in the snapshot's image, carrying each surviving
     // unit's current state over as its previous state — the same two-frame
