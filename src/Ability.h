@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Renderer.h"
+#include "Vertex.h"
 
 #include <DirectXMath.h>
 #include <SimpleMath.h>

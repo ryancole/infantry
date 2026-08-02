@@ -13,74 +13,13 @@ using namespace DirectX::SimpleMath;
 
 namespace
 {
-    constexpr float kPlayerHalf = 0.4f;
-    constexpr float kMuzzleHeight = 0.6f;
-    constexpr float kMuzzleOffset = 0.7f; // shots start this far ahead of the shooter
-    constexpr float kGravity = 9.81f;     // must match Jolt's default gravity magnitude
-
-    // Shorthand for the action names, which are read a dozen times in Update
-    // and once each. The bindings behind them are the player's, and live in
-    // Bindings.h alongside the defaults.
+    // Shorthand for the action names, which are read a dozen times in
+    // ReadCommand and once each. The bindings behind them are the player's,
+    // and live in Bindings.h alongside the defaults.
     using Act = Bindings::Action;
 
-    // Grace period on the trigger after a spawn or a class pick, so the click
-    // that got the player into the arena doesn't also fire their first shot.
-    constexpr float kFireGrace = 0.3f;
-
-    // How far an NPC can make anyone out at all — a fact about eyesight, not a
-    // decision, which is why it's here and the range a brain chooses to fight
-    // at is in Brain.cpp. Generous on purpose: it has to sit above whatever the
-    // hungriest brain wants, or that brain quietly gets capped by a number it
-    // can't see and nothing anywhere says so.
-    constexpr float kNpcSightRange = 30.0f;
-    // Random spread per shot, which keeps NPCs beatable up close and long-range
-    // sniper duels survivable. A property of the whole AI rather than of any
-    // one mind, so the body applies it.
-    constexpr float kNpcAimJitter = 0.06f;
-
-    // Line of sight is computed at eye level: colliders whose box doesn't
-    // reach this height (low crates, curbs) can be seen and shot over.
-    constexpr float kEyeHeight = 0.6f;
     constexpr float kFogHeight = 0.02f; // just above the floor grid lines
     constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
-
-    // Soldier model walk cycle: phase advances with distance covered (radians
-    // per unit moved) so stride length stays constant across class speeds; the
-    // blend rate eases the walking pose in/out over ~1/8th of a second.
-    constexpr float kStrideRate = 2.2f;
-    constexpr float kMoveBlendRate = 8.0f;
-
-    // A soldier carries their own weight: the walk chases the keys rather than
-    // being them, so getting under way takes a stride and letting go costs a
-    // coast. The two are not the same cost. Getting a body moving is work and
-    // the slower of the two, and a direction change pays it again, which is
-    // what stops a reversal from being free. Stopping is the body's own weight
-    // going the way it was already headed, and only takes the moment it takes
-    // — short enough that a dodge still answers on the frame it's asked for.
-    // Both rates are MoveDef's, since how much body there is to get moving is
-    // a class trait; what's left here is the floor the drift is snapped away
-    // at, which is arithmetic rather than feel. Exponential decay never quite
-    // reaches zero, and without a floor a released key leaves a soldier
-    // creeping for the rest of the round at a speed too small to see.
-    constexpr float kMoveStopSpeed = 0.1f; // units per second
-
-    // Turning is not free: the soldier's facing chases the aim direction at a
-    // fixed angular rate rather than snapping to it, so whipping the cursor
-    // across the screen costs a moment spent pointed the wrong way. A full
-    // about-face runs about one and two tenths of a second, which is long
-    // enough that where a soldier is pointed is a commitment rather than a
-    // preference, and being flanked is something to survive rather than answer.
-    constexpr float kTurnRate = 2.67f; // radians per second
-
-    // Holding steady trades the two things that get a soldier out of trouble —
-    // moving and coming around — for a gun that sits where it's put. At a
-    // quarter of the turn rate the facing stops chasing the hand and starts
-    // filtering it, so small wobble never reaches the muzzle and a target the
-    // cursor crosses isn't one the barrel swept over. What it costs is being
-    // committed: a full about-face runs the better part of five seconds, which
-    // means anyone who reaches the flank while it's held has already won.
-    constexpr float kSteadyMoveScale = 0.4f;  // fraction of class move speed
-    constexpr float kSteadyTurnScale = 0.25f; // fraction of kTurnRate
 
     // Bounding sphere used to skip soldiers that fall outside the viewport.
     // Generous on purpose: it has to cover the model at full stride, and
@@ -98,12 +37,6 @@ namespace
     constexpr float kCorpseSink = 1.5f;      // seconds spent sinking, at the end of that life
     constexpr float kCorpseSinkDepth = 1.6f; // deep enough to swallow a body whole
     constexpr size_t kMaxCorpses = 10;
-    // Launch velocity from the killing blow: a shove along it plus some lift,
-    // so a body falls away from what killed it instead of dropping in place. A
-    // blast throws harder, scaled by how much of it the victim caught.
-    constexpr float kCorpseKnock = 4.5f;
-    constexpr float kCorpseBlastKnock = 11.0f;
-    constexpr float kCorpseLift = 3.0f;
     constexpr float kCorpseSpin = 7.0f; // random angular velocity, radians/sec
 
     // Blood. A hit throws drops along the blow, and each one stains the floor
@@ -132,11 +65,6 @@ namespace
     constexpr float kSplatMaxRadius = 0.30f;
 
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
-
-    // Below this speed a bouncing grenade's contacts are a roll, not a bounce,
-    // and stay silent — otherwise a grenade resting on the floor reports a
-    // contact every frame and chatters.
-    constexpr float kBounceSoundSpeed = 2.5f; // units per second
 
     constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
     constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
@@ -278,78 +206,6 @@ namespace
 
         Soldier::Draw(renderer, world, TeamColor(team), classColor);
     }
-
-    // Velocity a killing blow hands to the corpse it makes: a shove along the
-    // blow, flattened to the ground plane, plus enough lift that the body
-    // falls away from it instead of dropping straight down.
-    Vector3 CorpseKnock(const Vector3& dir, float strength)
-    {
-        Vector3 flat(dir.x, 0.0f, dir.z);
-        if (flat.LengthSquared() > 1e-8f)
-            flat.Normalize();
-        return flat * strength + Vector3(0.0f, kCorpseLift, 0.0f);
-    }
-
-    // Swings `from` toward `to` about Y by at most `maxStep` radians, snapping
-    // to `to` once it's within reach. Both are unit vectors on the ground
-    // plane. The cross product against the dot gives the signed angle between
-    // them; CreateRotationY turns the opposite way, hence the negated step.
-    Vector3 TurnToward(const Vector3& from, const Vector3& to, float maxStep)
-    {
-        const float delta = std::atan2(from.x * to.z - from.z * to.x, from.Dot(to));
-        if (std::abs(delta) <= maxStep)
-            return to;
-        return Vector3::Transform(from,
-                                  Matrix::CreateRotationY(-std::copysign(maxStep, delta)));
-    }
-
-    // Horizontal muzzle speed for a shot aimed to come down targetDist away:
-    // bullets always fire at full speed; lobbed shots slow their toss to drop
-    // on the aim point, capped at the weapon's muzzle speed.
-    float ShotSpeed(const WeaponDef& weapon, float targetDist)
-    {
-        float speed = weapon.projectileSpeed;
-        if (weapon.lobVelocity > 0.0f)
-        {
-            const float vy = weapon.lobVelocity;
-            const float flightTime =
-                (vy + std::sqrt(vy * vy + 2.0f * kGravity * kMuzzleHeight)) / kGravity;
-            const float d = std::max(targetDist - kMuzzleOffset, 0.2f);
-            speed = std::min(d / flightTime, speed);
-        }
-        return speed;
-    }
-
-    // True if the segment a->b passes within `pad` of the axis-aligned box at
-    // `center` with half-extents `half` (slab test against the padded box).
-    // Projectile hits are swept over the frame's travel so fast shots (the
-    // sniper round moves over a body-width per tick) can't tunnel through.
-    bool SegmentHitsBox(const XMFLOAT3& a, const XMFLOAT3& b, const XMFLOAT3& center,
-                        const XMFLOAT3& half, float pad)
-    {
-        const float d[3] = { b.x - a.x, b.y - a.y, b.z - a.z };
-        const float o[3] = { a.x - center.x, a.y - center.y, a.z - center.z };
-        const float h[3] = { half.x + pad, half.y + pad, half.z + pad };
-        float tMin = 0.0f, tMax = 1.0f;
-        for (int i = 0; i < 3; ++i)
-        {
-            if (std::abs(d[i]) < 1e-6f)
-            {
-                if (std::abs(o[i]) > h[i])
-                    return false;
-                continue;
-            }
-            float t0 = (-h[i] - o[i]) / d[i];
-            float t1 = (h[i] - o[i]) / d[i];
-            if (t0 > t1)
-                std::swap(t0, t1);
-            tMin = std::max(tMin, t0);
-            tMax = std::min(tMax, t1);
-            if (tMin > tMax)
-                return false;
-        }
-        return true;
-    }
 }
 
 void Game::LoadContent(Renderer& renderer)
@@ -362,55 +218,38 @@ void Game::LoadContent(Renderer& renderer)
     m_sound.Init(); // loads the wave bank and starts the ambience
 
     const LevelData level = LevelData::Load("assets/levels/arena01.json");
-    m_arenaHalf = level.arenaHalf;
-    for (const LevelData::Spawn& spawn : level.spawns)
-        m_teamSpawns.push_back(spawn.pos);
-    m_team = std::min(m_team, static_cast<int>(m_teamSpawns.size()) - 1);
-    m_eyePos = m_teamSpawns[m_team];
-    m_nextAiClass.assign(m_teamSpawns.size(), 0);
+    m_team = std::min(m_team, static_cast<int>(level.spawns.size()) - 1);
+
+    // The level splits down the same seam everything else does: the World
+    // takes the parts that decide anything (colliders, occluders, spawns),
+    // and what's left here is what the level looks like.
+    m_world.Init(level);
 
     // Static floor grid.
-    const int half = static_cast<int>(m_arenaHalf);
+    const float arenaHalf = m_world.ArenaHalf();
+    const int half = static_cast<int>(arenaHalf);
     for (int i = -half; i <= half; ++i)
     {
         const bool border = (i == -half || i == half);
         const bool major = (i % 8) == 0;
         const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
         const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -m_arenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, m_arenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ -m_arenaHalf, 0.0f, f }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ m_arenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -arenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, arenaHalf }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ -arenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ arenaHalf, 0.0f, f }, col });
     }
 
-    // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
-    // despawn on their first contact with anything solid.
-    m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
-                           { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
-
-    // Split each level object into its runtime halves: collision box and/or
-    // rendered model. Each distinct model is loaded once; instances share it.
+    // The drawn half of each level object. Each distinct model is loaded
+    // once; instances share it.
     for (const LevelData::Object& obj : level.objects)
     {
-        if (obj.collider)
-        {
-            const XMFLOAT3 size = { obj.collider->x * obj.scale, obj.collider->y * obj.scale,
-                                    obj.collider->z * obj.scale };
-            const XMFLOAT3 center = { obj.pos.x, obj.pos.y + size.y * 0.5f, obj.pos.z };
-            m_colliders.push_back({ center, size, obj.model.empty() });
-            m_physics.AddStaticBox(center, size);
-
-            if (center.y + size.y * 0.5f >= kEyeHeight && center.y - size.y * 0.5f <= kEyeHeight)
-                m_occluders.push_back({ center.x - size.x * 0.5f, center.z - size.z * 0.5f,
-                                        center.x + size.x * 0.5f, center.z + size.z * 0.5f });
-        }
-        if (!obj.model.empty())
-        {
-            auto it = m_models.find(obj.model);
-            if (it == m_models.end())
-                it = m_models.emplace(obj.model, renderer.LoadModel(obj.model)).first;
-            m_props.push_back({ it->second.get(), obj.pos, obj.scale, obj.yaw });
-        }
+        if (obj.model.empty())
+            continue;
+        auto it = m_models.find(obj.model);
+        if (it == m_models.end())
+            it = m_models.emplace(obj.model, renderer.LoadModel(obj.model)).first;
+        m_props.push_back({ it->second.get(), obj.pos, obj.scale, obj.yaw });
     }
 }
 
@@ -478,11 +317,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_class = &GetClassDef(*picked);
             m_phase = Phase::Playing;
             // The whole match turns up with the player — their own unit
-            // included, loadout and all, which is SpawnLocal's business. The
-            // class pick is the last thing standing between the menu and the
-            // arena, so it's also the first moment there's anything for two
-            // squads to do.
-            FillRosters();
+            // included, loadout and all. The class pick is the last thing
+            // standing between the menu and the arena, so it's also the first
+            // moment there's anything for two squads to do.
+            m_world.StartMatch(m_class, m_team);
+            m_eyePos = m_world.Local()->pos;
             camera.SetTarget(m_eyePos);
             camera.SnapToTarget();
         }
@@ -501,16 +340,21 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // Dead: the arena runs on without the player — NPCs keep fighting, shots
-    // keep flying, the corpse keeps falling — but nothing reads input and the
-    // camera holds on the spot where the body dropped until the wait is up.
+    // keep flying, the corpse keeps falling — but no command reaches the
+    // simulation and the camera holds on the spot where the body dropped
+    // until the wait is up. The events keep coming, and keep being shown: a
+    // firefight the player is watching out still sounds like one.
     if (m_phase == Phase::Dead)
     {
         m_respawnTimer -= dt;
-        UpdateUnits(dt);
-        m_physics.Step(dt);
-        UpdateProjectiles(dt);
-        ReapDead();
-        UpdateReinforcements(dt);
+        m_tickAccum += dt;
+        while (m_tickAccum >= World::kTickDt)
+        {
+            m_tickAccum -= World::kTickDt;
+            m_world.Tick(nullptr, m_events);
+        }
+        m_renderAlpha = m_tickAccum / World::kTickDt;
+        ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
         if (m_respawnTimer <= 0.0f)
@@ -518,21 +362,88 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
-    // The unit under this machine's hands. A reference rather than a lookup
-    // per line, which is safe exactly as long as nothing can grow the roster —
-    // nothing between here and the system updates below spawns, and everything
-    // after them looks the soldier up again.
-    Unit& u = *LocalUnit();
+    // Input becomes a Command, and the Command is all the simulation hears:
+    // the bindings, the pad, and the cursor's trip through the camera all end
+    // inside ReadCommand, and the World would do exactly the same work on a
+    // sentence that arrived over a socket. The one keepsake this side holds
+    // onto is the aim distance, which the aim indicator wants at render time.
+    m_screenRight = camera.ScreenRightOnGround();
+    const Command fresh = ReadCommand(input, camera, m_world.Local()->pos);
+    m_aimDist = fresh.aimDist;
 
-    // --- Steady: held, not toggled, because it's a posture and not a mode. A
-    // toggle would leave the player standing in it having forgotten, and the
-    // whole cost of the thing is that it's a decision you're currently making ---
-    const bool steady = m_binds.Down(input, Act::Steady) || input.pad.triggers.left > 0.5f;
+    // Fold this frame's hands into the pending command: held controls are
+    // whatever they are right now, edges latch until a tick spends them.
+    m_pendingCmd.move = fresh.move;
+    m_pendingCmd.aim = fresh.aim;
+    m_pendingCmd.aimDist = fresh.aimDist;
+    m_pendingCmd.fire = fresh.fire;
+    m_pendingCmd.melee = fresh.melee;
+    m_pendingCmd.steady = fresh.steady;
+    m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+    m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+    m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
 
-    // --- Movement: WASD relative to the screen ---
+    m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
+
+    // Simulation time passes in whole ticks; the frame deposits its dt and
+    // the loop spends what's there. The leftover is where this frame's
+    // picture sits between two ticks, which is what the renderer blends by.
+    m_tickAccum += dt;
+    while (m_tickAccum >= World::kTickDt)
+    {
+        m_tickAccum -= World::kTickDt;
+        m_world.Tick(&m_pendingCmd, m_events);
+        // The tick spent the edges; a second tick in the same frame must not
+        // spend them again.
+        m_pendingCmd.reload = false;
+        m_pendingCmd.grenade = false;
+        m_pendingCmd.ability = false;
+    }
+    m_renderAlpha = m_tickAccum / World::kTickDt;
+
+    // Everything those ticks did, turned into something to see and hear.
+    ProcessEvents();
+
+    // Particles are the client's own weather — they never touch the outcome
+    // of anything, so they run on render time and stay smooth whatever the
+    // tick is doing. Corpse timers run here for the same reason: how long a
+    // body lies around is a fact about the picture, not the fight.
+    UpdateParticles(dt);
+    UpdateCorpses(dt);
+
+    // Death is noticed by absence. Whatever emptied the local soldier's
+    // health, the World has already reaped them on the same terms as anyone
+    // else, and the Death event has already put their corpse on the floor.
+    // What remains is the part that belongs to the player rather than the
+    // soldier: stop drawing a swing whose arm is gone, start the wait, and
+    // let the camera hold where the body fell (m_eyePos keeps the spot).
+    if (!m_world.Local())
+    {
+        m_meleeFlash = 0.0f;
+        m_phase = Phase::Dead;
+        m_respawnTimer = World::kRespawnDelay;
+        return;
+    }
+
+    // The eye, the ear, and the camera all follow the soldier as drawn — the
+    // blend between ticks — not the soldier as simulated, so nothing on
+    // screen leads or trails the body it's about.
+    const Unit& local = *m_world.Local();
+    m_eyePos = Vector3::Lerp(local.prevPos, local.pos, m_renderAlpha);
+    m_sound.SetListener(m_eyePos, camera.ScreenUpOnGround());
+    camera.SetTarget(m_eyePos);
+}
+
+Command Game::ReadCommand(const Input& input, const IsoCamera& camera, const Vector3& pos) const
+{
+    using PadTracker = DirectX::GamePad::ButtonStateTracker;
+
+    Command cmd;
+
+    // --- Movement: WASD relative to the screen, resolved to world space here
+    // because the screen is this side's business ---
     const Vector3 upG = camera.ScreenUpOnGround();
     const Vector3 rightG = camera.ScreenRightOnGround();
-    m_screenRight = rightG;
 
     float moveUp = 0.0f, moveRight = 0.0f;
     if (m_binds.Down(input, Act::MoveForward)) moveUp += 1.0f;
@@ -543,46 +454,15 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     moveRight += input.pad.thumbSticks.leftX;
 
     Vector3 move = upG * moveUp + rightG * moveRight;
-    const MoveDef& gait = u.cls->move;
-    const float speed = gait.speed * (steady ? kSteadyMoveScale : 1.0f);
-    const bool pushing = move.LengthSquared() > 1e-10f;
-    if (pushing)
+    if (move.LengthSquared() > 1e-10f)
+    {
         move.Normalize();
-    else
-        move = Vector3::Zero;
-
-    // The keys ask for a velocity; the body eases onto it. Framed as a decay
-    // toward the wanted velocity rather than a step of acceleration so the
-    // feel holds at any frame rate. Which rate it decays at is decided by
-    // whether anything is being asked for at all, not by whether the answer
-    // happens to be faster or slower: a soldier hauling themselves round onto
-    // a new heading is doing the work of starting, even though their speed
-    // never changed, and it should cost what starting costs.
-    const float response = pushing ? gait.accel : gait.stop;
-    u.moveVel += (move * speed - u.moveVel) * (1.0f - std::exp(-response * dt));
-    if (u.moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
-        u.moveVel = Vector3::Zero;
-    u.pos += u.moveVel * dt;
-    ResolveObstacles(u.pos);
-    m_eyePos = u.pos;
-
-    // Stride off the speed actually travelled, not the class's, so the feet
-    // keep up with the ground at either pace instead of skating over it — and
-    // so the legs keep walking through the coast rather than stopping with the
-    // key while the body is still sliding.
-    const float travelSpeed = u.moveVel.Length();
-    const bool moving = travelSpeed > 0.0f;
-    u.walkPhase += travelSpeed * kStrideRate * dt;
-    u.moveBlend = std::clamp(u.moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
-                             0.0f, 1.0f);
-
-    // The ear follows the player; orienting it to the screen's up direction
-    // makes stereo panning line up with what's on screen.
-    m_sound.SetListener(u.pos, upG);
+        cmd.move = move;
+    }
 
     // --- Aim: mouse cursor projected onto the ground plane, or the right
     // stick as a screen-relative direction when deflected ---
-    Vector3 aim = camera.ScreenToGround(input.mouseX, input.mouseY) - u.pos;
+    Vector3 aim = camera.ScreenToGround(input.mouseX, input.mouseY) - pos;
     const Vector2 stick(input.pad.thumbSticks.rightX, input.pad.thumbSticks.rightY);
     if (stick.LengthSquared() > 0.1f)
         aim = upG * stick.y + rightG * stick.x;
@@ -591,348 +471,135 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         // The stick gives a direction but no point to land on; lobbed shots
         // fall back to full range, like aiming past max range with the mouse.
-        m_aimDist = stick.LengthSquared() > 0.1f ? 1e9f : aim.Length();
+        cmd.aimDist = stick.LengthSquared() > 0.1f ? 1e9f : aim.Length();
         aim.Normalize();
-        // The cursor is where the player wants to be pointed, not where they
-        // are pointed — the body has to come around to it. Everything that
-        // reads the aim, including the shots and the aim ring, follows the
-        // facing rather than the cursor, so what's drawn is what will fire.
-        const float turnRate = kTurnRate * (steady ? kSteadyTurnScale : 1.0f);
-        u.aimDir = TurnToward(u.aimDir, aim, turnRate * dt);
+        cmd.aim = aim;
     }
 
-    using PadTracker = DirectX::GamePad::ButtonStateTracker;
-
-    // --- Reload: the magazine runs out mid-firefight, and getting a fresh one
-    // in costs the player their guns for a moment. It can be started early,
-    // which is the whole decision the system asks for — top up in the lull, or
-    // get caught doing it. The cadence timer keeps running underneath, so a
-    // reload never doubles as a way to skip one ---
-    if (u.reloadTimer > 0.0f)
-    {
-        u.reloadTimer -= dt;
-        if (u.reloadTimer <= 0.0f)
-        {
-            u.reloadTimer = 0.0f;
-            u.ammo = u.cls->primary.magazine;
-            m_sound.Play("reload", 1.0f, 0.25f); // mag in, a note above mag out
-        }
-    }
-    else if (m_binds.Pressed(input, Act::Reload) || input.padEvents.x == PadTracker::PRESSED)
-    {
-        BeginReload(u);
-    }
-
-    // Set by anything that puts a hand back on a weapon this frame. The class
-    // ability below reads it for both halves of one rule: it drops a dressing
-    // that was running, and it stops one from starting. Without the second
-    // half, a player leaning on the trigger could press the ability key, start
-    // something, and have it cancelled by their own gunfire on the same frame
-    // — paying the whole cooldown for a dressing that never got a frame to
-    // itself, with nothing on screen long enough to explain why.
-    bool weaponUsed = false;
-
-    // --- Firing ---
-    u.fireCooldown -= dt;
-    if ((m_binds.Down(input, Act::Fire) || m_binds.Pressed(input, Act::Fire) ||
-         input.pad.triggers.right > 0.5f) &&
-        u.fireCooldown <= 0.0f && u.reloadTimer <= 0.0f && u.ammo > 0)
-    {
-        SpawnShot(u.cls->primary, u.pos, u.aimDir, u.team, m_aimDist);
-        u.fireCooldown = u.cls->primary.fireInterval;
-        weaponUsed = true;
-        // Empty: reload without being asked. Holding an empty weapon is never
-        // the play, so making the player press for it would only cost them the
-        // time it took to notice.
-        if (--u.ammo == 0)
-            BeginReload(u);
-    }
-
-    // --- Grenade: same for every class, lobbed onto the aim point, then left
-    // to bounce until its fuse runs out (UpdateProjectiles). One per life, so
-    // there's no cooldown to run down — spending it is the whole cost. It comes
-    // off the belt rather than out of the magazine, so it's still throwable
-    // mid-reload: caught empty, a player has one thing left to do. Thrown
-    // on the key's press edge, which with a single grenade also stops a held
-    // key from throwing it before the player means to ---
-    if ((m_binds.Pressed(input, Act::Grenade) ||
-         input.padEvents.leftShoulder == PadTracker::PRESSED) &&
-        u.grenades > 0)
-    {
-        SpawnShot(kGrenade, u.pos, u.aimDir, u.team, m_aimDist);
-        --u.grenades;
-        weaponUsed = true;
-    }
-
-    // --- Melee: the blade, for the range the primary can't cover. Its charges
-    // and its recovery are entirely off the magazine, so — like the grenade —
-    // it's still in the player's hands mid-reload, which is most of why it's
-    // carried. The recovery runs on its own and takes no key: there's nothing
-    // to decide about it, so there's nothing to press.
-    //
-    // Held rather than tapped, like the trigger and unlike the grenade: the
-    // three swings are a burst, paced by swingInterval, and a player who wants
-    // all three wants them as fast as the arm will go. Rationing them by
-    // hand-speed would only be a test of the hand. Leaning on the key through
-    // the recovery does nothing — the charges come back and the swinging picks
-    // straight back up, which is the same deal the trigger offers.
-    //
-    // The recovery is a timer since the last swing, not a reload of an empty
-    // magazine, so it runs with swings still in hand and doesn't gate them:
-    // what stops a swing is having none left, and nothing else ---
-    u.meleeCooldown -= dt;
-    m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
-    if (u.meleeRecover > 0.0f)
-    {
-        u.meleeRecover -= dt;
-        if (u.meleeRecover <= 0.0f)
-        {
-            u.meleeRecover = 0.0f;
-            u.meleeCharges = kMelee.charges;
-        }
-    }
-    if ((m_binds.Down(input, Act::Melee) || input.pad.IsRightShoulderPressed()) &&
-        u.meleeCooldown <= 0.0f && u.meleeCharges > 0)
-    {
-        SwingMelee(u);
-        weaponUsed = true;
-    }
-
-    // --- Ability: the one thing this class can do that the others can't, on a
-    // press edge rather than a hold — it isn't a trigger. Everything it decides
-    // it decides in Ability::Update: when it starts, what it does with the time,
-    // and what taking a weapon back costs. All this end of it owns is the two
-    // inputs and the answer to who's on the field ---
-    const bool abilityPressed =
+    // Steady is held, not toggled, because it's a posture and not a mode: a
+    // toggle would leave the player standing in it having forgotten, and the
+    // whole cost of the thing is that it's a decision you're currently making.
+    cmd.steady = m_binds.Down(input, Act::Steady) || input.pad.triggers.left > 0.5f;
+    cmd.fire = m_binds.Down(input, Act::Fire) || m_binds.Pressed(input, Act::Fire) ||
+               input.pad.triggers.right > 0.5f;
+    cmd.melee = m_binds.Down(input, Act::Melee) || input.pad.IsRightShoulderPressed();
+    cmd.reload = m_binds.Pressed(input, Act::Reload) || input.padEvents.x == PadTracker::PRESSED;
+    cmd.grenade = m_binds.Pressed(input, Act::Grenade) ||
+                  input.padEvents.leftShoulder == PadTracker::PRESSED;
+    cmd.ability =
         m_binds.Pressed(input, Act::Ability) || input.padEvents.b == PadTracker::PRESSED;
-    const Ability::Def& ability = u.cls->ability;
-    if (Ability::Update(ability, u.ability, AbilityScene(u), dt, abilityPressed, weaponUsed) &&
-        ability.startSound)
-    {
-        // At the listener, not in the world: it's the player's own kit, heard
-        // the way the reload is.
-        m_sound.Play(ability.startSound);
-    }
 
-    // --- The rest of the roster. From here down the roster can grow and
-    // shrink, so `u` is done: everything below that needs the local soldier
-    // looks them up again ---
-    UpdateUnits(dt);
-
-    // --- Projectiles (simulated by Jolt) ---
-    m_physics.Step(dt);
-    UpdateProjectiles(dt);
-    ReapDead();
-    UpdateReinforcements(dt);
-    UpdateParticles(dt);
-    UpdateCorpses(dt);
-
-    // Death is noticed by absence. Whatever emptied the local soldier's
-    // health, ReapDead has already turned them into a corpse and taken them
-    // off the roster on the same terms as anyone else — the reload, the
-    // blade's recovery, and the dressing all left with the unit that owned
-    // them. What remains is the part that belongs to the player rather than
-    // the soldier: stop drawing a swing whose arm is gone, start the wait, and
-    // let the camera hold where the body fell (m_eyePos keeps the spot).
-    if (!LocalUnit())
-    {
-        m_meleeFlash = 0.0f;
-        m_phase = Phase::Dead;
-        m_respawnTimer = kRespawnDelay;
-        return;
-    }
-
-    camera.SetTarget(LocalUnit()->pos);
+    return cmd;
 }
 
-void Game::BeginReload(Unit& unit)
+void Game::ProcessEvents()
 {
-    const WeaponDef& weapon = unit.cls->primary;
-    if (unit.reloadTimer > 0.0f || unit.ammo >= weapon.magazine)
-        return;
-
-    // Whatever was left in the magazine goes with it: partial reloads would
-    // make tapping R between every shot strictly correct, and there's nothing
-    // interesting about a player who does that.
-    unit.ammo = 0;
-    unit.reloadTimer = weapon.reloadTime;
-    // The local player hears their own hands rather than a spot on the floor;
-    // everyone else's mag-out happens somewhere in the world.
-    if (unit.controller == Unit::Controller::Local)
-        m_sound.Play("reload");
-    else
-        PlaySoundAt("reload", unit.pos);
-}
-
-void Game::SwingMelee(Unit& attacker)
-{
-    // The charge goes with the swing, not with the hit: the arm travels the
-    // same arc either way, and a blade that only charged for connecting would
-    // be free to flail with from across the room.
-    --attacker.meleeCharges;
-    attacker.meleeCooldown = kMelee.swingInterval;
-    // Every swing restarts the recovery, spent or not, so what comes back is
-    // always the full three and the wait is always measured from the last thing
-    // the arm did. Swinging twice and stopping costs the same wait as swinging
-    // three times; the third swing is free to take or leave.
-    attacker.meleeRecover = kMelee.recoverTime;
-    // The flash is presentation, and only the local soldier's swing is drawn —
-    // it moves onto the unit the day a brain learns the blade.
-    m_meleeFlash = kMeleeFlashTime;
-    m_meleeSwingDir = attacker.aimDir;
-    PlaySoundAt("swing", attacker.pos, Rand(-0.1f, 0.1f));
-
-    // One edge, not a blast: of everyone standing in the arc only the nearest
-    // is struck. It gets no sight test, unlike a bullet or a blast — anything
-    // solid enough to be cover is wider than the reach and keeps the two of
-    // them apart by itself, and what's left is a tree trunk they're both
-    // already touching, which isn't worth stopping a swing over.
-    const float cosArc = std::cos(kMelee.arc);
-    Unit* target = nullptr;
-    float nearest = 0.0f;
-    for (Unit& other : m_units)
+    for (const Event& ev : m_events)
     {
-        if (other.hp <= 0.0f || other.team == attacker.team) // the blade doesn't cut its own side
-            continue;
-        Vector3 toward = other.pos - attacker.pos;
-        toward.y = 0.0f;
-        const float dist = toward.Length();
-        if (dist > kMelee.reach || dist < 1e-4f)
-            continue;
-        if (toward.Dot(attacker.aimDir) / dist < cosArc)
-            continue;
-        if (!target || dist < nearest)
+        switch (ev.type)
         {
-            target = &other;
-            nearest = dist;
+        case Event::Type::Fire:
+            // One shared fire sample; heavier weapons play deeper. A little
+            // random detune keeps rapid fire from sounding like a loop.
+            PlaySoundAt("fire", ev.pos, 0.25f - ev.damage / 120.0f + Rand(-0.05f, 0.05f));
+            break;
+
+        case Event::Type::Hit:
+            SpawnBlood(ev.pos, ev.dir, ev.damage, ev.fatal);
+            PlaySoundAt(ev.fatal ? "death" : "hit", ev.pos);
+            // The pad's share of being hit is the one part that is about the
+            // player rather than the soldier.
+            if (ev.local)
+                m_rumbleTime = 0.25f;
+            break;
+
+        case Event::Type::Death:
+            // The body stays where it fell — everything a ragdoll needs came
+            // over in the event, because the soldier it describes is already
+            // off the roster.
+            SpawnCorpse(ev.pos, ev.dir, ev.walkPhase, ev.moveBlend, TeamColor(ev.team),
+                        ev.cls->color, ev.knock);
+            break;
+
+        case Event::Type::Detonation:
+            if (ev.explodes)
+            {
+                SpawnExplosion(ev.pos);
+                PlaySoundAt("explode", ev.pos, Rand(-0.06f, 0.06f));
+            }
+            else
+            {
+                SpawnImpactBurst(ev.pos, ev.radius);
+                // Unit hits already play their own hit/death sound; the thud is
+                // only for shots stopping in the ground or a wall.
+                if (!ev.hitUnit)
+                    PlaySoundAt("thud", ev.pos, Rand(-0.15f, 0.15f));
+            }
+            break;
+
+        case Event::Type::Bounce:
+            PlaySoundAt("thud", ev.pos, Rand(0.35f, 0.55f));
+            break;
+
+        case Event::Type::ReloadStart:
+            // The local player hears their own hands rather than a spot on the
+            // floor; everyone else's mag-out happens somewhere in the world.
+            if (ev.local)
+                m_sound.Play("reload");
+            else
+                PlaySoundAt("reload", ev.pos);
+            break;
+
+        case Event::Type::ReloadEnd:
+            // Mag in, a note above mag out.
+            if (ev.local)
+                m_sound.Play("reload", 1.0f, 0.25f);
+            else
+                PlaySoundAt("reload", ev.pos, 0.25f);
+            break;
+
+        case Event::Type::MeleeSwing:
+            // The flash is the local soldier's own arc; anyone else's swing is
+            // a sound with no mark until somebody else's swing is worth seeing.
+            if (ev.local)
+            {
+                m_meleeFlash = kMeleeFlashTime;
+                m_meleeSwingDir = ev.dir;
+            }
+            PlaySoundAt("swing", ev.pos, Rand(-0.1f, 0.1f));
+            break;
+
+        case Event::Type::AbilityStart:
+            // The player's own kit is heard at the listener, the way the
+            // reload is; anyone else's is a thing happening in the world.
+            if (ev.sound)
+            {
+                if (ev.local)
+                    m_sound.Play(ev.sound);
+                else
+                    PlaySoundAt(ev.sound, ev.pos);
+            }
+            break;
         }
     }
-    if (!target)
-        return;
-
-    // From here it's a hit like any other: the same blood, thrown the way the
-    // blade was travelling, and the same knock on the corpse it may leave. The
-    // body itself is collected by ReapDead at the end of the frame.
-    target->hp -= kMelee.damage;
-    target->knock = CorpseKnock(attacker.aimDir, kCorpseKnock);
-    SpawnBlood({ target->pos.x, kPlayerHalf, target->pos.z }, attacker.aimDir, kMelee.damage,
-               target->hp <= 0.0f);
-    PlaySoundAt(target->hp <= 0.0f ? "death" : "hit", target->pos);
-}
-
-Ability::Scene Game::AbilityScene(Unit& user)
-{
-    // Everyone on the user's side they can actually see. The sight test is
-    // the one the blast and the NPC AI use, applied here because the fog is
-    // this class's business: an ability decides what happens to a soldier, not
-    // whether there's a wall in the way, and doing it here is what stops
-    // "treating someone through cover" from being answerable in two places.
-    //
-    // The list points straight into the roster, so it's good for exactly as
-    // long as nothing is added to or taken out of m_units. Every caller uses it
-    // and drops it inside the same statement, which is the only reason that's
-    // safe — and the reason this returns a value rather than keeping one.
-    m_abilityAllies.clear();
-    const Vector2 userXZ = { user.pos.x, user.pos.z };
-    // Three of the four classes have no ability, and a sight test per squadmate
-    // per frame isn't free enough to spend on nobody.
-    if (user.cls->ability.kind != Ability::Kind::None)
-    {
-        for (Unit& other : m_units)
-        {
-            if (&other == &user || other.team != user.team || other.hp <= 0.0f)
-                continue;
-            if (!Visibility::IsPointVisible(userXZ, { other.pos.x, other.pos.z }, m_occluders))
-                continue;
-            m_abilityAllies.push_back({ other.pos, &other.hp });
-        }
-    }
-
-    return { { user.pos, &user.hp }, user.aimDir, kMaxHealth, &m_abilityAllies };
+    m_events.clear();
 }
 
 void Game::Respawn(IsoCamera& camera)
 {
-    // A respawn is a fresh soldier, not a repaired one: SpawnLocal issues the
+    // A respawn is a fresh soldier, not a repaired one: the World issues the
     // whole loadout off the class table the same way it did at the class pick,
-    // so there's no list here of things to remember to put back — the unit
-    // that died took everything it was carrying with it.
-    SpawnLocal();
+    // so there's no list here of things to remember to put back.
+    m_world.SpawnLocal();
     m_phase = Phase::Playing;
+    // The eye arrives with the body: the camera cut and the first fog polygon
+    // both read from here, and neither should spend a frame looking at
+    // wherever the last life ended.
+    m_eyePos = m_world.Local()->pos;
     // A cut, not a sweep: the spawn is somewhere else entirely, and panning
     // the whole arena to get there would take longer than the wait did.
     camera.SetTarget(m_eyePos);
     camera.SnapToTarget();
-}
-
-Game::Unit* Game::LocalUnit()
-{
-    for (Unit& unit : m_units)
-        if (unit.controller == Unit::Controller::Local)
-            return &unit;
-    return nullptr;
-}
-
-const Game::Unit* Game::LocalUnit() const
-{
-    return const_cast<Game*>(this)->LocalUnit();
-}
-
-void Game::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
-                     float targetDist)
-{
-    Vector3 pos = from + dir * kMuzzleOffset;
-    pos.y = kMuzzleHeight;
-
-    // Grenades keep their fixed upward lob (constant arc height and flight
-    // time) and vary horizontal speed to land on the aim point; bullets fire
-    // level at full speed, so max range comes from gravity.
-    const Vector3 vel =
-        dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
-    m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
-                                                        weapon.projectileMass, weapon.bounce),
-                              weapon.projectileLife, pos, team, weapon.damage,
-                              weapon.projectileRadius, weapon.blastRadius,
-                              weapon.bounce > 0.0f, weapon.explodes });
-
-    // One shared fire sample; heavier weapons play deeper. A little random
-    // detune keeps rapid fire from sounding like a loop.
-    const float pitch = 0.25f - weapon.damage / 120.0f + Rand(-0.05f, 0.05f);
-    PlaySoundAt("fire", from, pitch);
-}
-
-float Game::PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
-                            float targetDist, std::vector<Vector3>* outArc) const
-{
-    const float speed = ShotSpeed(weapon, targetDist);
-    const float radius = weapon.projectileRadius;
-    if (outArc)
-    {
-        outArc->clear();
-        outArc->push_back({ from.x + dir.x * kMuzzleOffset, kMuzzleHeight,
-                            from.z + dir.z * kMuzzleOffset });
-    }
-    // Coarser than the physics tick, but the arc is smooth and the boxes are
-    // fat relative to per-step travel, so the indicator lands within a step.
-    constexpr float kStep = 1.0f / 120.0f;
-    for (float t = kStep; t < weapon.projectileLife; t += kStep)
-    {
-        const float ht = kMuzzleOffset + speed * t;
-        const float y = kMuzzleHeight + weapon.lobVelocity * t - 0.5f * kGravity * t * t;
-        if (outArc)
-            outArc->push_back({ from.x + dir.x * ht, std::max(y, radius),
-                                from.z + dir.z * ht });
-        if (y <= radius) // came back down to the ground
-            return ht;
-
-        const Vector3 p(from.x + dir.x * ht, y, from.z + dir.z * ht);
-        for (const Collider& c : m_colliders)
-            if (std::abs(p.x - c.center.x) <= c.size.x * 0.5f + radius &&
-                std::abs(p.y - c.center.y) <= c.size.y * 0.5f + radius &&
-                std::abs(p.z - c.center.z) <= c.size.z * 0.5f + radius)
-                return ht;
-    }
-    return kMuzzleOffset + speed * weapon.projectileLife;
 }
 
 void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
@@ -946,235 +613,6 @@ void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
 float Game::Rand(float lo, float hi)
 {
     return std::uniform_real_distribution<float>(lo, hi)(m_rng);
-}
-
-void Game::ResolveObstacles(Vector3& pos) const
-{
-    const float limit = m_arenaHalf - kPlayerHalf;
-    pos.x = std::clamp(pos.x, -limit, limit);
-    pos.z = std::clamp(pos.z, -limit, limit);
-
-    // Keep soldiers out of solid objects: push out along the axis of least
-    // penetration. (Kinematic on purpose — movement should stay crisp, so
-    // soldiers don't live in the physics world yet.)
-    for (const Collider& c : m_colliders)
-    {
-        const float ex = c.size.x * 0.5f + kPlayerHalf;
-        const float ez = c.size.z * 0.5f + kPlayerHalf;
-        const float px = pos.x - c.center.x;
-        const float pz = pos.z - c.center.z;
-        if (std::abs(px) >= ex || std::abs(pz) >= ez)
-            continue;
-        const float pushX = (px > 0.0f) ? ex - px : -ex - px;
-        const float pushZ = (pz > 0.0f) ? ez - pz : -ez - pz;
-        if (std::abs(pushX) < std::abs(pushZ))
-            pos.x += pushX;
-        else
-            pos.z += pushZ;
-    }
-}
-
-void Game::SpawnAi(int team)
-{
-    // An AI soldier appears at its own team's spawn point, scattered a little
-    // so a squad arriving at once doesn't stack on one tile. A squadmate turns
-    // up where the player turns up and a hostile across the arena, because the
-    // spawn a soldier comes from is a fact about the side they're on.
-    Unit unit = {};
-    unit.cls = &kClassDefs[m_nextAiClass[team]];
-    m_nextAiClass[team] = (m_nextAiClass[team] + 1) % static_cast<int>(kClassCount);
-    unit.controller = Unit::Controller::Ai;
-    unit.team = team;
-    unit.pos = m_teamSpawns[team];
-    unit.pos.x += Rand(-2.0f, 2.0f);
-    unit.pos.z += Rand(-2.0f, 2.0f);
-    ResolveObstacles(unit.pos);
-    unit.aimDir = { -1.0f, 0.0f, 0.0f };
-    unit.hp = kMaxHealth;
-    unit.fireCooldown = 0.5f; // brief grace so spawns don't instantly fire
-    unit.ammo = unit.cls->primary.magazine;
-    unit.grenades = kGrenadesPerLife; // issued even if today's brains never throw one
-    unit.meleeCharges = kMelee.charges;
-    Brain::Wake(unit.mind, unit.pos, m_rng);
-    unit.walkPhase = Rand(0.0f, XM_2PI); // desync strides across the squad
-    m_units.push_back(unit);
-}
-
-void Game::SpawnLocal()
-{
-    Unit unit = {};
-    unit.cls = m_class;
-    unit.controller = Unit::Controller::Local;
-    unit.team = m_team;
-    unit.pos = m_teamSpawns[m_team];
-    unit.aimDir = Vector3::UnitX;
-    unit.hp = kMaxHealth;
-    unit.fireCooldown = kFireGrace; // so the click that got them here doesn't fire a shot
-    unit.ammo = unit.cls->primary.magazine;
-    unit.grenades = kGrenadesPerLife;
-    unit.meleeCharges = kMelee.charges;
-    m_units.push_back(unit);
-    // The eye arrives with the body: the camera cut and the first fog polygon
-    // both read from here, and neither should spend a frame looking at
-    // wherever the last life ended.
-    m_eyePos = unit.pos;
-}
-
-int Game::AiCount(int team) const
-{
-    return static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [team](const Unit& u) {
-        return u.controller == Unit::Controller::Ai && u.team == team && u.hp > 0.0f;
-    }));
-}
-
-void Game::FillRosters()
-{
-    SpawnLocal();
-    for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
-        for (int i = AiCount(team); i < AiQuota(team); ++i)
-            SpawnAi(team);
-}
-
-void Game::UpdateReinforcements(float dt)
-{
-    // Two passes and a sweep, the way the dead are collected: the spawn has to
-    // happen between deciding a slot is due and forgetting about it, and doing
-    // all three in one loop would mean adding to one list while erasing from
-    // another.
-    for (Reinforcement& slot : m_reinforcements)
-        slot.timer -= dt;
-
-    for (const Reinforcement& slot : m_reinforcements)
-    {
-        // Counted fresh each time, so two slots coming due on the same frame
-        // both get filled. The quota is checked rather than assumed because the
-        // roster is what says how many a side fields — the queue only says when
-        // — and a wait that outlived its slot should be dropped, not honored.
-        if (slot.timer <= 0.0f && AiCount(slot.team) < AiQuota(slot.team))
-            SpawnAi(slot.team);
-    }
-
-    std::erase_if(m_reinforcements, [](const Reinforcement& slot) { return slot.timer <= 0.0f; });
-}
-
-void Game::UpdateUnits(float dt)
-{
-    for (Unit& unit : m_units)
-    {
-        // The local soldier's hands are Update's business — input rather than
-        // Intent — so only the AI-driven bodies run here. The day the two
-        // halves share their cadence and reload ticking is the day input
-        // becomes a command the body consumes the way it consumes an Intent.
-        if (unit.controller != Unit::Controller::Ai)
-            continue;
-
-        unit.fireCooldown -= dt;
-
-        // NPCs reload on the same terms the player does, so the lull after a
-        // squad empties its magazines is a real opening rather than something
-        // only one side has to live with. They reload wherever they are —
-        // breaking off to do it under cover is a decision the AI isn't smart
-        // enough to make yet.
-        if (unit.reloadTimer > 0.0f)
-        {
-            unit.reloadTimer -= dt;
-            if (unit.reloadTimer <= 0.0f)
-            {
-                unit.reloadTimer = 0.0f;
-                unit.ammo = unit.cls->primary.magazine;
-                PlaySoundAt("reload", unit.pos, 0.25f);
-            }
-        }
-
-        // Who this soldier can see. Everyone hostile, at whatever range, with
-        // the same sight test the player's fog of war uses so nobody shoots
-        // through a wall the player can't see through either — and no further
-        // opinion than that. How close is close enough to fight is a matter of
-        // temperament, so it belongs to the brain; how far a soldier can pick
-        // anyone out at all is a fact about the world, so it's here. The local
-        // player is just one more hostile on the roster — and while they're
-        // dead they aren't on it, so nothing aims at where they were.
-        //
-        // It runs a sight test per candidate, which makes this quadratic in the
-        // number of soldiers on the field; at two squads of five that's a
-        // hundred segment tests a frame, which is cheaper than the bookkeeping
-        // to avoid it. The number to watch it against is kTeamSize, and it will
-        // want revisiting long before this arena holds a proper Infantry zone.
-        m_contacts.clear();
-        const Vector2 unitXZ = { unit.pos.x, unit.pos.z };
-        const auto sight = [&](const Vector3& pos) {
-            const float d = Vector2(pos.x - unit.pos.x, pos.z - unit.pos.z).Length();
-            if (d < 1e-3f || d > kNpcSightRange)
-                return;
-            if (Visibility::IsPointVisible(unitXZ, { pos.x, pos.z }, m_occluders))
-                m_contacts.push_back({ pos, d });
-        };
-        for (const Unit& other : m_units)
-            if (&other != &unit && other.hp > 0.0f && other.team != unit.team)
-                sight(other.pos);
-
-        const WeaponDef& weapon = unit.cls->primary;
-        const bool canFire =
-            unit.fireCooldown <= 0.0f && unit.reloadTimer <= 0.0f && unit.ammo > 0;
-        const Brain::Senses senses = { unit.pos, unit.aimDir, &m_contacts, m_arenaHalf, canFire };
-        const Brain::Intent intent =
-            Brain::Think(unit.cls->brain, unit.mind, senses, dt, m_rng);
-
-        // From here it's the body: everything a soldier does the same way
-        // whichever mind is driving it.
-        if (intent.facing.LengthSquared() > 1e-6f)
-            unit.aimDir = intent.facing;
-
-        if (intent.fire && canFire)
-        {
-            // A touch of angular spread keeps NPCs beatable up close and makes
-            // long-range sniper duels survivable. It stays out here rather than
-            // being a brain's to set: it's a fairness knob on the whole AI, not
-            // a personality — a brain that could tighten its own aim would be a
-            // brain that could decide how hard it is to play against.
-            const Vector3 dir = Vector3::Transform(
-                unit.aimDir, Matrix::CreateRotationY(Rand(-kNpcAimJitter, kNpcAimJitter)));
-            // NPCs "aim" at what they're shooting at rather than at max range,
-            // so a grenadier's lob comes down on them.
-            SpawnShot(weapon, unit.pos, dir, unit.team, intent.fireDist);
-            unit.fireCooldown = weapon.fireInterval;
-            if (--unit.ammo == 0)
-                BeginReload(unit);
-        }
-
-        // NPCs still move on the speed alone — the momentum rates are the
-        // player's, and giving the AI weight is a change to how it steers
-        // rather than one more field to read.
-        const float speed = unit.cls->move.speed * intent.speedScale;
-        const bool moving = intent.move.LengthSquared() > 1e-6f;
-        if (moving)
-            unit.walkPhase += speed * kStrideRate * dt;
-        unit.moveBlend =
-            std::clamp(unit.moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
-                       0.0f, 1.0f);
-
-        unit.pos += intent.move * (speed * dt);
-        ResolveObstacles(unit.pos);
-    }
-
-    // Pairwise separation so a group never collapses into a single column.
-    // Still an AI-only rule: the local player has never been shoved by their
-    // squad, and starting to would be a gameplay change, not a refactor.
-    for (size_t i = 0; i < m_units.size(); ++i)
-        for (size_t j = i + 1; j < m_units.size(); ++j)
-        {
-            if (m_units[i].controller != Unit::Controller::Ai ||
-                m_units[j].controller != Unit::Controller::Ai)
-                continue;
-            const Vector3 between = m_units[j].pos - m_units[i].pos;
-            const float len = between.Length();
-            const float minDist = kPlayerHalf * 2.0f;
-            if (len >= minDist || len < 1e-5f)
-                continue;
-            const Vector3 push = between * ((minDist - len) * 0.5f / len);
-            m_units[i].pos -= push;
-            m_units[j].pos += push;
-        }
 }
 
 void Game::SpawnImpactBurst(const Vector3& pos, float scale)
@@ -1256,7 +694,7 @@ void Game::SpawnBlood(const Vector3& pos, const Vector3& dir, float damage, bool
 void Game::SpawnSplat(const Vector3& pos)
 {
     // Drops that carry over the arena wall have nothing to land on.
-    if (std::abs(pos.x) > m_arenaHalf || std::abs(pos.z) > m_arenaHalf)
+    if (std::abs(pos.x) > m_world.ArenaHalf() || std::abs(pos.z) > m_world.ArenaHalf())
         return;
 
     if (m_splatVerts.size() >= kMaxSplats * kSplatVerts)
@@ -1286,66 +724,6 @@ void Game::SpawnSplat(const Vector3& pos)
     }
 }
 
-void Game::ApplyBlast(const Vector3& center, float radius, float damage, int team)
-{
-    // Linear falloff from full damage at the center to nothing at the rim,
-    // measured to the body's middle so a blast overhead still counts. A wall
-    // between the two eats it: same sight test the fog of war and NPC AI use,
-    // so what stops a bullet stops the shrapnel.
-    const auto splash = [&](const Vector3& target) {
-        if (!Visibility::IsPointVisible({ center.x, center.z }, { target.x, target.z },
-                                        m_occluders))
-            return 0.0f;
-        const float d = (target - center).Length();
-        return d >= radius ? 0.0f : damage * (1.0f - d / radius);
-    };
-
-    // Like direct hits, a blast only hurts the other side — every soldier on
-    // it, the local player on exactly the same terms as their squadmates: one
-    // loop over the roster, with no second copy for whoever this machine is
-    // driving.
-    for (Unit& unit : m_units)
-    {
-        if (unit.hp <= 0.0f || unit.team == team) // already killed this frame, or on the thrower's side
-            continue;
-        const float dmg = splash({ unit.pos.x, kPlayerHalf, unit.pos.z });
-        if (dmg <= 0.0f)
-            continue;
-        unit.hp -= dmg;
-        // Blown outward from the blast, as hard as the share of it they
-        // caught: a body at the rim topples, one on top of it is thrown.
-        unit.knock = CorpseKnock(unit.pos - center, kCorpseBlastKnock * (dmg / damage));
-        // Blood goes the same way the blast threw them, out of the middle.
-        SpawnBlood({ unit.pos.x, kPlayerHalf, unit.pos.z }, unit.pos - center, dmg,
-                   unit.hp <= 0.0f);
-        PlaySoundAt(unit.hp <= 0.0f ? "death" : "hit", unit.pos);
-        // The pad's share of being hit is the one thing that is about the
-        // player rather than the soldier.
-        if (unit.controller == Unit::Controller::Local)
-            m_rumbleTime = 0.25f;
-    }
-}
-
-void Game::Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit)
-{
-    if (shot.blastRadius > 0.0f)
-        ApplyBlast(pos, shot.blastRadius, shot.damage, shot.team);
-
-    if (shot.explodes)
-    {
-        SpawnExplosion(pos);
-        PlaySoundAt("explode", pos, Rand(-0.06f, 0.06f));
-    }
-    else
-    {
-        SpawnImpactBurst(pos, shot.radius);
-        // Unit hits already play their own hit/death sound; the thud is only
-        // for shots stopping in the ground or a wall.
-        if (!hitUnit)
-            PlaySoundAt("thud", pos, Rand(-0.15f, 0.15f));
-    }
-}
-
 void Game::UpdateParticles(float dt)
 {
     for (Particle& p : m_particles)
@@ -1370,128 +748,6 @@ void Game::UpdateParticles(float dt)
         }
     }
     std::erase_if(m_particles, [](const Particle& p) { return p.life <= 0.0f; });
-}
-
-void Game::UpdateProjectiles(float dt)
-{
-    for (auto& shot : m_projectiles)
-    {
-        shot.life -= dt;
-        const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
-        // Out of the arena: gone quietly, no impact and no detonation, even for
-        // a live fuse. Skips the rest so a fused shot doesn't blow up out there.
-        if (pos.x < -m_arenaHalf || pos.x > m_arenaHalf ||
-            pos.z < -m_arenaHalf || pos.z > m_arenaHalf)
-        {
-            shot.life = 0.0f;
-            shot.prevPos = pos;
-            continue;
-        }
-
-        bool detonated = false;
-
-        // An explosive's damage comes entirely from its blast, so a body shot
-        // only ends its flight: Detonate hands out the damage (and the
-        // hit/death sound) from the impact point, which spares the target no
-        // damage but stops a direct hit from being counted twice.
-        const bool blast = shot.blastRadius > 0.0f;
-        const XMFLOAT3 bodyHalf = { kPlayerHalf, kPlayerHalf, kPlayerHalf };
-        // Where the round was heading this tick — the direction a corpse it
-        // makes gets thrown. (An explosive's shove comes from ApplyBlast
-        // instead, radially out of the detonation.)
-        const Vector3 travel(pos.x - shot.prevPos.x, pos.y - shot.prevPos.y,
-                             pos.z - shot.prevPos.z);
-        // Everyone the round could stop in, in one sweep: whoever is on the
-        // other side from whoever fired it. This used to be a choice between
-        // the NPC roster and the player, which was the same thing only while
-        // every NPC was hostile — and a friendly standing in front of the
-        // player would have been shot straight through. On one roster the
-        // sweep can't help but get it right: a squadmate can take a round
-        // meant for the player, and a dead player simply isn't there to hit.
-        //
-        // The first body along the roster wins, not the first one along the
-        // segment. Two soldiers overlapping in the path of one round is rare
-        // enough, and close enough, that sorting them would be arithmetic
-        // nobody could see the result of.
-        for (Unit& unit : m_units)
-        {
-            if (shot.life <= 0.0f || unit.hp <= 0.0f || unit.team == shot.team)
-                continue;
-            const XMFLOAT3 center = { unit.pos.x, kPlayerHalf, unit.pos.z };
-            if (!SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
-                continue;
-            if (!blast)
-            {
-                unit.hp -= shot.damage;
-                unit.knock = CorpseKnock(travel, kCorpseKnock);
-                // Sprayed from where the round went in, carrying on the way it
-                // was going.
-                SpawnBlood(pos, travel, shot.damage, unit.hp <= 0.0f);
-                PlaySoundAt(unit.hp <= 0.0f ? "death" : "hit", unit.pos);
-                if (unit.controller == Unit::Controller::Local)
-                    m_rumbleTime = 0.25f;
-            }
-            shot.life = 0.0f;
-            Detonate(shot, pos, true);
-            detonated = true;
-        }
-
-        // Most projectiles stop where they land: first touch of world geometry
-        // (walls, floor) removes them. Checked after the unit sweeps so a shot
-        // that clips a target on its impact tick still deals its damage.
-        // A fused grenade instead rides the bounce out — Jolt has already
-        // deflected it — and only a knock hard enough to hear gets a sound: it
-        // reports contact every frame once it settles into a roll.
-        if (shot.life > 0.0f && m_physics.HadContact(shot.body))
-        {
-            if (shot.fused)
-            {
-                const Vector3 travel(pos.x - shot.prevPos.x, pos.y - shot.prevPos.y,
-                                     pos.z - shot.prevPos.z);
-                if (travel.Length() > kBounceSoundSpeed * dt)
-                    PlaySoundAt("thud", pos, Rand(0.35f, 0.55f));
-            }
-            else
-            {
-                shot.life = 0.0f;
-                Detonate(shot, pos, false);
-                detonated = true;
-            }
-        }
-
-        // Fuse ran out: for a grenade that's the whole point, so it goes off
-        // wherever it has bounced to rather than being quietly collected.
-        if (shot.life <= 0.0f && shot.fused && !detonated)
-            Detonate(shot, pos, false);
-
-        shot.prevPos = pos;
-    }
-
-    for (const Projectile& shot : m_projectiles)
-        if (shot.life <= 0.0f)
-            m_physics.RemoveBody(shot.body);
-    std::erase_if(m_projectiles, [](const Projectile& s) { return s.life <= 0.0f; });
-}
-
-// The dead leave a ragdoll standing exactly where they fell before they come
-// off the roster. This is deliberately nobody's private business: rounds,
-// blasts and the blade all just take health off, and whoever emptied it is
-// swept up here at the end of the frame rather than by the system that did it.
-void Game::ReapDead()
-{
-    for (const Unit& unit : m_units)
-        if (unit.hp <= 0.0f)
-        {
-            SpawnCorpse(unit.pos, unit.aimDir, unit.walkPhase, unit.moveBlend,
-                        TeamColor(unit.team), unit.cls->color, unit.knock);
-            // The soldier is gone, but the slot they held isn't. An AI slot is
-            // owed back to its side on the respawn clock; the local player's
-            // return is the phase machine's business (see Update), which is
-            // what keeps one death from being paid back twice.
-            if (unit.controller == Unit::Controller::Ai)
-                m_reinforcements.push_back({ unit.team, kRespawnDelay });
-        }
-    std::erase_if(m_units, [](const Unit& u) { return u.hp <= 0.0f; });
 }
 
 void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
@@ -1525,8 +781,8 @@ void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhas
         // on top: a corpse that only translated would fall like a statue.
         const XMFLOAT3 spin = { Rand(-kCorpseSpin, kCorpseSpin), Rand(-kCorpseSpin, kCorpseSpin),
                                 Rand(-kCorpseSpin, kCorpseSpin) };
-        corpse.parts[i] = m_physics.SpawnDebrisBox(center, Soldier::kBodies[i].size, rot, knock,
-                                                   spin, Soldier::kBodies[i].mass);
+        corpse.parts[i] = m_world.Phys().SpawnDebrisBox(center, Soldier::kBodies[i].size, rot,
+                                                        knock, spin, Soldier::kBodies[i].mass);
     }
 
     // Joints are anchored in the parent segment's frame and centered on the
@@ -1537,8 +793,8 @@ void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhas
         XMStoreFloat3(&anchor,
                       XMVector3Transform(XMLoadFloat3(&joint.anchor), world[joint.parent]));
         XMStoreFloat3(&boneAxis, XMVector3Normalize(world[joint.child].r[1]));
-        m_physics.AddConeJoint(corpse.parts[joint.parent], corpse.parts[joint.child], anchor,
-                               boneAxis, joint.coneAngle, joint.twistAngle);
+        m_world.Phys().AddConeJoint(corpse.parts[joint.parent], corpse.parts[joint.child], anchor,
+                                    boneAxis, joint.coneAngle, joint.twistAngle);
     }
 
     m_corpses.push_back(corpse);
@@ -1559,7 +815,7 @@ void Game::RemoveCorpse(size_t index)
     // Removing a part takes its joints with it, so the ragdoll comes apart in
     // whatever order the segments happen to be in.
     for (Physics::BodyHandle part : m_corpses[index].parts)
-        m_physics.RemoveBody(part);
+        m_world.Phys().RemoveBody(part);
     m_corpses.erase(m_corpses.begin() + index);
 }
 
@@ -1572,11 +828,11 @@ void Game::AppendFog(std::vector<Vertex>& out) const
 {
     const Vector2 viewer = { m_eyePos.x, m_eyePos.z };
     const std::vector<XMFLOAT2> poly =
-        Visibility::ComputePolygon(viewer, m_occluders, m_arenaHalf);
+        Visibility::ComputePolygon(viewer, m_world.Occluders(), m_world.ArenaHalf());
     if (poly.size() < 2)
         return;
 
-    const float farDist = m_arenaHalf * kFogFar;
+    const float farDist = m_world.ArenaHalf() * kFogFar;
     const auto extrude = [&](const Vector2& v) -> Vector2 {
         const Vector2 d = v - viewer;
         const float len = d.Length();
@@ -1635,14 +891,14 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
 
-    for (const Collider& c : m_colliders)
+    for (const World::Collider& c : m_world.Colliders())
         if (c.debugDraw)
             renderer.DrawShape(Shape::Box,
                                XMMatrixScaling(c.size.x, c.size.y, c.size.z) *
                                    XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
                                kObstacleColor);
 
-    // The soldiers, off the one roster. Anyone the player can't see stays
+    // The soldiers, off the World's roster. Anyone the player can't see stays
     // hidden — an enemy behind a wall disappears until it re-emerges. The
     // local unit skips both tests: the camera follows them, so they're always
     // on screen, and they are the eye the fog is drawn for. While the player
@@ -1650,20 +906,36 @@ void Game::Render(Renderer& renderer)
     // their corpse, and the view stays on it.
     m_scratch.clear();
     const XMFLOAT2 eye = { m_eyePos.x, m_eyePos.z };
-    for (const Unit& unit : m_units)
+    // The moment between two ticks that this frame is a picture of. Every
+    // soldier is drawn at the blend of where the last tick left them and
+    // where this one put them; a display running faster than the simulation
+    // sees motion, not the simulation's sixty stills a second.
+    const float alpha = m_renderAlpha;
+    const auto blendDir = [alpha](const Vector3& prev, const Vector3& cur) {
+        Vector3 dir = Vector3::Lerp(prev, cur, alpha);
+        if (dir.LengthSquared() > 1e-8f)
+            dir.Normalize();
+        else
+            dir = cur; // a half-turn's midpoint has no direction; take the newer one
+        return dir;
+    };
+    for (const Unit& unit : m_world.Units())
     {
+        const Vector3 pos = Vector3::Lerp(unit.prevPos, unit.pos, alpha);
         if (unit.controller != Unit::Controller::Local)
         {
             // Cheapest rejection first: the arena is far wider than the view,
             // so most of a large squad is usually off screen entirely.
-            if (!renderer.IsSphereVisible({ unit.pos.x, kSoldierBoundsY, unit.pos.z },
+            if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
                                           kSoldierBoundsRadius))
                 continue;
-            if (!Visibility::IsPointVisible(eye, { unit.pos.x, unit.pos.z }, m_occluders))
+            if (!Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
                 continue;
         }
-        DrawSoldier(renderer, unit.pos, unit.aimDir, unit.walkPhase, unit.moveBlend, unit.team,
-                    unit.cls->color);
+        DrawSoldier(renderer, pos, blendDir(unit.prevAimDir, unit.aimDir),
+                    unit.prevWalkPhase + (unit.walkPhase - unit.prevWalkPhase) * alpha,
+                    unit.prevMoveBlend + (unit.moveBlend - unit.prevMoveBlend) * alpha,
+                    unit.team, unit.cls->color);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
     // with every segment placed by the physics body it was built from. Same
@@ -1671,10 +943,11 @@ void Game::Render(Renderer& renderer)
     // ragdoll's business, so there's no single position to key off otherwise.
     for (const Corpse& corpse : m_corpses)
     {
-        const Physics::Transform pelvis = m_physics.GetTransform(corpse.parts[Soldier::Pelvis]);
+        const Physics::Transform pelvis =
+            m_world.Phys().GetTransform(corpse.parts[Soldier::Pelvis]);
         if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
             continue;
-        if (!Visibility::IsPointVisible(eye, { pelvis.pos.x, pelvis.pos.z }, m_occluders))
+        if (!Visibility::IsPointVisible(eye, { pelvis.pos.x, pelvis.pos.z }, m_world.Occluders()))
             continue;
 
         // Sinking is a drawing trick, not a physical one: the bodies stay put
@@ -1686,17 +959,17 @@ void Game::Render(Renderer& renderer)
         XMMATRIX world[Soldier::SegmentCount];
         for (int i = 0; i < Soldier::SegmentCount; ++i)
         {
-            const Physics::Transform t = m_physics.GetTransform(corpse.parts[i]);
+            const Physics::Transform t = m_world.Phys().GetTransform(corpse.parts[i]);
             world[i] = XMMatrixRotationQuaternion(XMLoadFloat4(&t.rot)) *
                        XMMatrixTranslation(t.pos.x, t.pos.y - sink, t.pos.z);
         }
         Soldier::Draw(renderer, world, corpse.teamColor, corpse.classColor);
     }
 
-    for (const Projectile& shot : m_projectiles)
+    for (const World::Projectile& shot : m_world.Projectiles())
     {
-        const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
-        if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_occluders))
+        const XMFLOAT3 pos = m_world.Phys().GetPosition(shot.body);
+        if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
         {
             // Per-shot radius, not the class's: a thrown grenade is a fatter
             // projectile than most primaries fire.
@@ -1712,7 +985,7 @@ void Game::Render(Renderer& renderer)
     // projectiles: a burst behind a wall stays hidden.
     for (const Particle& p : m_particles)
     {
-        if (!Visibility::IsPointVisible(eye, { p.pos.x, p.pos.z }, m_occluders))
+        if (!Visibility::IsPointVisible(eye, { p.pos.x, p.pos.z }, m_world.Occluders()))
             continue;
         const float s = p.size * (p.life / p.maxLife);
         AppendCube(m_scratch, p.pos, { s, s, s }, p.color);
@@ -1744,15 +1017,15 @@ void Game::Render(Renderer& renderer)
 
     // What the player's ability lets them see that nobody else does — for the
     // medic, squadmate health over the heads of the wounded. Which soldiers are
-    // in that list is settled by AbilityScene, so a mark can never be the thing
-    // that tells a medic where somebody is standing: it draws over the ones
-    // they can already see and nobody else. What it draws is the ability's own
-    // business, and no kind of it is named here.
+    // in that list is settled by the World's AbilityScene, so a mark can never
+    // be the thing that tells a medic where somebody is standing: it draws over
+    // the ones they can already see and nobody else. What it draws is the
+    // ability's own business, and no kind of it is named here.
     if (m_phase == Phase::Playing)
     {
-        Unit& u = *LocalUnit();
+        Unit& u = *m_world.Local();
         m_scratch.clear();
-        Ability::AppendVision(u.cls->ability, AbilityScene(u), m_screenRight, m_scratch);
+        Ability::AppendVision(u.cls->ability, m_world.AbilityScene(u), m_screenRight, m_scratch);
         renderer.DrawTrianglesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
                                     identity);
     }
@@ -1768,12 +1041,17 @@ void Game::Render(Renderer& renderer)
     // worth showing, but not as something the player can act on yet.
     if (m_phase == Phase::Playing)
     {
-        Unit& u = *LocalUnit();
+        Unit& u = *m_world.Local();
+        // The indicators hang off the soldier as drawn, so the aim line grows
+        // out of the muzzle on screen rather than out of where the simulation
+        // has quietly moved it.
+        const Vector3 lpos = Vector3::Lerp(u.prevPos, u.pos, alpha);
+        const Vector3 laim = blendDir(u.prevAimDir, u.aimDir);
         const bool reloading = u.reloadTimer > 0.0f;
         const XMFLOAT4 aimColor = reloading ? kAimSpentColor : kAimColor;
         const XMFLOAT4 aimDim = reloading ? kAimSpentDimColor : kAimDimColor;
 
-        PredictShotStop(u.cls->primary, u.pos, u.aimDir, m_aimDist, &m_aimArc);
+        m_world.PredictShotStop(u.cls->primary, lpos, laim, m_aimDist, &m_aimArc);
 
         m_scratch.clear();
         for (size_t i = 1; i < m_aimArc.size(); ++i)
@@ -1785,7 +1063,7 @@ void Game::Render(Renderer& renderer)
         // End-of-flight tick, perpendicular to the aim direction, at the
         // height of the impact (on a wall it floats at the hit point).
         const Vector3 end = m_aimArc.back();
-        const float px = -u.aimDir.z * 0.45f, pz = u.aimDir.x * 0.45f;
+        const float px = -laim.z * 0.45f, pz = laim.x * 0.45f;
         m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, aimColor });
         m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, aimColor });
 
@@ -1801,9 +1079,9 @@ void Game::Render(Renderer& renderer)
         // which is the in-world half of the HUD's count.
         if (u.grenades > 0)
         {
-            const float dist = PredictShotStop(kGrenade, u.pos, u.aimDir, m_aimDist);
-            const Vector3 land(u.pos.x + u.aimDir.x * dist, kAimRingHeight,
-                               u.pos.z + u.aimDir.z * dist);
+            const float dist = m_world.PredictShotStop(kGrenade, lpos, laim, m_aimDist);
+            const Vector3 land(lpos.x + laim.x * dist, kAimRingHeight,
+                               lpos.z + laim.z * dist);
             AppendCircle(m_scratch, land, kGrenadeMarkRadius, kGrenadeAimColor);
         }
 
@@ -1816,7 +1094,7 @@ void Game::Render(Renderer& renderer)
             const XMFLOAT4 color = { kMeleeArcColor.x, kMeleeArcColor.y, kMeleeArcColor.z,
                                      kMeleeArcColor.w * (m_meleeFlash / kMeleeFlashTime) };
             const float heading = std::atan2(m_meleeSwingDir.z, m_meleeSwingDir.x);
-            const Vector3 center(u.pos.x, kAimRingHeight, u.pos.z);
+            const Vector3 center(lpos.x, kAimRingHeight, lpos.z);
             AppendArc(m_scratch, center, kMelee.reach, heading - kMelee.arc, kMelee.arc * 2.0f, 12,
                       color);
         }
@@ -1826,7 +1104,7 @@ void Game::Render(Renderer& renderer)
         // same kind of thing as the aim line and the swing arc — a mark on the
         // world about what this soldier is doing — but what those marks are is
         // the ability's own business.
-        Ability::AppendIndicator(u.cls->ability, u.ability, u.pos, m_scratch);
+        Ability::AppendIndicator(u.cls->ability, u.ability, lpos, m_scratch);
 
         // Friend or foe, for everyone but the player: a ring under the soldiers
         // on their own side. Same visibility rule the bodies themselves get —
@@ -1834,17 +1112,18 @@ void Game::Render(Renderer& renderer)
         // is a different feature and one the fog of war exists to deny.
         const XMFLOAT4& teamTint = TeamColor(m_team);
         const XMFLOAT4 ringColor = { teamTint.x, teamTint.y, teamTint.z, kFriendlyRingAlpha };
-        for (const Unit& other : m_units)
+        for (const Unit& other : m_world.Units())
         {
             if (other.team != m_team || other.controller == Unit::Controller::Local)
                 continue;
-            if (!renderer.IsSphereVisible({ other.pos.x, kSoldierBoundsY, other.pos.z },
+            const Vector3 pos = Vector3::Lerp(other.prevPos, other.pos, alpha);
+            if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
                                           kSoldierBoundsRadius))
                 continue;
-            if (!Visibility::IsPointVisible(eye, { other.pos.x, other.pos.z }, m_occluders))
+            if (!Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
                 continue;
-            AppendCircle(m_scratch, { other.pos.x, kAimRingHeight, other.pos.z },
-                         kFriendlyRingRadius, ringColor);
+            AppendCircle(m_scratch, { pos.x, kAimRingHeight, pos.z }, kFriendlyRingRadius,
+                         ringColor);
         }
 
         renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
@@ -1870,9 +1149,9 @@ void Game::RenderHud(Renderer& renderer)
     // While the player is dead there's no unit to read a loadout off, and the
     // zeros say so honestly: the cluster is faded (alive, below) and a dead
     // soldier is holding nothing anyway.
-    const Unit* u = LocalUnit();
+    const Unit* u = m_world.Local();
     Hud::State hud = {};
-    hud.maxHp = kMaxHealth;
+    hud.maxHp = World::kMaxHealth;
     hud.magazine = m_class->primary.magazine;
     hud.meleeCharges = kMelee.charges;
     hud.reloadFraction = -1.0f;
@@ -1914,15 +1193,16 @@ void Game::RenderHud(Renderer& renderer)
     // is one of the soldiers on their own side, which is what makes the two
     // rows comparable: five against five reads as five against five, and a
     // side is short exactly when somebody on it is waiting to come back.
+    const std::vector<Unit>& units = m_world.Units();
     hud.allies =
-        static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [this](const Unit& n) {
+        static_cast<int>(std::count_if(units.begin(), units.end(), [this](const Unit& n) {
             return n.team == m_team && n.hp > 0.0f;
         }));
     hud.enemies =
-        static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [this](const Unit& n) {
+        static_cast<int>(std::count_if(units.begin(), units.end(), [this](const Unit& n) {
             return n.team != m_team && n.hp > 0.0f;
         }));
-    hud.teamSize = kTeamSize;
+    hud.teamSize = World::kTeamSize;
     // The same two colors the soldiers are wearing, so the corner and the field
     // agree. With two sides the enemy is simply the other one; a third team
     // would need this to be something better than "not mine", but it would need

@@ -11,7 +11,8 @@ Prototype scaffold with a working game loop:
 - Fixed-angle isometric camera (orthographic, smoothed follow, mouse-wheel zoom)
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
-- Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is the shape a server would keep, and the local player is simply the one slot this machine is playing
+- Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is one list of units, and who drives each (a brain, this machine's input) is a fact about the soldier rather than a difference in kind
+- The simulation is severed from the machine it's watched on: a `World` that steps on a fixed 60 Hz tick, hears input only as a `Command` (the sentence a socket would carry), and reports what happened as events for the presentation to spend on blood, sound, and ragdolls. The renderer draws the blend between ticks, so a fast display sees motion rather than sixty stills. `infantry_server.exe` is the proof: the same match, AI in every slot, running headless in a console with no D3D on its link line — the seam multiplayer will arrive through
 - A soldier turns rather than pivots: the facing chases the cursor at a fixed rate instead of snapping to it, so getting behind someone is worth the trip. Holding steady drops both the walk and the turn to a fraction of normal — the gun sits where it's put, at the price of being able to leave
 - Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
 - One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
@@ -46,6 +47,13 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 ```powershell
 .\etc\run.ps1              # build (Debug) and launch
 .\etc\build.ps1 -Config Release
+```
+
+The dedicated server builds alongside the game:
+
+```powershell
+.\build\Debug\infantry_server.exe     # run until stopped
+.\build\Debug\infantry_server.exe 60  # run a 60-second AI match and report
 ```
 
 CMake generates a Visual Studio solution in `build/` — open `build\infantry.sln` to work in the IDE.

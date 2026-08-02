@@ -24,9 +24,7 @@
 #include <vector>
 
 #include "Model.h"
-
-// Dynamic debug/gameplay geometry vertex (position + color).
-using Vertex = DirectX::VertexPositionColor;
+#include "Vertex.h"
 
 // Unit-sized lit primitives drawn via Renderer::DrawShape; size and place
 // them with the world matrix.
