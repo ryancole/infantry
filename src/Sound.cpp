@@ -90,11 +90,28 @@ void Sound::Shutdown()
 void Sound::Update()
 {
     if (m_engine && !m_engine->Update() && m_engine->IsCriticalError())
+    {
         m_engine->Reset(); // device unplugged/changed: rebind to the new default
+        // A new mastering voice starts at full volume, so a mute has to be put
+        // back on it — otherwise unplugging headphones is a way to make a
+        // backgrounded game start shouting.
+        m_engine->SetMasterVolume(m_muted ? 0.0f : 1.0f);
+    }
 
     std::erase_if(m_active, [](const auto& inst) {
         return inst->GetState() == SoundState::STOPPED;
     });
+}
+
+void Sound::SetMuted(bool muted)
+{
+    if (muted == m_muted)
+        return;
+    m_muted = muted;
+    // Held even without an engine, so a mute decided during a silent-mode
+    // startup still stands if the engine ever comes back.
+    if (m_engine)
+        m_engine->SetMasterVolume(muted ? 0.0f : 1.0f);
 }
 
 // Keeps the wind voice fed: cascaded low-pass filtered white noise with a

@@ -89,6 +89,7 @@ add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
     src/AbilityDraw.cpp
+    src/AudioMenu.cpp
     src/BindMenu.cpp
     src/Bindings.cpp
     src/Camera.cpp
@@ -99,6 +100,8 @@ add_executable(infantry WIN32
     src/MainMenu.cpp
     src/Model.cpp
     src/NetClient.cpp
+    src/OptionsMenu.cpp
+    src/Settings.cpp
     src/Soldier.cpp
     src/Sound.cpp
     ${SIM_SOURCES}

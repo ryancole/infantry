@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioMenu.h"
 #include "BindMenu.h"
 #include "Bindings.h"
 #include "Camera.h"
@@ -11,9 +12,11 @@
 #include "JoinMenu.h"
 #include "MainMenu.h"
 #include "NetClient.h"
+#include "OptionsMenu.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
 #include "Server.h"
+#include "Settings.h"
 #include "Soldier.h"
 #include "Sound.h"
 #include "Team.h"
@@ -63,6 +66,14 @@ public:
     void Update(float dt, const Input& input, IsoCamera& camera);
     void Render(Renderer& renderer);
 
+    // Whether the game's window is the one the player is working in. The
+    // platform layer knows this and this class doesn't — there's no window
+    // handle on this side of the seam — so it's pushed in rather than polled,
+    // off the same activation message the input devices already reset on.
+    // What it costs is one setting's worth: with background audio off, a game
+    // nobody is looking at is a game nobody has to hear.
+    void SetWindowFocused(bool focused) { m_windowFocused = focused; }
+
     // Whether the player has asked, from the menu, to be done. The game has no
     // way to close a window and no business learning one, so it says so and the
     // platform layer does it on the next turn of the loop.
@@ -92,8 +103,10 @@ private:
     enum class Phase
     {
         MainMenu,
-        Join, // the server browser: the LAN scan runs while this is up
+        Join,    // the server browser: the LAN scan runs while this is up
+        Options, // the settings screens' landing, and the way back to them
         KeyBinds,
+        Audio,
         ClassSelect,
         Connecting,
         Playing,
@@ -287,11 +300,21 @@ private:
     // walking out, so the socket and the once-a-second shout exist only
     // while somebody is actually looking at the list.
     Discovery::Scan m_scan;
+    OptionsMenu m_optionsMenu;
     BindMenu m_bindMenu;
+    AudioMenu m_audioMenu;
     ClassSelect m_classSelect;
     // The player's layout, read off disk at startup and written back whenever
     // they leave the settings screen. Defaults stand if there's no file yet.
     Bindings m_binds;
+    // Everything else they've set, on the same terms as the bindings: read once
+    // at startup, written on the way out of the screen that changed it.
+    Settings m_settings;
+    // Whether this machine's window is the one in front. Told to us rather than
+    // asked for, because the window belongs to the platform layer — see
+    // SetWindowFocused. Only the ear reads it, and only when the player has
+    // asked for a game that goes quiet behind their back.
+    bool m_windowFocused = true;
     bool m_quit = false; // see QuitRequested
     // The HUD's key caps, rebuilt each frame from the bindings above. They're
     // strings rather than the letters the HUD used to hold because a cap can now
