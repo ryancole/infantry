@@ -115,6 +115,12 @@ void NetClient::SendState(const std::vector<uint8_t>& bytes)
                    enet_packet_create(bytes.data(), bytes.size(), 0));
 }
 
+void NetClient::Flush()
+{
+    if (m_impl->host)
+        enet_host_flush(m_impl->host);
+}
+
 void NetClient::Disconnect()
 {
     if (m_impl->peer && m_status == Status::Connected)

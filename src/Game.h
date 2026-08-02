@@ -13,6 +13,7 @@
 #include "NetClient.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
+#include "Server.h"
 #include "Soldier.h"
 #include "Sound.h"
 #include "Team.h"
@@ -30,21 +31,29 @@
 #include <vector>
 
 // The machine the player is sitting at. Everything that decides a match lives
-// in World; what's left here is everything that only exists because somebody
-// is watching — the menus, the camera, the HUD, the fog, the blood, the
-// corpses, the sound — and the two seams between them. Going down, input
-// becomes a Command and the Command is all the simulation hears. Coming back
-// up, the simulation says what happened as Events, and this class decides
-// what each one looks and sounds like. A dedicated server keeps a World and
-// none of this; a spectator client would keep all of this and drive nobody.
+// behind the wire, in a Server's World; what's left here is everything that
+// only exists because somebody is watching — the menus, the camera, the HUD,
+// the fog, the blood, the corpses, the sound — and the two seams between
+// them. Going down, input becomes a Command and the Command is all the
+// simulation hears. Coming back up, the server says what happened as Events,
+// and this class decides what each one looks and sounds like.
+//
+// There is exactly one way to be in a match: connected to a server. Playing
+// on your own doesn't take a second path through any of this — it starts a
+// Server in this process, bound to loopback where nobody else can reach it,
+// and joins that. So the fog a lone player fights in is server-enforced, the
+// soldier under their keys is predicted and reconciled, and the code that
+// runs a match has one reader, one set of bugs, and one place to fix them.
+// The cost is honest and small: a locally hosted match answers the trigger
+// on the server's next tick rather than instantly.
 class Game
 {
 public:
-    // Points the game at a server instead of its own simulation; call before
-    // LoadContent. `autoClass` may name a class ("marine") to skip the menus
-    // and join on launch — a dev convenience that makes "second machine into
-    // the fight" one command line. Empty strings mean solo play, exactly as
-    // before this function existed.
+    // Points the game at somebody else's server; call before LoadContent.
+    // `autoClass` may name a class ("marine") to skip the menus and take the
+    // field on launch — a dev convenience that makes "second machine into the
+    // fight" one command line, and with an empty host makes "into a match on
+    // this machine" the same. Both empty is the ordinary launch: the menu.
     void SetMultiplayer(std::string host, std::string autoClass);
 
     // Loads the level (assets/levels/) and GPU assets; call once after
@@ -75,9 +84,11 @@ private:
     // as. From there they must pick a class before they spawn, and the arena
     // only starts simulating once that choice is made. Dying drops back out of
     // Playing for the respawn wait: the arena keeps running, the player just
-    // isn't in it. Connecting sits between the class pick and Playing when
-    // the arena is somebody else's: the class is chosen, the join is in
-    // flight, and there's nothing to draw until the server says who you are.
+    // isn't in it. Connecting sits between the class pick and Playing: the
+    // class is chosen, the join is in flight, and there's nothing to draw
+    // until the server says who you are. Every match passes through it, since
+    // every match is a server's — the one hosted on this machine just answers
+    // in a frame or two rather than a round trip.
     enum class Phase
     {
         MainMenu,
@@ -150,17 +161,31 @@ private:
     // forgets them. In connected play the events arrived over the wire
     // instead of from a local Tick, and nothing in here can tell.
     void ProcessEvents();
-    // Connected play's inbox: pumps the socket and applies what came —
-    // snapshots into the replica World, events into the queue, Welcome and
-    // Respawned into who-am-I and the phase. The camera comes along for the
-    // cut a (re)spawn makes.
+    // Starts a match on this machine and points the client at it: a Server
+    // bound to loopback on whatever port is free, so it can't be found or
+    // joined from off the box, and no firewall has an opinion about it. A
+    // server that won't start isn't handled specially — the connection that
+    // follows fails the way any connection to nobody fails, and lands back on
+    // the menu, which is one failure path instead of two.
+    void HostMatch();
+    // Points the client at a server and starts the handshake. Everything
+    // after this is the same whether the far end is across the room or inside
+    // this process.
+    void Connect(const std::string& host, uint16_t port);
+    // The session's inbox, and — when the match is this machine's — the
+    // server's turn of the frame first, so a command made moments ago is
+    // consumed and answered before this function returns. Pumps the socket
+    // and applies what came: snapshots into the replica World, events into
+    // the queue, Welcome and Respawned into who-am-I and the phase. The
+    // camera comes along for the cut a (re)spawn makes.
     void NetPump(float dt, IsoCamera& camera);
-    // Ends a connected session and lands back on the main menu, whoever ended
-    // it — the player leaving, the server dying, or the door being closed at
-    // the join. The replica empties (World::Reset), the corpses and weather
-    // this client conjured from its events go with it, and the menus work
-    // exactly as if the game had just launched: Deploy starts a solo match on
-    // the same ground.
+    // Ends the session and lands back on the main menu, whoever ended it —
+    // the player leaving, the server dying, or the door being closed at the
+    // join. The replica empties (World::Reset), the corpses and weather this
+    // client conjured from its events go with it, and a match this machine
+    // was hosting is shut down with it, since the only person in it was the
+    // one who just left. The menus work exactly as if the game had just
+    // launched.
     void LeaveMatch();
     // Reconciliation: the server's own-block just landed, naming the newest
     // command it consumed. Everything up to it is history and retired;
@@ -170,15 +195,6 @@ private:
     // where the old prediction stood and the correction is invisible, which
     // is the normal case and the whole design.
     void Repredict(uint32_t ackSeq);
-    // Puts the player back on the field via the World and returns to
-    // Phase::Playing; the camera cuts rather than sweeps across.
-    void Respawn(IsoCamera& camera);
-    // The result has stood long enough: a fresh match on the same ground,
-    // with the clock and both scores back at the start. Solo only — in
-    // connected play the server decides when the next match begins, and this
-    // client hears about it as a Respawned and a snapshot whose match is no
-    // longer over.
-    void StartNextMatch(IsoCamera& camera);
     // Sweeps everything this client conjured out of a match's events: the
     // corpses (whose bodies go back to the physics world), the weather in the
     // air, the blood on the floor. What a match left behind belongs to that
@@ -212,19 +228,24 @@ private:
     void AppendFog(std::vector<Vertex>& out) const;
     void RenderHud(Renderer& renderer);
 
-    // The whole match, behind its seam. In solo play this is the match; in
-    // connected play it's a replica the server's snapshots keep dressed, and
-    // it is never Ticked. Everything this class knows about the fight it
-    // learns by looking in (const accessors, for drawing and the HUD) or by
-    // the events that arrive — from Tick or from the wire, same shape.
+    // The whole match, behind its seam — always a replica the server's
+    // snapshots keep dressed, and never Ticked here whoever is hosting.
+    // Everything this class knows about the fight it learns by looking in
+    // (const accessors, for drawing and the HUD) or by the events that
+    // arrive off the wire.
     World m_world;
-    // Events the ticks of the current frame produced, spent by ProcessEvents.
+    // Events the wire delivered this frame, spent by ProcessEvents.
     std::vector<Event> m_events;
 
-    // The wire, when there is one. Null is solo play, and every branch on it
-    // reads as "who runs the simulation" — this machine, or the far end.
+    // The wire. Null between matches — on the menus — and never null while
+    // there's an arena on screen.
     std::unique_ptr<NetClient> m_net;
-    std::string m_connectHost; // where SetMultiplayer pointed us
+    // The match this machine is hosting, when it's hosting one: a whole
+    // server, ticked from this game's frame and talking to the client above
+    // through a socket that never leaves the box. Null when the match is
+    // somebody else's, which is the only difference joining one makes.
+    std::unique_ptr<Server> m_server;
+    std::string m_connectHost; // where the client is pointed
     std::string m_autoClass;   // class to auto-join as, or empty for the menus
     int m_myUnitId = -1;       // the wire's name for our soldier; -1 while dead or unjoined
     bool m_joinSent = false;
@@ -316,10 +337,12 @@ private:
     // already been paid for.
     std::vector<Hud::ScoreRow> m_scoreRows;
 
-    // The seam between render time and simulation time. Frames deposit their
-    // dt in the accumulator and the simulation spends it in whole ticks;
-    // whatever's left over is how far the current moment sits between the last
-    // tick and the next, which is the fraction the renderer blends by.
+    // The seam between render time and the tick. Frames deposit their dt in
+    // the accumulator and the command clock spends it in whole ticks — one
+    // numbered command per tick, which is the cadence the server consumes
+    // them at. m_renderAlpha is the wire's version: how far the drawn frame
+    // sits past the snapshot being held, which is the fraction the renderer
+    // blends everyone but the local soldier by.
     float m_tickAccum = 0.0f;
     float m_renderAlpha = 0.0f;
     // The command the next tick will consume. Held controls are overwritten

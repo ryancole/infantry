@@ -64,18 +64,24 @@ FetchContent_Declare(enet
 
 FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json tomlplusplus enet)
 
-# The simulation, compiled once and linked into both executables below. What
-# earns a file a place here is that a headless server needs it: the World and
-# everything the World calls. Nothing in this list may touch the renderer,
-# the sound device, or a window — the server target existing is what enforces
-# that, so a rendering include creeping in fails a build instead of a code
-# review.
+# The simulation and the host around it, compiled once and linked into both
+# executables below. What earns a file a place here is that a headless server
+# needs it: the World, everything the World calls, and the Server that runs a
+# match over a socket. Nothing in this list may touch the renderer, the sound
+# device, or a window — the server target existing is what enforces that, so a
+# rendering include creeping in fails a build instead of a code review.
+#
+# The client links all of it too, and not as a leftover: playing on your own
+# starts one of these Servers in-process and joins it over loopback, so there
+# is one implementation of "a match" and both binaries are running it.
 set(SIM_SOURCES
     src/World.cpp
     src/Ability.cpp
     src/Brain.cpp
+    src/Discovery.cpp
     src/Level.cpp
     src/Physics.cpp
+    src/Server.cpp
     src/Visibility.cpp
 )
 
@@ -89,7 +95,6 @@ add_executable(infantry WIN32
     src/ClassSelect.cpp
     src/Game.cpp
     src/Hud.cpp
-    src/Discovery.cpp
     src/JoinMenu.cpp
     src/MainMenu.cpp
     src/Model.cpp
@@ -130,15 +135,14 @@ add_custom_command(TARGET infantry POST_BUILD
         $<TARGET_FILE_DIR:infantry>/assets
 )
 
-# The dedicated server: the simulation with a console loop around it and no
-# renderer, no audio, no window. Note what's absent from its link line —
-# d3d12, dxgi, user32, xaudio2 — which is the point of the target: if the
-# simulation ever grows a quiet dependency on any of them, this is the build
-# that breaks. DirectXTK12 stays because SimpleMath lives there; nothing
+# The dedicated server: the same Server the client embeds, with a console loop
+# around it and no renderer, no audio, no window. Note what's absent from its
+# link line — d3d12, dxgi, user32, xaudio2 — which is the point of the target:
+# if the simulation ever grows a quiet dependency on any of them, this is the
+# build that breaks. DirectXTK12 stays because SimpleMath lives there; nothing
 # device-shaped is pulled from it.
 add_executable(infantry_server
     src/server_main.cpp
-    src/Discovery.cpp
     ${SIM_SOURCES}
 )
 
