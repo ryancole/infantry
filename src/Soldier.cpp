@@ -22,11 +22,23 @@ namespace
     constexpr float kSpineY = 0.66f; // waist joint, between pelvis and torso
     constexpr float kNeckY = 0.96f, kNeckZ = 0.01f;
 
+    // Both arms are the same two bones — they belong to the same person — and
+    // the difference between them is the fold at the elbow, not the reach.
+    constexpr float kUpperArmLen = 0.28f, kForearmLen = 0.26f;
+
     // Where the hands hold the rifle: right on the trigger, left crossed over
-    // to the forestock. The arms are bones from the pauldrons to these, so the
-    // two come out different lengths.
+    // to the forestock. These are the fixed ends the arms are solved back from,
+    // and the shoulder-to-grip spans they imply differ by half: the trigger arm
+    // is folded in tight against the body while the support arm is out near
+    // full stretch, which is what holding a rifle actually looks like.
     const Vector3 kGripR(0.12f, 0.74f, 0.20f);
     const Vector3 kGripL(0.10f, 0.77f, 0.38f);
+
+    // A shoulder and a grip that are both nailed down leave the elbow free to
+    // spin on a circle between them, and nothing in the pose picks a point on
+    // it. This hint does: out from the side, down, and back, which is where an
+    // elbow goes. Mirrored by side.
+    const Vector3 kElbowPole(0.6f, -0.5f, -0.6f);
 
     // Walk cycle: the legs stride along the facing axis, and the torso dips a
     // touch at full stride spread so the walk reads even from the isometric
@@ -59,33 +71,63 @@ namespace
         return (side < 0.0f ? kGripL : kGripR) + Vector3(0.0f, bob, 0.0f);
     }
 
-    // Length of the shoulder-to-hand bone; the arm's cylinder and the hand at
-    // its far end are both sized from it.
-    float ArmLength(float side)
+    // Frame of one bone: origin at its middle, +Y running back up toward
+    // `top`, which is what lets the bone be drawn as one stretched cylinder.
+    XMMATRIX BoneFrame(const Vector3& top, const Vector3& bottom)
     {
-        return (Shoulder(side, 0.0f) - Hand(side, 0.0f)).Length();
-    }
-
-    // Frame of one arm: origin at the middle of the bone, +Y running back up
-    // to the shoulder.
-    XMMATRIX ArmFrame(float side, float bob)
-    {
-        const Vector3 shoulder = Shoulder(side, bob);
-        const Vector3 hand = Hand(side, bob);
-        const Vector3 mid = (shoulder + hand) * 0.5f;
-        Vector3 bone = shoulder - hand;
+        const Vector3 mid = (top + bottom) * 0.5f;
+        Vector3 bone = top - bottom;
         bone.Normalize();
         return AlignY(bone) * XMMatrixTranslation(mid.x, mid.y, mid.z);
     }
 
-    // The rifle is carried in the right hand, so it rides that arm's segment.
-    // Its placement is authored in the soldier's local space (which reads far
-    // better than hand-fitting it to a tilted bone), and rebased into the arm's
-    // frame once here. Both the arm frame and the weapon shift with `bob`
-    // identically, so rebasing at rest holds for every pose.
+    // Two-bone IK: the elbow that puts an upper arm and a forearm of fixed
+    // length between the shoulder and the grip. The legs get their pose handed
+    // to them by the walk cycle, but an arm can't be posed that way — its far
+    // end is pinned to the weapon, so the joint in the middle has to be solved
+    // for rather than animated.
+    Vector3 Elbow(float side, float bob)
+    {
+        const Vector3 shoulder = Shoulder(side, bob);
+        Vector3 axis = Hand(side, bob) - shoulder;
+        // Never let the grips ask for more reach than the arm has; a span past
+        // full stretch has no elbow on it at all, only a square root of a
+        // negative number.
+        const float span = std::min(axis.Length(), kUpperArmLen + kForearmLen - 0.001f);
+        axis.Normalize();
+
+        // How far along the shoulder-to-grip line the elbow sits, and how far
+        // off it — the two triangle sides that fall out of the bone lengths.
+        const float along = (span * span + kUpperArmLen * kUpperArmLen -
+                             kForearmLen * kForearmLen) / (2.0f * span);
+        const float out = std::sqrt(std::max(0.0f, kUpperArmLen * kUpperArmLen - along * along));
+
+        Vector3 pole(side * kElbowPole.x, kElbowPole.y, kElbowPole.z);
+        pole -= axis * pole.Dot(axis); // only the part of the hint the arm can honor
+        if (pole.LengthSquared() < 1e-8f)          // hint ran straight down the bone
+            pole = Vector3::UnitY.Cross(axis);     // any perpendicular will do
+        pole.Normalize();
+        return shoulder + axis * along + pole * out;
+    }
+
+    XMMATRIX UpperArmFrame(float side, float bob)
+    {
+        return BoneFrame(Shoulder(side, bob), Elbow(side, bob));
+    }
+
+    XMMATRIX ForearmFrame(float side, float bob)
+    {
+        return BoneFrame(Elbow(side, bob), Hand(side, bob));
+    }
+
+    // The rifle is carried in the right hand, so it rides that forearm. Its
+    // placement is authored in the soldier's local space (which reads far
+    // better than hand-fitting it to a tilted bone), and rebased into the
+    // forearm's frame once here. Both the forearm and the weapon shift with
+    // `bob` identically, so rebasing at rest holds for every pose.
     const XMMATRIX& RifleRebase()
     {
-        static const XMMATRIX inverseArm = XMMatrixInverse(nullptr, ArmFrame(1.0f, 0.0f));
+        static const XMMATRIX inverseArm = XMMatrixInverse(nullptr, ForearmFrame(1.0f, 0.0f));
         return inverseArm;
     }
 }
@@ -102,8 +144,10 @@ const Soldier::Body Soldier::kBodies[Soldier::SegmentCount] = {
     /* ThighR */ { { 0.17f, 0.30f, 0.19f }, 7.0f },
     /* ShinL  */ { { 0.15f, 0.28f, 0.24f }, 4.0f },
     /* ShinR  */ { { 0.15f, 0.28f, 0.24f }, 4.0f },
-    /* ArmL   */ { { 0.13f, 0.55f, 0.13f }, 4.0f },
-    /* ArmR   */ { { 0.13f, 0.30f, 0.13f }, 3.0f },
+    /* UpArmL */ { { 0.14f, 0.32f, 0.14f }, 2.0f },
+    /* UpArmR */ { { 0.14f, 0.32f, 0.14f }, 2.0f },
+    /* ForeL  */ { { 0.12f, 0.30f, 0.12f }, 1.5f },
+    /* ForeR  */ { { 0.12f, 0.30f, 0.12f }, 1.5f },
 };
 
 // Anchors are in the parent's frame: subtract the parent's rest-pose center
@@ -125,10 +169,16 @@ const Soldier::Joint Soldier::kJoints[Soldier::kJointCount] = {
       XMConvertToRadians(25.0f), XMConvertToRadians(10.0f) },
     { ThighR, ShinR, { 0.0f, -kThighLen * 0.5f, 0.0f },
       XMConvertToRadians(25.0f), XMConvertToRadians(10.0f) },
-    { Torso, ArmL, { -kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
+    { Torso, UpperArmL, { -kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
       XMConvertToRadians(80.0f), XMConvertToRadians(60.0f) },
-    { Torso, ArmR, { kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
+    { Torso, UpperArmR, { kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
       XMConvertToRadians(80.0f), XMConvertToRadians(60.0f) },
+    // Elbows get more room than knees: an arm folds further, and a corpse's
+    // forearm flopping wide reads as slack rather than as broken.
+    { UpperArmL, ForearmL, { 0.0f, -kUpperArmLen * 0.5f, 0.0f },
+      XMConvertToRadians(40.0f), XMConvertToRadians(20.0f) },
+    { UpperArmR, ForearmR, { 0.0f, -kUpperArmLen * 0.5f, 0.0f },
+      XMConvertToRadians(40.0f), XMConvertToRadians(20.0f) },
 };
 
 void Soldier::Pose(XMMATRIX out[SegmentCount], float walkPhase, float moveBlend)
@@ -165,7 +215,12 @@ void Soldier::Pose(XMMATRIX out[SegmentCount], float walkPhase, float moveBlend)
         out[ShinL + i] = XMMatrixTranslation(0.0f, -kShinLen * 0.5f, 0.0f) *
                          XMMatrixRotationX(bend) *
                          XMMatrixTranslation(0.0f, -kThighLen * 0.5f, 0.0f) * out[ThighL + i];
-        out[ArmL + i] = ArmFrame(side, bob);
+
+        // The arms don't stride — both hands stay on the weapon — so they only
+        // ride the bob, and the elbow between them falls out of where the two
+        // ends are.
+        out[UpperArmL + i] = UpperArmFrame(side, bob);
+        out[ForearmL + i] = ForearmFrame(side, bob);
     }
 }
 
@@ -239,21 +294,27 @@ void Soldier::Draw(Renderer& renderer, const XMMATRIX world[SegmentCount], const
     part(Head, Shape::SphereLow, // visor, bulging out of the helmet's front
          XMMatrixScaling(0.17f, 0.10f, 0.12f) * XMMatrixTranslation(0.0f, 0.0f, 0.09f), visor);
 
-    for (int i = 0; i < 2; ++i) // arms: pauldron to hand, gloved fist at the end
+    for (int i = 0; i < 2; ++i) // arms: pauldron to elbow to hand, gloved fist at the end
     {
-        const Segment arm = static_cast<Segment>(ArmL + i);
-        const float len = ArmLength((i == 0) ? -1.0f : 1.0f);
-        part(arm, Shape::CylinderLow, XMMatrixScaling(0.10f, len, 0.10f), suit);
-        part(arm, Shape::SphereLow,
-             XMMatrixScaling(0.11f, 0.11f, 0.11f) * XMMatrixTranslation(0.0f, -len * 0.5f, 0.0f),
+        const Segment upper = static_cast<Segment>(UpperArmL + i);
+        const Segment fore = static_cast<Segment>(ForearmL + i);
+        part(upper, Shape::CylinderLow, XMMatrixScaling(0.11f, kUpperArmLen, 0.11f), suit);
+        part(upper, Shape::SphereLow, // elbow pad, capping the joint from above
+             XMMatrixScaling(0.13f, 0.13f, 0.13f) *
+                 XMMatrixTranslation(0.0f, -kUpperArmLen * 0.5f, 0.0f),
+             plateDark);
+        part(fore, Shape::CylinderLow, XMMatrixScaling(0.10f, kForearmLen, 0.10f), suit);
+        part(fore, Shape::SphereLow,
+             XMMatrixScaling(0.11f, 0.11f, 0.11f) *
+                 XMMatrixTranslation(0.0f, -kForearmLen * 0.5f, 0.0f),
              metal);
     }
 
-    part(ArmR, Shape::Box, // rifle body
+    part(ForearmR, Shape::Box, // rifle body
          XMMatrixScaling(0.07f, 0.10f, 0.42f) * XMMatrixTranslation(0.11f, 0.77f, 0.26f) *
              RifleRebase(),
          metal);
-    part(ArmR, Shape::CylinderLow, // barrel, ending near the muzzle spawn point
+    part(ForearmR, Shape::CylinderLow, // barrel, ending near the muzzle spawn point
          XMMatrixScaling(0.045f, 0.28f, 0.045f) * XMMatrixRotationX(XM_PIDIV2) *
              XMMatrixTranslation(0.11f, 0.79f, 0.58f) * RifleRebase(),
          metal);

@@ -22,8 +22,10 @@ namespace Soldier
         ThighR,
         ShinL,
         ShinR,
-        ArmL,
-        ArmR,
+        UpperArmL,
+        UpperArmR,
+        ForearmL,
+        ForearmR,
         SegmentCount,
     };
 
