@@ -22,7 +22,8 @@ class MainMenu
 public:
     enum class Choice
     {
-        Deploy,   // on to the class select
+        Deploy,   // on to the class select, and a match of our own
+        Join,     // the server browser: somebody else's match
         KeyBinds, // the rebinding screen
         Quit,     // close the game
     };

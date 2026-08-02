@@ -6,6 +6,8 @@
 #include "ClassSelect.h"
 #include "Command.h"
 #include "Input.h"
+#include "Discovery.h"
+#include "JoinMenu.h"
 #include "MainMenu.h"
 #include "NetClient.h"
 #include "PlayerClass.h"
@@ -78,6 +80,7 @@ private:
     enum class Phase
     {
         MainMenu,
+        Join, // the server browser: the LAN scan runs while this is up
         KeyBinds,
         ClassSelect,
         Connecting,
@@ -245,6 +248,11 @@ private:
     Sound m_sound;
     Phase m_phase = Phase::MainMenu;
     MainMenu m_mainMenu;
+    JoinMenu m_joinMenu;
+    // The LAN scan behind the join screen: started walking in, stopped
+    // walking out, so the socket and the once-a-second shout exist only
+    // while somebody is actually looking at the list.
+    Discovery::Scan m_scan;
     BindMenu m_bindMenu;
     ClassSelect m_classSelect;
     // The player's layout, read off disk at startup and written back whenever

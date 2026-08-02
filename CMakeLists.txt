@@ -89,6 +89,8 @@ add_executable(infantry WIN32
     src/ClassSelect.cpp
     src/Game.cpp
     src/Hud.cpp
+    src/Discovery.cpp
+    src/JoinMenu.cpp
     src/MainMenu.cpp
     src/Model.cpp
     src/NetClient.cpp
@@ -136,6 +138,7 @@ add_custom_command(TARGET infantry POST_BUILD
 # device-shaped is pulled from it.
 add_executable(infantry_server
     src/server_main.cpp
+    src/Discovery.cpp
     ${SIM_SOURCES}
 )
 

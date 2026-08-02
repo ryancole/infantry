@@ -17,6 +17,7 @@ Prototype scaffold with a working game loop:
 - Client-side prediction with server reconciliation: your own soldier answers movement and aim on the frame you press, simulated locally by the same `MoveCommand` the server runs, then squared against every snapshot — acked commands retired, in-flight ones replayed on top of the server's answer, so when nothing contradicted you the correction is exactly zero. Firing stays server-authoritative; everyone else stays snapshot-interpolated
 - The fog of war is enforced by the server, not the renderer: each client's snapshot is filtered through the same `Visibility` test the fog is drawn with, from their own soldier's eye (or the spot they died), so an enemy behind a wall is absent from the bytes and no packet sniffer can find them. Events travel by earshot instead — gunfire behind cover is still a thing you hear — and the corner scoreboard arrives unfiltered, because a scoreboard is meant to know
 - The wire is built for roads worse than a LAN: every command packet carries its two predecessors, so a lost packet can't eat a grenade press; snapshots are quantized (a position is two bytes an axis, an angle two bytes, health one) to about half their float weight with no statefulness to resync; the protocol carries a version and a server refuses a mismatched build or a full house at the door; and losing the server — or pressing Escape in somebody else's match — lands on the main menu with the world swept clean, not on the desktop. Delta compression is deliberately absent: full snapshots self-heal from any loss, and ten soldiers don't weigh enough to trade that away
+- Servers are found, not typed: JOIN on the main menu shouts a UDP broadcast at the LAN once a second and lists every server that answers — machine name, address, how full — refreshing live and forgetting the ones that go quiet. One typed row covers servers a broadcast can't reach. An internet server browser is the piece that still needs a landlord (somewhere to host the list), and it's the one piece of the netcode left
 - A soldier turns rather than pivots: the facing chases the cursor at a fixed rate instead of snapping to it, so getting behind someone is worth the trip. Holding steady drops both the walk and the turn to a fraction of normal — the gun sits where it's put, at the price of being able to leave
 - Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
 - One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
@@ -60,8 +61,9 @@ The dedicated server builds alongside the game:
 .\build\Debug\infantry_server.exe 60  # run a 60-second AI match and report
 ```
 
-Joining a server (the menus work as usual; `--class` skips them for a
-one-command join, which is the fast lane while iterating on netcode):
+Joining a server: JOIN on the main menu lists every server on the LAN and
+takes a typed address for the rest. The command line remains as the fast
+lane while iterating on netcode:
 
 ```powershell
 .\build\Debug\infantry.exe --connect 192.168.1.10
@@ -89,5 +91,5 @@ authored in Blender and exported as glTF (.glb).
 - Sprite/billboard rendering pass for Infantry-style readability, HUD & radar (DirectXTK12 `SpriteBatch`/`SpriteFont`)
 - Replace placeholder cubes with glTF models (player, bunkers, bases)
 - Tile-based map format + loader (Infantry-style zones)
-- Netcode, the rest of it: predicted muzzle effects so your own shot sounds on the press, a connect-to-IP box in the menu, server discovery
+- Netcode, the rest of it: predicted muzzle effects so your own shot sounds on the press, and an internet server browser once there's somewhere to host the list
 - Audio (DirectXTK12 audio module — re-enable `BUILD_XAUDIO_WIN10`), effects, teams/CTF game modes

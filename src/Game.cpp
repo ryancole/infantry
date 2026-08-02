@@ -447,9 +447,40 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             switch (*picked)
             {
             case MainMenu::Choice::Deploy:   m_phase = Phase::ClassSelect; break;
+            case MainMenu::Choice::Join:
+                m_phase = Phase::Join;
+                m_scan.Start();
+                break;
             case MainMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
             case MainMenu::Choice::Quit:     m_quit = true; break;
             }
+        }
+        return;
+    }
+
+    // The server browser: the scan shouts while the screen is up, and picking
+    // a row — found or typed — starts the connection and moves on to the
+    // class pick, the same order --connect always ran in. The handshake gets
+    // a head start behind the class card.
+    if (m_phase == Phase::Join)
+    {
+        if (input.KeyPressed(VK_ESCAPE))
+        {
+            m_scan.Stop();
+            m_phase = Phase::MainMenu;
+            return;
+        }
+        m_scan.Poll(dt);
+        if (const auto host = m_joinMenu.Update(input, dt, m_scan.Servers(),
+                                                camera.ViewportWidth(),
+                                                camera.ViewportHeight()))
+        {
+            m_scan.Stop();
+            m_connectHost = *host;
+            m_net = std::make_unique<NetClient>();
+            m_net->Start(m_connectHost, Net::kPort);
+            m_joinSent = false;
+            m_phase = Phase::ClassSelect;
         }
         return;
     }
@@ -471,12 +502,14 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     if (m_phase == Phase::ClassSelect)
     {
         // Escape backs out to the menu rather than closing the game, now that
-        // there's a menu to back out to. It's the same key that ends the game
-        // from inside the arena, one level further in — out of the screen you're
-        // on, and then out of the game.
+        // there's a menu to back out to — and if a connection was already
+        // warming up behind this screen, backing out hangs it up too.
         if (input.KeyPressed(VK_ESCAPE))
         {
-            m_phase = Phase::MainMenu;
+            if (m_net)
+                LeaveMatch();
+            else
+                m_phase = Phase::MainMenu;
             return;
         }
         if (const auto picked =
@@ -1185,6 +1218,12 @@ void Game::Render(Renderer& renderer)
     if (m_phase == Phase::MainMenu)
     {
         m_mainMenu.Render(renderer);
+        return;
+    }
+
+    if (m_phase == Phase::Join)
+    {
+        m_joinMenu.Render(renderer, m_scan.Servers());
         return;
     }
 

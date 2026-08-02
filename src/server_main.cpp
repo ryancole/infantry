@@ -1,3 +1,4 @@
+#include "Discovery.h"
 #include "Level.h"
 #include "Net.h"
 #include "World.h"
@@ -126,6 +127,15 @@ int main(int argc, char** argv)
     // No local class: every slot on both sides is the AI's until players
     // arrive over the wire.
     world.StartMatch(nullptr, 0);
+
+    // Answer the LAN's "who's out there": one small reply per probe is what
+    // puts this server on a join screen across the room. Failing to bind the
+    // discovery port isn't fatal — a second server on the same box just
+    // won't be listed, and can still be joined by address.
+    Discovery::Responder discovery;
+    if (!discovery.Start(Net::kPort))
+        std::printf("discovery port %u unavailable; joinable by address only\n",
+                    Discovery::kPort);
 
     std::printf("infantry_server: port %u, arena %.0f half-units, %d a side, tick %d Hz\n",
                 Net::kPort, world.ArenaHalf(), World::kTeamSize,
@@ -269,6 +279,16 @@ int main(int argc, char** argv)
             default:
                 break;
             }
+        }
+
+        // --- The LAN's questions ---
+        {
+            int joined = 0;
+            for (const auto& session : sessions)
+                if (session->joined)
+                    ++joined;
+            discovery.SetStanding(joined, World::kTeamSize * world.TeamCount());
+            discovery.Poll();
         }
 
         // --- Time ---
