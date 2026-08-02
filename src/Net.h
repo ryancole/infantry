@@ -40,7 +40,7 @@ namespace Net
     // Join, and a mismatch is refused outright — two builds disagreeing about
     // what a byte means should fail at the door, not decode each other into
     // nonsense mid-match.
-    constexpr uint8_t kProtocolVersion = 2;
+    constexpr uint8_t kProtocolVersion = 3;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -285,11 +285,20 @@ namespace Net
     struct Snapshot
     {
         uint32_t tick = 0;
+        // The match clock: seconds left of it, or — once `matchOver` — of the
+        // wait before the next one. One field for two clocks because only one
+        // of them is ever running, and the flag next to it says which.
+        float clock = 0.0f;
+        bool matchOver = false;
         // Living soldiers per team, counted before the fog filter below did
         // its work: the corner panel is a scoreboard, and a scoreboard that
         // only counted what you can see would say "outnumbered" every time
         // you were alone.
         std::vector<uint8_t> standing;
+        // Kills per team, in the same order. The thing the match is decided
+        // on, so it travels with the standing counts and is filtered by
+        // nothing: both sides' scores are known to both sides.
+        std::vector<uint16_t> scores;
         std::vector<SnapUnit> units;
         std::vector<SnapProjectile> projectiles;
         SnapOwn own;
@@ -313,9 +322,20 @@ namespace Net
         w.U8(static_cast<uint8_t>(MsgType::Snapshot));
         w.U32(tick);
 
+        // The match: the clock in tenths of a second (a countdown wants to
+        // look continuous, not to be accurate to the frame — and fifteen
+        // minutes of tenths still fits a uint16 with room to spare), whether
+        // it has run out, and what each side has killed.
+        const float clock = world.MatchOver() ? world.Intermission() : world.MatchTime();
+        w.U16(static_cast<uint16_t>(std::clamp(std::lround(clock * 10.0f), 0l, 65535l)));
+        w.U8(world.MatchOver() ? 1 : 0);
+
         w.U8(static_cast<uint8_t>(world.TeamCount()));
         for (int team = 0; team < world.TeamCount(); ++team)
+        {
             w.U8(static_cast<uint8_t>(world.Standing(team)));
+            w.U16(static_cast<uint16_t>(std::clamp(world.Score(team), 0, 65535)));
+        }
 
         const auto visible = [&](float x, float z) {
             return Visibility::IsPointVisible(viewer, { x, z }, world.Occluders());
@@ -384,9 +404,14 @@ namespace Net
     {
         Snapshot snap;
         snap.tick = r.U32();
+        snap.clock = static_cast<float>(r.U16()) / 10.0f;
+        snap.matchOver = r.U8() != 0;
         const int teamCount = r.U8();
         for (int i = 0; i < teamCount && r.ok; ++i)
+        {
             snap.standing.push_back(r.U8());
+            snap.scores.push_back(r.U16());
+        }
         const int unitCount = r.U8();
         snap.units.reserve(unitCount);
         for (int i = 0; i < unitCount && r.ok; ++i)

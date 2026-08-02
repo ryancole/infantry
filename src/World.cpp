@@ -164,6 +164,7 @@ void World::Init(const LevelData& level)
         m_teamSpawns.push_back(spawn.pos);
     m_nextAiClass.assign(m_teamSpawns.size(), 0);
     m_humanSlots.assign(m_teamSpawns.size(), 0);
+    m_scores.assign(m_teamSpawns.size(), 0);
 
     // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
     // despawn on their first contact with anything solid.
@@ -200,6 +201,10 @@ void World::Reset()
     m_standingOverride.clear();
     m_humanSlots.assign(m_teamSpawns.size(), 0);
     m_nextAiClass.assign(m_teamSpawns.size(), 0);
+    m_scores.assign(m_teamSpawns.size(), 0);
+    m_matchTime = kMatchLength;
+    m_intermission = 0.0f;
+    m_matchOver = false;
     m_localClass = nullptr;
     // Unit ids keep counting: nothing that survives a reset is allowed to
     // mistake a new soldier for an old one.
@@ -207,6 +212,14 @@ void World::Reset()
 
 void World::StartMatch(const ClassDef* localClass, int localTeam)
 {
+    // A match is a fresh clock and a scoreboard at nothing, whatever the
+    // arena did before it. StartMatch is the only place either is set, which
+    // is what makes "the next match" the same call as the first one.
+    m_matchTime = kMatchLength;
+    m_intermission = 0.0f;
+    m_matchOver = false;
+    m_scores.assign(m_teamSpawns.size(), 0);
+
     m_localClass = localClass;
     m_localTeam = std::min(localTeam, static_cast<int>(m_teamSpawns.size()) - 1);
     if (m_localClass)
@@ -366,6 +379,21 @@ void World::Tick(const Command* cmd, std::vector<Event>& events)
         unit.prevMoveBlend = unit.moveBlend;
     }
 
+    // The whistle has gone. Nothing decides anything from here: no command is
+    // heard, no brain thinks, no round flies, and the score is what it is.
+    // Two things do keep running. The intermission, because somebody has to
+    // count the result out. And the physics, because the bodies from the last
+    // exchange are still falling — a ragdoll frozen in mid-air is the one
+    // thing on screen that would read as a crash rather than an ending.
+    if (m_matchOver)
+    {
+        m_staged.clear(); // orders for a match that's over die undelivered
+        m_intermission = std::max(0.0f, m_intermission - kTickDt);
+        m_physics.Step(kTickDt);
+        m_out = nullptr;
+        return;
+    }
+
     if (cmd)
         if (Unit* local = Local())
             ApplyCommand(*local, *cmd, kTickDt);
@@ -387,7 +415,46 @@ void World::Tick(const Command* cmd, std::vector<Event>& events)
     ReapDead();
     UpdateReinforcements(kTickDt);
 
+    // The clock is spent last, after the dead have been counted, so the
+    // exchange that lands on the final tick still scores: a kill on the
+    // whistle is a kill.
+    m_matchTime -= kTickDt;
+    if (m_matchTime <= 0.0f)
+        EndMatch();
+
     m_out = nullptr;
+}
+
+void World::EndMatch()
+{
+    m_matchTime = 0.0f;
+    m_matchOver = true;
+    m_intermission = kIntermission;
+
+    // Rounds still in the air were fired at a match that has nothing left to
+    // decide. They go quietly — no impact, no blast, no detonation event —
+    // rather than landing on a frozen arena or hanging in it for fifteen
+    // seconds.
+    for (const Projectile& shot : m_projectiles)
+        if (shot.body != Physics::kInvalidBody)
+            m_physics.RemoveBody(shot.body);
+    m_projectiles.clear();
+}
+
+int World::Score(int team) const
+{
+    return team >= 0 && team < static_cast<int>(m_scores.size()) ? m_scores[team] : 0;
+}
+
+int World::Winner() const
+{
+    if (m_scores.empty())
+        return -1;
+    const auto top = std::max_element(m_scores.begin(), m_scores.end());
+    // Level at the top is a draw, however many sides are sitting there.
+    if (std::count(m_scores.begin(), m_scores.end(), *top) > 1)
+        return -1;
+    return static_cast<int>(top - m_scores.begin());
 }
 
 Unit* World::Local()
@@ -656,6 +723,7 @@ void World::SwingMelee(Unit& attacker)
     // blade was travelling, and the same knock on the corpse it may leave. The
     // body itself is collected by ReapDead at the end of the tick.
     target->hp -= kMelee.damage;
+    target->lastHitTeam = attacker.team;
     target->knock = CorpseKnock(attacker.aimDir, kCorpseKnock);
     Event hit;
     hit.type = Event::Type::Hit;
@@ -942,6 +1010,7 @@ void World::ApplyBlast(const Vector3& center, float radius, float damage, int te
         if (dmg <= 0.0f)
             continue;
         unit.hp -= dmg;
+        unit.lastHitTeam = team;
         // Blown outward from the blast, as hard as the share of it they
         // caught: a body at the rim topples, one on top of it is thrown.
         unit.knock = CorpseKnock(unit.pos - center, kCorpseBlastKnock * (dmg / damage));
@@ -1024,6 +1093,7 @@ void World::UpdateProjectiles(float dt)
             if (!blast)
             {
                 unit.hp -= shot.damage;
+                unit.lastHitTeam = shot.team;
                 unit.knock = CorpseKnock(travel, kCorpseKnock);
                 // Sprayed from where the round went in, carrying on the way it
                 // was going.
@@ -1106,6 +1176,12 @@ void World::ReapDead()
             ev.team = unit.team;
             ev.cls = unit.cls;
             Emit(ev);
+            // The kill goes on the board here rather than where the damage
+            // was dealt, for the same reason the corpse does: a soldier is
+            // killed by whatever emptied their health, and only this end of
+            // the tick knows which blow that turned out to be.
+            if (unit.lastHitTeam >= 0 && unit.lastHitTeam < static_cast<int>(m_scores.size()))
+                ++m_scores[unit.lastHitTeam];
             // The soldier is gone, but the slot they held isn't. An AI slot is
             // owed back to its side on the respawn clock; the local player's
             // return is their phase machine's business, which is what keeps
@@ -1120,6 +1196,14 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
 {
     // The scoreboard arrives whole even though the roster below doesn't.
     m_standingOverride.assign(snap.standing.begin(), snap.standing.end());
+
+    // The match, likewise: a replica never runs the clock or counts a kill,
+    // it is told both. The one wire field carries whichever clock is running
+    // — the match's, or the wait for the next one.
+    m_matchOver = snap.matchOver;
+    m_matchTime = m_matchOver ? 0.0f : snap.clock;
+    m_intermission = m_matchOver ? snap.clock : 0.0f;
+    m_scores.assign(snap.scores.begin(), snap.scores.end());
 
     // Rebuild the roster in the snapshot's image, carrying each surviving
     // unit's current state over as its previous state — the same two-frame

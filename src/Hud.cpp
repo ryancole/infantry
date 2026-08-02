@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -38,9 +39,19 @@ namespace
     constexpr float kSideMargin = 26.0f;
     constexpr float kRosterIconSize = 24.0f;
     constexpr float kRosterValueSize = 21.0f;
-    constexpr float kRosterGap = 10.0f;    // icon -> count -> pips
+    constexpr float kRosterGap = 10.0f;    // icon -> count -> pips -> score
     constexpr float kRosterRowGap = 12.0f; // one side's row -> the other's
     constexpr float kRosterPipsWidth = 68.0f;
+    // The score is the number the match ends on, so it's the biggest thing in
+    // the panel and the clock above it is a notch under: what's left to play
+    // for, and how long there is to play for it.
+    constexpr float kRosterScoreSize = 27.0f;
+    constexpr float kRosterClockSize = 23.0f;
+    constexpr float kRosterHeadGap = 11.0f; // clock -> the rule under it -> the rows
+    // The last minute of a match turns the clock the same orange every other
+    // wait in the cluster is drawn in. It's the one number here that changes
+    // how the fight should be played, and only right at the end.
+    constexpr float kClockWarning = 60.0f;
 
     constexpr float kHintSize = 13.0f;
     constexpr float kHintGap = 15.0f; // hint row -> panel
@@ -344,6 +355,15 @@ namespace
     // the number means anything.
     constexpr size_t kMaxHints = 10;
 
+    // A countdown as minutes and seconds. Rounded up, so it reaches 0:01 for
+    // the last second and only says 0:00 when the match really is over.
+    std::string ClockText(float seconds)
+    {
+        const int left = std::max(0, static_cast<int>(std::ceil(seconds)));
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "%d:%02d", left / 60, left % 60);
+        return buf;
+    }
 }
 
 XMFLOAT4 Hud::HealthColor(float fraction)
@@ -630,12 +650,21 @@ void Hud::Render(Renderer& renderer, const State& st)
 
     // --- Roster ---
     //
-    // Top right: two rows, your side over theirs, each a soldier icon in that
-    // side's color, how many of it are standing, and a pip per slot on the
-    // roster. The pips are what make it readable without reading — five lit is
-    // a squad, two lit and three dark is a squad in trouble — and they're the
-    // same pips the magazine and the blade already use, because "how many of a
-    // fixed number are left" is the same question in all three places.
+    // Top right: the match clock, then two rows, your side over theirs, each a
+    // soldier icon in that side's color, how many of it are standing, a pip per
+    // slot on the roster, and what that side has killed. The pips are what make
+    // the strength readable without reading — five lit is a squad, two lit and
+    // three dark is a squad in trouble — and they're the same pips the magazine
+    // and the blade already use, because "how many of a fixed number are left"
+    // is the same question in all three places.
+    //
+    // The clock and the kills are in here rather than in a panel of their own
+    // because they're the same glance as the strength: who is winning, by how
+    // much, and how long there is left to do anything about it. The kills sit
+    // at the right edge in their side's own color, away from the standing count
+    // and apart from it — the two numbers mean very different things, and a
+    // reader who mixed them up would misread the match rather than misread a
+    // panel.
     //
     // Deliberately not faded during the respawn wait, unlike everything above.
     // The loadout dims because it's describing kit nobody is holding; the
@@ -646,41 +675,70 @@ void Hud::Render(Renderer& renderer, const State& st)
     const float rosterValue = kRosterValueSize * s;
     const float rosterGap = kRosterGap * s;
     const float pipsW = kRosterPipsWidth * s;
-    const float rowH = std::max(rosterIcon, barH);
+    const float rosterScore = kRosterScoreSize * s;
+    // The row is as tall as the tallest thing standing in it, which is now the
+    // kill count rather than the soldier icon.
+    const float rowH = std::max({ rosterIcon, barH, rosterScore });
 
     struct Side
     {
         int up;
+        int score;
         XMFLOAT4 color;
     };
-    const Side sides[2] = { { st.allies, Lift(st.allyColor, kSideLift) },
-                            { st.enemies, Lift(st.enemyColor, kSideLift) } };
+    const Side sides[2] = { { st.allies, st.allyScore, Lift(st.allyColor, kSideLift) },
+                            { st.enemies, st.enemyScore, Lift(st.enemyColor, kSideLift) } };
 
     // One count column wide enough for either row, so the two pip strips line
     // up under each other. A roster whose bars didn't share an edge would be a
     // roster you had to read twice to compare.
     std::string counts[2];
+    std::string scores[2];
     float countW = 0.0f;
+    float scoreW = 0.0f;
     for (int i = 0; i < 2; ++i)
     {
         counts[i] = std::to_string(std::max(sides[i].up, 0));
         countW = std::max(countW, renderer.MeasureScreenText(counts[i], rosterValue));
+        scores[i] = std::to_string(std::max(sides[i].score, 0));
+        scoreW = std::max(scoreW, renderer.MeasureScreenText(scores[i], rosterScore));
     }
 
+    const std::string clockText = ClockText(st.clock);
+    const float clockSize = kRosterClockSize * s;
+    const float clockW = renderer.MeasureScreenText(clockText, clockSize);
+
     const bool drawPips = st.teamSize > 0 && st.teamSize <= kMaxPips;
-    const float rosterContentW =
-        rosterIcon + rosterGap + countW + (drawPips ? rosterGap + pipsW : 0.0f);
-    const float rosterW = rosterContentW + pad * 2.0f;
-    const float rosterH = rowH * 2.0f + kRosterRowGap * s + pad * 2.0f;
+    const float rosterContentW = rosterIcon + rosterGap + countW +
+                                 (drawPips ? rosterGap + pipsW : 0.0f) + rosterGap + scoreW;
+    // The clock is centered over the rows and can't be allowed to spill out of
+    // the panel it's centered in, however wide the digits are.
+    const float rosterW = std::max(rosterContentW, clockW) + pad * 2.0f;
+    const float rosterH =
+        clockSize + kRosterHeadGap * s + rowH * 2.0f + kRosterRowGap * s + pad * 2.0f;
     const float rosterX = std::floor(w - kSideMargin * s - rosterW);
     const float rosterY = std::floor(kTopMargin * s);
 
     AppendRoundRect(tris, rosterX, rosterY, rosterW, rosterH, kPanelCorner * s, kPanelBg);
 
+    // The clock, centered above the two sides — it belongs to neither of them,
+    // and it's the one thing in the panel that is the same for both. A rule
+    // under it separates the match from the sides playing it; the rows below
+    // get no such line, because those two are a comparison and cutting them
+    // apart would be working against the reading.
+    renderer.DrawScreenText(clockText, rosterX + (rosterW - clockW) * 0.5f, rosterY + pad,
+                            clockSize,
+                            st.matchOver ? kMutedColor
+                            : st.clock <= kClockWarning ? kReloadColor
+                                                        : kValueColor);
+    const float rowsTop = rosterY + pad + clockSize + kRosterHeadGap * s;
+    AppendQuad(tris, rosterX + pad, rowsTop - kRosterHeadGap * s * 0.5f, rosterW - pad * 2.0f,
+               std::max(1.0f * s, 1.0f), kDivider);
+
     for (int i = 0; i < 2; ++i)
     {
         const Side& side = sides[i];
-        const float rowTop = rosterY + pad + static_cast<float>(i) * (rowH + kRosterRowGap * s);
+        const float rowTop = rowsTop + static_cast<float>(i) * (rowH + kRosterRowGap * s);
         float rx = rosterX + pad;
 
         // No rule between the rows, unlike the modules below. Those are six
@@ -699,6 +757,14 @@ void Hud::Render(Renderer& renderer, const State& st)
         renderer.DrawScreenText(counts[i], rx, rowTop + (rowH - rosterValue) * 0.5f, rosterValue,
                                 side.up > 0 ? kValueColor : kMutedColor);
         rx += countW + rosterGap;
+
+        // The kills, right-aligned against the panel's edge rather than laid
+        // out from the left like everything else in the row: two numbers being
+        // compared want to share their last digit's column, not their first's.
+        renderer.DrawScreenText(
+            scores[i],
+            rosterX + rosterW - pad - renderer.MeasureScreenText(scores[i], rosterScore),
+            rowTop + (rowH - rosterScore) * 0.5f, rosterScore, side.color);
 
         if (!drawPips)
             continue;

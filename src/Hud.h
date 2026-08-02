@@ -71,6 +71,16 @@ namespace Hud
         int allies;
         int enemies;
         int teamSize; // slots a side fields; how many pips a row draws
+        // What the match is being decided on: how long it has left, and what
+        // each side has killed. The clock is seconds remaining and reads as
+        // M:SS; `matchOver` says it has run out, which is when the score
+        // stops being a running total and starts being the result. They sit
+        // in the roster panel rather than anywhere else because "how are we
+        // doing" and "how long have I got to fix it" are one glance.
+        float clock;
+        bool matchOver;
+        int allyScore;
+        int enemyScore;
         // What the two sides are wearing out on the field. Handed over rather
         // than chosen here so the corner can't drift from the arena: the row
         // marked as yours is your armor's color, whichever side the player ends

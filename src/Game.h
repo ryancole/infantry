@@ -172,6 +172,18 @@ private:
     // Puts the player back on the field via the World and returns to
     // Phase::Playing; the camera cuts rather than sweeps across.
     void Respawn(IsoCamera& camera);
+    // The result has stood long enough: a fresh match on the same ground,
+    // with the clock and both scores back at the start. Solo only — in
+    // connected play the server decides when the next match begins, and this
+    // client hears about it as a Respawned and a snapshot whose match is no
+    // longer over.
+    void StartNextMatch(IsoCamera& camera);
+    // Sweeps everything this client conjured out of a match's events: the
+    // corpses (whose bodies go back to the physics world), the weather in the
+    // air, the blood on the floor. What a match left behind belongs to that
+    // match — a new one starts on clean ground, and leaving a server takes
+    // its mess with it.
+    void ClearBattlefield();
     // Debris burst where a projectile dies; `scale` is the projectile radius.
     void SpawnImpactBurst(const Vector3& pos, float scale);
     // Grenade detonation: core flash plus a wide fire/smoke burst.
