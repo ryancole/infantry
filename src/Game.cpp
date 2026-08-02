@@ -310,6 +310,8 @@ void Game::NetPump(float dt, IsoCamera& camera)
             m_myUnitId = r.I32();
             m_team = r.U8();
             m_camSnapPending = true;
+            m_hasPredicted = false;
+            m_pendingCmds.clear();
             if (m_phase == Phase::Connecting)
                 m_phase = Phase::Playing;
             break;
@@ -318,6 +320,8 @@ void Game::NetPump(float dt, IsoCamera& camera)
         {
             m_myUnitId = r.I32();
             m_camSnapPending = true;
+            m_hasPredicted = false;
+            m_pendingCmds.clear();
             if (m_phase == Phase::Dead)
                 m_phase = Phase::Playing;
             break;
@@ -331,7 +335,9 @@ void Game::NetPump(float dt, IsoCamera& camera)
             m_snapElapsed = 0.0f;
             // The cut a spawn deserves, taken on the first snapshot that
             // actually has us in it — Welcome says who we are, but only a
-            // snapshot says where.
+            // snapshot says where. It's also where the prediction is born:
+            // from here the soldier under the keys is this machine's copy,
+            // and the server's is what it gets squared against.
             if (m_camSnapPending)
                 if (const Unit* me = m_world.Local())
                 {
@@ -339,7 +345,11 @@ void Game::NetPump(float dt, IsoCamera& camera)
                     camera.SetTarget(m_eyePos);
                     camera.SnapToTarget();
                     m_camSnapPending = false;
+                    m_predicted = *me;
+                    m_hasPredicted = true;
                 }
+            if (snap.own.has && m_hasPredicted)
+                Repredict(snap.own.ackSeq);
             break;
         }
         case Net::MsgType::Events:
@@ -348,6 +358,35 @@ void Game::NetPump(float dt, IsoCamera& camera)
         default:
             break;
         }
+    }
+}
+
+void Game::Repredict(uint32_t ackSeq)
+{
+    Unit* me = m_world.Local();
+    if (!me)
+    {
+        m_hasPredicted = false;
+        return;
+    }
+
+    // Everything the server has consumed is history; what's left is still in
+    // flight, and gets replayed onto the server's own answer.
+    while (!m_pendingCmds.empty() && m_pendingCmds.front().seq <= ackSeq)
+        m_pendingCmds.pop_front();
+
+    m_predicted = *me;
+    m_predicted.prevPos = m_predicted.pos;
+    m_predicted.prevAimDir = m_predicted.aimDir;
+    m_predicted.prevWalkPhase = m_predicted.walkPhase;
+    m_predicted.prevMoveBlend = m_predicted.moveBlend;
+    for (const PendingCmd& pending : m_pendingCmds)
+    {
+        m_predicted.prevPos = m_predicted.pos;
+        m_predicted.prevAimDir = m_predicted.aimDir;
+        m_predicted.prevWalkPhase = m_predicted.walkPhase;
+        m_predicted.prevMoveBlend = m_predicted.moveBlend;
+        m_world.MoveCommand(m_predicted, pending.cmd, World::kTickDt);
     }
 }
 
@@ -505,20 +544,56 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // sentence that arrived over a socket. The one keepsake this side holds
     // onto is the aim distance, which the aim indicator wants at render time.
     m_screenRight = camera.ScreenRightOnGround();
-    const Command fresh = ReadCommand(input, camera, m_world.Local()->pos);
+    const Command fresh = ReadCommand(
+        input, camera, m_hasPredicted ? m_predicted.pos : m_world.Local()->pos);
     m_aimDist = fresh.aimDist;
 
     m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
 
     if (m_net)
     {
-        // Connected: the command goes to the far end instead of a local tick.
-        // Sent fresh every frame — the server latches edges between its own
-        // ticks the way solo play latches them here, so a click can't slip
-        // between two of anybody's ticks.
-        Net::Writer w;
-        Net::WriteCmd(w, fresh);
-        m_net->SendState(w.bytes);
+        // Connected: commands are made on the same 60 Hz clock the server
+        // consumes them on — one per tick, numbered, kept until acked — and
+        // each one drives the predicted soldier the moment it exists. The
+        // latch below is the same edge-preserving fold solo play does; the
+        // tick spends the edges into exactly one command.
+        m_pendingCmd.move = fresh.move;
+        m_pendingCmd.aim = fresh.aim;
+        m_pendingCmd.aimDist = fresh.aimDist;
+        m_pendingCmd.fire = fresh.fire;
+        m_pendingCmd.melee = fresh.melee;
+        m_pendingCmd.steady = fresh.steady;
+        m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+        m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+        m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+
+        m_tickAccum += dt;
+        while (m_tickAccum >= World::kTickDt)
+        {
+            m_tickAccum -= World::kTickDt;
+            const uint32_t seq = ++m_cmdSeq;
+            Net::Writer w;
+            Net::WriteCmd(w, seq, m_pendingCmd);
+            m_net->SendState(w.bytes);
+            m_pendingCmds.push_back({ seq, m_pendingCmd });
+            // A server that stops acking must not turn this buffer into the
+            // whole session's history; past two seconds the oldest commands
+            // are lost causes, and the next ack squares everything anyway.
+            if (m_pendingCmds.size() > 120)
+                m_pendingCmds.pop_front();
+            if (m_hasPredicted)
+            {
+                m_predicted.prevPos = m_predicted.pos;
+                m_predicted.prevAimDir = m_predicted.aimDir;
+                m_predicted.prevWalkPhase = m_predicted.walkPhase;
+                m_predicted.prevMoveBlend = m_predicted.moveBlend;
+                m_world.MoveCommand(m_predicted, m_pendingCmd, World::kTickDt);
+            }
+            m_pendingCmd.reload = false;
+            m_pendingCmd.grenade = false;
+            m_pendingCmd.ability = false;
+        }
+        m_predAlpha = m_tickAccum / World::kTickDt;
 
         NetPump(dt, camera);
         m_snapElapsed += dt;
@@ -579,6 +654,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     if (!m_world.Local())
     {
         m_meleeFlash = 0.0f;
+        // The prediction dies with the soldier it was predicting.
+        m_hasPredicted = false;
+        m_pendingCmds.clear();
         m_phase = Phase::Dead;
         m_respawnTimer = World::kRespawnDelay;
         return;
@@ -586,9 +664,16 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     // The eye, the ear, and the camera all follow the soldier as drawn — the
     // blend between ticks — not the soldier as simulated, so nothing on
-    // screen leads or trails the body it's about.
-    const Unit& local = *m_world.Local();
-    m_eyePos = Vector3::Lerp(local.prevPos, local.pos, m_renderAlpha);
+    // screen leads or trails the body it's about. In connected play "as
+    // drawn" means the prediction: the camera answers the keys on the frame
+    // they're pressed, the same as the body does.
+    if (m_hasPredicted)
+        m_eyePos = Vector3::Lerp(m_predicted.prevPos, m_predicted.pos, m_predAlpha);
+    else
+    {
+        const Unit& local = *m_world.Local();
+        m_eyePos = Vector3::Lerp(local.prevPos, local.pos, m_renderAlpha);
+    }
     m_sound.SetListener(m_eyePos, camera.ScreenUpOnGround());
     camera.SetTarget(m_eyePos);
 }
@@ -1085,8 +1170,8 @@ void Game::Render(Renderer& renderer)
     // where this one put them; a display running faster than the simulation
     // sees motion, not the simulation's sixty stills a second.
     const float alpha = m_renderAlpha;
-    const auto blendDir = [alpha](const Vector3& prev, const Vector3& cur) {
-        Vector3 dir = Vector3::Lerp(prev, cur, alpha);
+    const auto blendDir = [](const Vector3& prev, const Vector3& cur, float t) {
+        Vector3 dir = Vector3::Lerp(prev, cur, t);
         if (dir.LengthSquared() > 1e-8f)
             dir.Normalize();
         else
@@ -1095,7 +1180,13 @@ void Game::Render(Renderer& renderer)
     };
     for (const Unit& unit : m_world.Units())
     {
-        const Vector3 pos = Vector3::Lerp(unit.prevPos, unit.pos, alpha);
+        // In connected play the local soldier is drawn from the prediction,
+        // on the prediction's own clock — the one body on the field that
+        // answers this machine's keys instead of the wire's history.
+        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
+        const Unit& src = predicted ? m_predicted : unit;
+        const float a = predicted ? m_predAlpha : alpha;
+        const Vector3 pos = Vector3::Lerp(src.prevPos, src.pos, a);
         if (unit.controller != Unit::Controller::Local)
         {
             // Cheapest rejection first: the arena is far wider than the view,
@@ -1106,9 +1197,9 @@ void Game::Render(Renderer& renderer)
             if (!Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
                 continue;
         }
-        DrawSoldier(renderer, pos, blendDir(unit.prevAimDir, unit.aimDir),
-                    unit.prevWalkPhase + (unit.walkPhase - unit.prevWalkPhase) * alpha,
-                    unit.prevMoveBlend + (unit.moveBlend - unit.prevMoveBlend) * alpha,
+        DrawSoldier(renderer, pos, blendDir(src.prevAimDir, src.aimDir, a),
+                    src.prevWalkPhase + (src.walkPhase - src.prevWalkPhase) * a,
+                    src.prevMoveBlend + (src.moveBlend - src.prevMoveBlend) * a,
                     unit.team, unit.cls->color);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
@@ -1218,9 +1309,13 @@ void Game::Render(Renderer& renderer)
         Unit& u = *m_world.Local();
         // The indicators hang off the soldier as drawn, so the aim line grows
         // out of the muzzle on screen rather than out of where the simulation
-        // has quietly moved it.
-        const Vector3 lpos = Vector3::Lerp(u.prevPos, u.pos, alpha);
-        const Vector3 laim = blendDir(u.prevAimDir, u.aimDir);
+        // has quietly moved it. As drawn means the prediction, when there is
+        // one — the loadout underneath (the reload, the grenade count) stays
+        // the server's word.
+        const Unit& drawn = m_hasPredicted ? m_predicted : u;
+        const float da = m_hasPredicted ? m_predAlpha : alpha;
+        const Vector3 lpos = Vector3::Lerp(drawn.prevPos, drawn.pos, da);
+        const Vector3 laim = blendDir(drawn.prevAimDir, drawn.aimDir, da);
         const bool reloading = u.reloadTimer > 0.0f;
         const XMFLOAT4 aimColor = reloading ? kAimSpentColor : kAimColor;
         const XMFLOAT4 aimDim = reloading ? kAimSpentDimColor : kAimDimColor;

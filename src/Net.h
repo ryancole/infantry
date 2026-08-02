@@ -115,9 +115,14 @@ namespace Net
         kCmdAbility = 1 << 5,
     };
 
-    inline void WriteCmd(Writer& w, const Command& cmd)
+    // `seq` is the command's tick-stamp on the client's own clock. The server
+    // applies each numbered command exactly once and acks the highest it has
+    // consumed (SnapOwn::ackSeq), which is what lets the client throw away
+    // confirmed history and replay only the commands still in flight.
+    inline void WriteCmd(Writer& w, uint32_t seq, const Command& cmd)
     {
         w.U8(static_cast<uint8_t>(MsgType::Cmd));
+        w.U32(seq);
         w.Vec2XZ(cmd.move);
         w.Vec2XZ(cmd.aim);
         w.F32(cmd.aimDist);
@@ -131,8 +136,9 @@ namespace Net
         w.U8(bits);
     }
 
-    inline Command ReadCmd(Reader& r)
+    inline Command ReadCmd(Reader& r, uint32_t& seq)
     {
+        seq = r.U32();
         Command cmd;
         cmd.move = r.Vec2XZ();
         cmd.aim = r.Vec2XZ();
@@ -173,13 +179,17 @@ namespace Net
         bool fused;
     };
 
-    // The receiving player's own loadout — the HUD's half of the snapshot.
+    // The receiving player's own loadout — the HUD's half of the snapshot —
+    // plus the two things prediction reconciles against: the momentum the
+    // server has for this soldier, and the newest command it has consumed.
     // Everyone else's magazine is their own business, so this block is the
     // one part of a snapshot built per client rather than shared.
     struct SnapOwn
     {
         bool has = false; // false while you're dead: nothing is in your hands
         int32_t id = -1;
+        uint32_t ackSeq = 0; // commands up to here are history, not pending
+        float moveVelX = 0.0f, moveVelZ = 0.0f;
         int32_t ammo = 0;
         float reloadTimer = 0.0f;
         uint8_t grenades = 0;
@@ -228,12 +238,15 @@ namespace Net
         }
     }
 
-    inline void WriteSnapshotOwn(Writer& w, const Unit* own)
+    inline void WriteSnapshotOwn(Writer& w, const Unit* own, uint32_t ackSeq)
     {
         w.U8(own ? 1 : 0);
         if (!own)
             return;
         w.I32(own->id);
+        w.U32(ackSeq);
+        w.F32(own->moveVel.x);
+        w.F32(own->moveVel.z);
         w.I32(own->ammo);
         w.F32(own->reloadTimer);
         w.U8(static_cast<uint8_t>(own->grenades));
@@ -279,6 +292,9 @@ namespace Net
         if (snap.own.has)
         {
             snap.own.id = r.I32();
+            snap.own.ackSeq = r.U32();
+            snap.own.moveVelX = r.F32();
+            snap.own.moveVelZ = r.F32();
             snap.own.ammo = r.I32();
             snap.own.reloadTimer = r.F32();
             snap.own.grenades = r.U8();

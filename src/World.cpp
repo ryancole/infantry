@@ -427,10 +427,8 @@ void World::TickClocks(Unit& unit, float dt)
     }
 }
 
-void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
+void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
 {
-    TickClocks(unit, dt);
-
     // --- Movement. The command asks for a velocity; the body eases onto it.
     // Framed as a decay toward the wanted velocity rather than a step of
     // acceleration so the feel holds at any frame rate. Which rate it decays
@@ -467,6 +465,13 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
         const float turnRate = kTurnRate * (cmd.steady ? kSteadyTurnScale : 1.0f);
         unit.aimDir = TurnToward(unit.aimDir, cmd.aim, turnRate * dt);
     }
+}
+
+void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
+{
+    TickClocks(unit, dt);
+
+    MoveCommand(unit, cmd, dt);
 
     // --- Reload: the magazine runs out mid-firefight, and getting a fresh one
     // in costs the soldier their guns for a moment. It can be started early,
@@ -1138,6 +1143,11 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
     if (snap.own.has)
         if (Unit* me = UnitById(snap.own.id))
         {
+            // Momentum comes down with the loadout: it's the piece of
+            // movement state a position alone doesn't carry, and replaying
+            // pending commands from a soldier with the wrong momentum would
+            // predict a different body.
+            me->moveVel = { snap.own.moveVelX, 0.0f, snap.own.moveVelZ };
             me->ammo = snap.own.ammo;
             me->reloadTimer = snap.own.reloadTimer;
             me->grenades = snap.own.grenades;

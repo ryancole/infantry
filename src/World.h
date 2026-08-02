@@ -293,6 +293,15 @@ public:
     // asks "is this me" keeps working against a wire-fed roster.
     void ApplySnapshot(const Net::Snapshot& snap, int myUnitId);
 
+    // The movement half of a command: momentum, the walk cycle, and the
+    // facing coming around — everything about a command that moves a body
+    // and nothing that spends its kit. Public, and callable on a unit that
+    // isn't on the roster, because this is the half a client predicts: the
+    // same arithmetic runs on both ends of the wire, against this world's
+    // walls, which is the whole reason a replayed prediction lands where the
+    // server's answer will.
+    void MoveCommand(Unit& unit, const Command& cmd, float dt) const;
+
     const std::vector<Unit>& Units() const { return m_units; }
     const std::vector<Projectile>& Projectiles() const { return m_projectiles; }
     const std::vector<Collider>& Colliders() const { return m_colliders; }

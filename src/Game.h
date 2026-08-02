@@ -19,6 +19,7 @@
 #include <DirectXMath.h>
 #include <SimpleMath.h>
 #include <array>
+#include <deque>
 #include <memory>
 #include <random>
 #include <string>
@@ -150,6 +151,14 @@ private:
     // Respawned into who-am-I and the phase. The camera comes along for the
     // cut a (re)spawn makes.
     void NetPump(float dt, IsoCamera& camera);
+    // Reconciliation: the server's own-block just landed, naming the newest
+    // command it consumed. Everything up to it is history and retired;
+    // everything after is replayed — the same MoveCommand, the same tick
+    // length, from the server's authoritative soldier — onto a fresh
+    // prediction. When nothing contradicted us, the replay lands exactly
+    // where the old prediction stood and the correction is invisible, which
+    // is the normal case and the whole design.
+    void Repredict(uint32_t ackSeq);
     // Puts the player back on the field via the World and returns to
     // Phase::Playing; the camera cuts rather than sweeps across.
     void Respawn(IsoCamera& camera);
@@ -204,6 +213,27 @@ private:
     // last snapshot landed, over the tick length, is how far the drawn frame
     // sits past the state we're holding — the wire's version of m_tickAccum.
     float m_snapElapsed = 0.0f;
+
+    // --- Prediction: the local soldier, answered on the frame. In connected
+    // play the replica's own unit is the server's truth, a round trip old; the
+    // player shouldn't steer that. So their soldier is simulated twice: every
+    // command is applied to this detached copy the tick it's made (movement
+    // and aim only — nothing that spends the kit), and Repredict squares the
+    // copy with the server every time an own-block arrives. Everyone else on
+    // the field stays snapshot-fed; this is one soldier's private fast-forward.
+    struct PendingCmd
+    {
+        uint32_t seq;
+        Command cmd;
+    };
+    std::deque<PendingCmd> m_pendingCmds; // sent but not yet acked
+    uint32_t m_cmdSeq = 0;                // stamp of the newest command made
+    Unit m_predicted = {};                // the soldier as the player feels them
+    bool m_hasPredicted = false;          // false until the first own-snapshot
+    // The prediction's own between-ticks blend, distinct from the snapshot
+    // one: the local soldier advances on this machine's command clock while
+    // everyone else advances on the wire's, and each gets drawn on its own.
+    float m_predAlpha = 0.0f;
 
     Sound m_sound;
     Phase m_phase = Phase::MainMenu;

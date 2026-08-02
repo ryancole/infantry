@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <exception>
 #include <memory>
 #include <vector>
@@ -24,6 +25,12 @@
 // on the reinforcement clock — when they leave.
 namespace
 {
+    // How many commands may wait in a session's queue before the server
+    // starts folding them together to catch up. The queue exists to absorb
+    // network jitter — a packet arriving early keeps its tick — but depth is
+    // latency, so past two ticks of cushion the backlog is spent, not saved.
+    constexpr size_t kCmdBacklog = 2;
+
     // One connected player: the peer, the slot they claimed, and the soldier
     // they're currently driving (unitId is -1 for the length of the respawn
     // wait, same as the local player's absence from a solo roster).
@@ -35,12 +42,17 @@ namespace
         uint8_t classId = 0;
         int unitId = -1;
         float respawnTimer = 0.0f;
-        // The player's standing orders, latched the way the client latches
-        // its own pending command: holds overwritten by every packet, edges
-        // OR-ed on and spent by the tick that consumes them. Between packets
-        // the last holds stand, so a command lost on the wire costs a beat of
-        // responsiveness, not a stumble.
-        Command pending;
+        // Commands waiting for their tick, in the order the client stamped
+        // them. Each is applied exactly once — that's the contract prediction
+        // replays against — and `acked` names the newest one consumed, which
+        // rides back in every own-block so the client can retire history.
+        std::deque<std::pair<uint32_t, Command>> queue;
+        uint32_t acked = 0;
+        // What to do on a tick the queue can't feed: the last command's
+        // holds, with its edges already spent. A gap on the wire costs a beat
+        // of responsiveness, not a stumble — the soldier keeps walking the
+        // way they were told to, and stops pressing things.
+        Command held;
     };
 
     void SendReliable(ENetPeer* peer, const Net::Writer& w)
@@ -163,18 +175,13 @@ int main(int argc, char** argv)
                 }
                 else if (session && type == Net::MsgType::Cmd && session->joined)
                 {
-                    const Command cmd = Net::ReadCmd(r);
-                    if (r.ok)
-                    {
-                        // Latch: holds are now, edges are since-last-tick.
-                        const bool reload = session->pending.reload || cmd.reload;
-                        const bool grenade = session->pending.grenade || cmd.grenade;
-                        const bool ability = session->pending.ability || cmd.ability;
-                        session->pending = cmd;
-                        session->pending.reload = reload;
-                        session->pending.grenade = grenade;
-                        session->pending.ability = ability;
-                    }
+                    uint32_t seq = 0;
+                    const Command cmd = Net::ReadCmd(r, seq);
+                    // The state channel drops out-of-order arrivals, so the
+                    // only thing to reject here is a replayed or stale stamp.
+                    if (r.ok && seq > session->acked &&
+                        (session->queue.empty() || seq > session->queue.back().first))
+                        session->queue.push_back({ seq, cmd });
                 }
                 enet_packet_destroy(netEvent.packet);
                 break;
@@ -240,12 +247,38 @@ int main(int argc, char** argv)
             {
                 if (!session->joined || session->unitId < 0)
                     continue;
-                world.SetCommand(session->unitId, session->pending);
-                // The tick below spends the edges; the next packet may set
-                // them again.
-                session->pending.reload = false;
-                session->pending.grenade = false;
-                session->pending.ability = false;
+
+                // Spend backlog beyond the jitter cushion: a skipped command
+                // folds its edges into the one that will actually run, so a
+                // reload pressed during a hiccup still happens — once.
+                while (session->queue.size() > kCmdBacklog + 1)
+                {
+                    const auto [seq, skipped] = session->queue.front();
+                    session->queue.pop_front();
+                    session->queue.front().second.reload |= skipped.reload;
+                    session->queue.front().second.grenade |= skipped.grenade;
+                    session->queue.front().second.ability |= skipped.ability;
+                    session->acked = seq;
+                }
+
+                if (!session->queue.empty())
+                {
+                    const auto [seq, cmd] = session->queue.front();
+                    session->queue.pop_front();
+                    world.SetCommand(session->unitId, cmd);
+                    session->acked = seq;
+                    session->held = cmd;
+                    session->held.reload = false;
+                    session->held.grenade = false;
+                    session->held.ability = false;
+                }
+                else
+                {
+                    // Starved: reapply the held command, edges long spent.
+                    // The ack stays put — nothing new was consumed, and the
+                    // client's pending list is still pending.
+                    world.SetCommand(session->unitId, session->held);
+                }
             }
 
             events.clear();
@@ -262,6 +295,10 @@ int main(int argc, char** argv)
                         {
                             session->unitId = -1;
                             session->respawnTimer = World::kRespawnDelay;
+                            // Orders addressed to a dead soldier die with
+                            // them; the fresh one starts on fresh commands.
+                            session->queue.clear();
+                            session->held = {};
                         }
 
             // --- Down the wire: what happened, then where everything is.
@@ -285,9 +322,11 @@ int main(int argc, char** argv)
                         SendState(session->peer, eventMsg);
                     Net::Writer snap;
                     snap.bytes = shared.bytes;
-                    Net::WriteSnapshotOwn(
-                        snap, session->unitId >= 0 ? world.UnitById(session->unitId)
-                                                   : nullptr);
+                    Net::WriteSnapshotOwn(snap,
+                                          session->unitId >= 0
+                                              ? world.UnitById(session->unitId)
+                                              : nullptr,
+                                          session->acked);
                     SendState(session->peer, snap);
                 }
                 enet_host_flush(host);
