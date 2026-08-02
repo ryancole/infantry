@@ -1457,20 +1457,16 @@ void Game::RenderHud(Renderer& renderer)
     // equipment that ran out. It comes off the class rather than the unit so
     // the module doesn't blink out of the cluster for the respawn wait.
     hud.ability = m_class->ability.kind != Ability::Kind::None ? &m_class->ability : nullptr;
-    // The roster, both sides counted the same way: everyone standing. On one
-    // roster that isn't an adjustment to make, it's just counting — the player
-    // is one of the soldiers on their own side, which is what makes the two
-    // rows comparable: five against five reads as five against five, and a
-    // side is short exactly when somebody on it is waiting to come back.
-    const std::vector<Unit>& units = m_world.Units();
-    hud.allies =
-        static_cast<int>(std::count_if(units.begin(), units.end(), [this](const Unit& n) {
-            return n.team == m_team && n.hp > 0.0f;
-        }));
-    hud.enemies =
-        static_cast<int>(std::count_if(units.begin(), units.end(), [this](const Unit& n) {
-            return n.team != m_team && n.hp > 0.0f;
-        }));
+    // The roster, both sides counted the same way: everyone standing. Asked
+    // of the World rather than counted here because a connected client's
+    // roster is fog-filtered — it only holds what this player can see — and
+    // the panel is a scoreboard, which is meant to know more than the fog
+    // shows. Solo, it's the same numbers it always was.
+    hud.allies = m_world.Standing(m_team);
+    hud.enemies = 0;
+    for (int team = 0; team < m_world.TeamCount(); ++team)
+        if (team != m_team)
+            hud.enemies += m_world.Standing(team);
     hud.teamSize = World::kTeamSize;
     // The same two colors the soldiers are wearing, so the corner and the field
     // agree. With two sides the enemy is simply the other one; a third team

@@ -31,6 +31,14 @@ namespace
     // latency, so past two ticks of cushion the backlog is spent, not saved.
     constexpr size_t kCmdBacklog = 2;
 
+    // How far away an event still reaches a client. Sight is the snapshot
+    // filter's business; this one is about the ears — gunfire behind a wall
+    // is meant to be heard, so events go by distance, not by line of sight.
+    // The number matches the client's audio falloff (Sound::kRange, which
+    // this file has no business including): past it the sound would have
+    // faded to nothing anyway, so the cut is inaudible by construction.
+    constexpr float kEventRange = 45.0f;
+
     // One connected player: the peer, the slot they claimed, and the soldier
     // they're currently driving (unitId is -1 for the length of the respawn
     // wait, same as the local player's absence from a solo roster).
@@ -42,6 +50,11 @@ namespace
         uint8_t classId = 0;
         int unitId = -1;
         float respawnTimer = 0.0f;
+        // Where this client's fog is drawn from: their soldier while they
+        // have one, frozen on the spot they died for the length of the wait —
+        // the same rule their own camera follows, so what the server sends
+        // and what the dead player's screen shows stay one picture.
+        DirectX::SimpleMath::Vector2 viewPos;
         // Commands waiting for their tick, in the order the client stamped
         // them. Each is applied exactly once — that's the contract prediction
         // replays against — and `acked` names the newest one consumed, which
@@ -164,6 +177,8 @@ int main(int argc, char** argv)
                     session->team = world.ClaimSlot(team);
                     session->unitId =
                         world.SpawnRemote(kClassDefs[session->classId], session->team);
+                    if (const Unit* me = world.UnitById(session->unitId))
+                        session->viewPos = { me->pos.x, me->pos.z };
                     session->joined = true;
                     Net::Writer w;
                     Net::WriteWelcome(w, session->unitId,
@@ -295,42 +310,60 @@ int main(int argc, char** argv)
                         {
                             session->unitId = -1;
                             session->respawnTimer = World::kRespawnDelay;
+                            // The dead watch from where they fell.
+                            session->viewPos = { ev.pos.x, ev.pos.z };
                             // Orders addressed to a dead soldier die with
                             // them; the fresh one starts on fresh commands.
                             session->queue.clear();
                             session->held = {};
                         }
 
-            // --- Down the wire: what happened, then where everything is.
-            // The roster and the shots serialize once; the own-block — the
-            // one part of a snapshot that is somebody's business alone — is
-            // appended per client.
-            if (!sessions.empty())
+            // --- Down the wire: what happened, then where everything is —
+            // both as seen from each client's own soldier. The snapshot is
+            // fog-filtered per viewer (a soldier you can't see is absent from
+            // the bytes, not merely undrawn), and events go by earshot, so a
+            // firefight behind a wall is still a thing you hear.
+            std::vector<Event> heard;
+            for (auto& session : sessions)
             {
-                Net::Writer eventMsg;
+                if (!session->joined)
+                    continue;
+
+                if (session->unitId >= 0)
+                    if (const Unit* me = world.UnitById(session->unitId))
+                        session->viewPos = { me->pos.x, me->pos.z };
+
                 if (!events.empty())
-                    Net::WriteEvents(eventMsg, events);
-
-                Net::Writer shared;
-                Net::WriteSnapshotShared(shared, world, tick);
-
-                for (auto& session : sessions)
                 {
-                    if (!session->joined)
-                        continue;
-                    if (!events.empty())
+                    heard.clear();
+                    for (const Event& ev : events)
+                    {
+                        const float dx = ev.pos.x - session->viewPos.x;
+                        const float dz = ev.pos.z - session->viewPos.y;
+                        if ((ev.unit >= 0 && ev.unit == session->unitId) ||
+                            dx * dx + dz * dz <= kEventRange * kEventRange)
+                            heard.push_back(ev);
+                    }
+                    if (!heard.empty())
+                    {
+                        Net::Writer eventMsg;
+                        Net::WriteEvents(eventMsg, heard);
                         SendState(session->peer, eventMsg);
-                    Net::Writer snap;
-                    snap.bytes = shared.bytes;
-                    Net::WriteSnapshotOwn(snap,
-                                          session->unitId >= 0
-                                              ? world.UnitById(session->unitId)
-                                              : nullptr,
-                                          session->acked);
-                    SendState(session->peer, snap);
+                    }
                 }
-                enet_host_flush(host);
+
+                Net::Writer snap;
+                Net::WriteSnapshotVisible(snap, world, tick, session->viewPos,
+                                          session->unitId);
+                Net::WriteSnapshotOwn(snap,
+                                      session->unitId >= 0
+                                          ? world.UnitById(session->unitId)
+                                          : nullptr,
+                                      session->acked);
+                SendState(session->peer, snap);
             }
+            if (!sessions.empty())
+                enet_host_flush(host);
         }
 
         sinceReport += dt;

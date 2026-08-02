@@ -203,21 +203,51 @@ namespace Net
     struct Snapshot
     {
         uint32_t tick = 0;
+        // Living soldiers per team, counted before the fog filter below did
+        // its work: the corner panel is a scoreboard, and a scoreboard that
+        // only counted what you can see would say "outnumbered" every time
+        // you were alone.
+        std::vector<uint8_t> standing;
         std::vector<SnapUnit> units;
         std::vector<SnapProjectile> projectiles;
         SnapOwn own;
     };
 
-    // The shared body of a snapshot: everything every client gets alike.
-    // Split from the own-block so the server serializes the roster once per
-    // tick, not once per client.
-    inline void WriteSnapshotShared(Writer& w, const World& world, uint32_t tick)
+    // One client's snapshot: the fight as seen from `viewer`. This is the
+    // fog of war made real — a soldier the viewer can't see isn't dimmed or
+    // skipped by their renderer, they're absent from the bytes, so no amount
+    // of client cleverness can find an enemy behind a wall. The test is the
+    // same Visibility the fog is drawn with, from the same eye, which keeps
+    // the server's opinion of "hidden" and the player's picture of it one
+    // opinion. The viewer's own soldier always makes the cut; per-team
+    // standing counts go out unfiltered, because the scoreboard is meant to
+    // be known.
+    //
+    // Built per client rather than shared, which is what buys the filter; at
+    // ten soldiers a match the redundant serialization is nothing.
+    inline void WriteSnapshotVisible(Writer& w, const World& world, uint32_t tick,
+                                     const DirectX::SimpleMath::Vector2& viewer, int ownId)
     {
         w.U8(static_cast<uint8_t>(MsgType::Snapshot));
         w.U32(tick);
-        w.U8(static_cast<uint8_t>(world.Units().size()));
+
+        w.U8(static_cast<uint8_t>(world.TeamCount()));
+        for (int team = 0; team < world.TeamCount(); ++team)
+            w.U8(static_cast<uint8_t>(world.Standing(team)));
+
+        const auto visible = [&](float x, float z) {
+            return Visibility::IsPointVisible(viewer, { x, z }, world.Occluders());
+        };
+
+        uint8_t unitCount = 0;
+        for (const Unit& u : world.Units())
+            if (u.id == ownId || visible(u.pos.x, u.pos.z))
+                ++unitCount;
+        w.U8(unitCount);
         for (const Unit& u : world.Units())
         {
+            if (u.id != ownId && !visible(u.pos.x, u.pos.z))
+                continue;
             w.I32(u.id);
             w.U8(static_cast<uint8_t>(u.cls - kClassDefs)); // index into the one table
             w.U8(static_cast<uint8_t>(u.team));
@@ -228,9 +258,16 @@ namespace Net
             w.F32(u.moveBlend);
             w.F32(u.hp);
         }
-        w.U8(static_cast<uint8_t>(world.Projectiles().size()));
+
+        uint8_t shotCount = 0;
+        for (const World::Projectile& shot : world.Projectiles())
+            if (visible(shot.pos.x, shot.pos.z))
+                ++shotCount;
+        w.U8(shotCount);
         for (const World::Projectile& shot : world.Projectiles())
         {
+            if (!visible(shot.pos.x, shot.pos.z))
+                continue;
             w.Vec3(shot.pos);
             w.F32(shot.radius);
             w.F32(shot.life);
@@ -261,6 +298,9 @@ namespace Net
     {
         Snapshot snap;
         snap.tick = r.U32();
+        const int teamCount = r.U8();
+        for (int i = 0; i < teamCount && r.ok; ++i)
+            snap.standing.push_back(r.U8());
         const int unitCount = r.U8();
         snap.units.reserve(unitCount);
         for (int i = 0; i < unitCount && r.ok; ++i)

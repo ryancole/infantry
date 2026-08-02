@@ -277,6 +277,16 @@ int World::HumanSlots(int team) const
     return team < static_cast<int>(m_humanSlots.size()) ? m_humanSlots[team] : 0;
 }
 
+int World::Standing(int team) const
+{
+    if (!m_standingOverride.empty())
+        return team < static_cast<int>(m_standingOverride.size()) ? m_standingOverride[team]
+                                                                  : 0;
+    return static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [team](const Unit& u) {
+        return u.team == team && u.hp > 0.0f;
+    }));
+}
+
 void World::RemoveUnit(int id)
 {
     std::erase_if(m_units, [id](const Unit& u) { return u.id == id; });
@@ -1091,6 +1101,9 @@ void World::ReapDead()
 
 void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
 {
+    // The scoreboard arrives whole even though the roster below doesn't.
+    m_standingOverride.assign(snap.standing.begin(), snap.standing.end());
+
     // Rebuild the roster in the snapshot's image, carrying each surviving
     // unit's current state over as its previous state — the same two-frame
     // pair a Tick writes, so the renderer's between-ticks blend works

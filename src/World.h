@@ -272,6 +272,12 @@ public:
     int HumanSlots(int team) const;
     int TeamCount() const { return static_cast<int>(m_teamSpawns.size()); }
 
+    // Living soldiers on `team`. Counted off the roster when the roster is
+    // whole; on a replica it's the number the server sent, because a fog-
+    // filtered roster only holds what this client is allowed to see and the
+    // corner panel is a scoreboard, not a wallhack.
+    int Standing(int team) const;
+
     // Puts a connected player's soldier on the field: `cls` at `team`'s
     // spawn, full loadout, driven by whatever SetCommand says from now on.
     // Returns the unit's id — the name the server and the wire know them by.
@@ -428,6 +434,9 @@ private:
     std::vector<int> m_humanSlots;
     // Commands staged for remote units, consumed whole by the next Tick.
     std::vector<std::pair<int, Command>> m_staged;
+    // The server's per-team standing counts, held by a replica whose own
+    // roster is fog-filtered. Empty on any world whose roster is the truth.
+    std::vector<int> m_standingOverride;
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id.
     std::vector<Vector3> m_teamSpawns;
