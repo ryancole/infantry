@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <string>
 
 using namespace DirectX;
@@ -232,22 +233,25 @@ void Game::LoadContent(Renderer& renderer)
     // is what a first run is — so nothing here checks the answer.
     m_binds.Load();
 
-    // Connected play: start the handshake now, behind the menus, so by the
-    // time a class is picked the socket is usually already up. With a class
-    // named on the command line the menus are skipped entirely — launch to
-    // firefight in one step, which is what iterating on netcode wants.
+    // Pointed at somebody else's server from the command line: start the
+    // handshake now, behind the menus, so by the time a class is picked the
+    // socket is usually already up.
     if (!m_connectHost.empty())
-    {
-        m_net = std::make_unique<NetClient>();
-        m_net->Start(m_connectHost, Net::kPort);
-        for (size_t i = 0; i < kClassCount; ++i)
-            if (_stricmp(kClassDefs[i].name, m_autoClass.c_str()) == 0)
-            {
-                m_class = &kClassDefs[i];
-                m_phase = Phase::Connecting;
-                break;
-            }
-    }
+        Connect(m_connectHost, Net::kPort);
+
+    // With a class named on the command line the menus are skipped entirely —
+    // launch to firefight in one step, which is what iterating on netcode
+    // wants. Without a host to go with it that's a match on this machine, so
+    // the same shortcut works for playing on your own.
+    for (size_t i = 0; i < kClassCount; ++i)
+        if (_stricmp(kClassDefs[i].name, m_autoClass.c_str()) == 0)
+        {
+            m_class = &kClassDefs[i];
+            if (!m_net)
+                HostMatch();
+            m_phase = Phase::Connecting;
+            break;
+        }
 
     m_sound.Init(); // loads the wave bank and starts the ambience
 
@@ -289,13 +293,63 @@ void Game::LoadContent(Renderer& renderer)
 
 void Game::Shutdown()
 {
+    // Same order as LeaveMatch, for the same reason: the host goes down
+    // first, so the goodbye it sends is what the client's hang-up reads
+    // instead of a timeout.
+    m_server.reset();
     if (m_net)
         m_net->Disconnect();
     m_sound.Shutdown();
 }
 
+void Game::HostMatch()
+{
+    // Loopback and a port the OS picks: this match is for the person sitting
+    // at this machine, so it isn't listed on the LAN and isn't reachable from
+    // off the box — and a socket bound to 127.0.0.1 is one Windows never
+    // raises a firewall prompt about. The well-known port is left alone so a
+    // real server can go on running here at the same time.
+    Server::Config config;
+    config.port = 0;
+    config.loopbackOnly = true;
+    config.discoverable = false;
+    config.log = false;
+
+    auto server = std::make_unique<Server>();
+    uint16_t port = Net::kPort;
+    try
+    {
+        if (server->Start(config))
+        {
+            port = server->Port();
+            m_server = std::move(server);
+        }
+    }
+    catch (const std::exception&)
+    {
+        // A level that won't load, on ground this client already loaded once.
+        // Nothing to do here that the failed connection below won't do better.
+    }
+    Connect("127.0.0.1", port);
+}
+
+void Game::Connect(const std::string& host, uint16_t port)
+{
+    m_connectHost = host;
+    m_net = std::make_unique<NetClient>();
+    m_net->Start(m_connectHost, port);
+    m_joinSent = false;
+}
+
 void Game::LeaveMatch()
 {
+    // A match this machine was hosting had exactly one player in it, and they
+    // have just left: the server goes with them, and the port goes back. It
+    // goes first so its own goodbye is already sitting in the client's socket
+    // when the client says its own — otherwise the polite hang-up below waits
+    // out its timeout for an answer from a server that is no longer being
+    // ticked, and leaving a match costs a visible hitch.
+    m_server.reset();
     if (m_net)
         m_net->Disconnect();
     m_net.reset();
@@ -331,7 +385,18 @@ void Game::ClearBattlefield()
 
 void Game::NetPump(float dt, IsoCamera& camera)
 {
-    (void)dt;
+    // A match hosted here takes its turn of the frame now, between the
+    // commands this frame staged and the answers about to be read. The flush
+    // is what makes that worth doing: the commands are put on the wire before
+    // the server looks at it, so a keypress is consumed, simulated, and
+    // answered inside the frame that made it rather than the one after — the
+    // whole round trip in the time it takes to call two functions.
+    if (m_server)
+    {
+        m_net->Flush();
+        m_server->Update(dt);
+    }
+
     std::vector<std::vector<uint8_t>> packets;
     m_net->Poll(packets);
 
@@ -349,6 +414,13 @@ void Game::NetPump(float dt, IsoCamera& camera)
         Net::Reader r(packet.data(), packet.size());
         switch (static_cast<Net::MsgType>(r.U8()))
         {
+        // Welcome and Respawned both say the same thing — here is your
+        // soldier — and neither of them puts the player in the arena. That
+        // waits for the snapshot below: a name without a position is nothing
+        // to draw, and a screen that went Playing on the strength of one
+        // would spend a frame looking for a soldier the roster hasn't
+        // mentioned yet. A frame or two either way, and never a bet on which
+        // packet lands first.
         case Net::MsgType::Welcome:
         {
             m_myUnitId = r.I32();
@@ -356,8 +428,6 @@ void Game::NetPump(float dt, IsoCamera& camera)
             m_camSnapPending = true;
             m_hasPredicted = false;
             m_pendingCmds.clear();
-            if (m_phase == Phase::Connecting)
-                m_phase = Phase::Playing;
             break;
         }
         case Net::MsgType::Respawned:
@@ -366,8 +436,6 @@ void Game::NetPump(float dt, IsoCamera& camera)
             m_camSnapPending = true;
             m_hasPredicted = false;
             m_pendingCmds.clear();
-            if (m_phase == Phase::Dead)
-                m_phase = Phase::Playing;
             break;
         }
         case Net::MsgType::Snapshot:
@@ -388,7 +456,10 @@ void Game::NetPump(float dt, IsoCamera& camera)
             // actually has us in it — Welcome says who we are, but only a
             // snapshot says where. It's also where the prediction is born:
             // from here the soldier under the keys is this machine's copy,
-            // and the server's is what it gets squared against.
+            // and the server's is what it gets squared against. And it's
+            // where the player enters the arena: Phase::Playing means there
+            // is a soldier of ours standing on the field, which is what every
+            // path that reads one already assumed.
             if (m_camSnapPending)
                 if (const Unit* me = m_world.Local())
                 {
@@ -398,6 +469,8 @@ void Game::NetPump(float dt, IsoCamera& camera)
                     m_camSnapPending = false;
                     m_predicted = *me;
                     m_hasPredicted = true;
+                    if (m_phase == Phase::Connecting || m_phase == Phase::Dead)
+                        m_phase = Phase::Playing;
                 }
             if (snap.own.has && m_hasPredicted)
                 Repredict(snap.own.ackSeq);
@@ -466,7 +539,21 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             switch (*picked)
             {
-            case MainMenu::Choice::Deploy:   m_phase = Phase::ClassSelect; break;
+            case MainMenu::Choice::Deploy:
+                // Deploying opens a match on this machine and joins it, which
+                // is the same two steps as JOIN with the walk to another
+                // computer taken out. The server starts here rather than at
+                // the class pick so the handshake — and the first squads
+                // coming up to strength — happen behind the class card.
+                //
+                // Unless the command line already pointed us somewhere: a
+                // connection in flight is the fight this game was launched to
+                // be in, and DEPLOY means "into the fight", not "into a new
+                // one".
+                if (!m_net)
+                    HostMatch();
+                m_phase = Phase::ClassSelect;
+                break;
             case MainMenu::Choice::Join:
                 m_phase = Phase::Join;
                 m_scan.Start();
@@ -496,10 +583,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
                                                 camera.ViewportHeight()))
         {
             m_scan.Stop();
-            m_connectHost = *host;
-            m_net = std::make_unique<NetClient>();
-            m_net->Start(m_connectHost, Net::kPort);
-            m_joinSent = false;
+            Connect(*host, Net::kPort);
             m_phase = Phase::ClassSelect;
         }
         return;
@@ -521,40 +605,34 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     if (m_phase == Phase::ClassSelect)
     {
-        // Escape backs out to the menu rather than closing the game, now that
-        // there's a menu to back out to — and if a connection was already
-        // warming up behind this screen, backing out hangs it up too.
+        // Escape backs out to the menu rather than closing the game, and the
+        // connection warming up behind this screen — to another machine or to
+        // the one under it — is hung up on the way out.
         if (input.KeyPressed(VK_ESCAPE))
         {
-            if (m_net)
-                LeaveMatch();
-            else
-                m_phase = Phase::MainMenu;
+            LeaveMatch();
             return;
+        }
+        // The handshake, behind the card. Pumping it here is what actually
+        // gives it the head start — and what keeps it from timing out while
+        // somebody reads five class descriptions, which is longer than a
+        // connection attempt is willing to wait. A match hosted here ticks
+        // along with it, so both squads are on the field by the time the pick
+        // lands, exactly as they would be on a server that was already
+        // running.
+        if (m_net)
+        {
+            NetPump(dt, camera);
+            if (!m_net)
+                return; // the far end went away while the card was up
         }
         if (const auto picked =
                 m_classSelect.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
         {
+            // Ask to be in the match. The join goes out from the Connecting
+            // phase, which also covers a handshake that hasn't finished yet.
             m_class = &GetClassDef(*picked);
-            if (m_net)
-            {
-                // The match is somebody else's: ask to be in it. The join
-                // goes out from the Connecting phase, which also covers a
-                // handshake that hasn't finished yet.
-                m_phase = Phase::Connecting;
-            }
-            else
-            {
-                m_phase = Phase::Playing;
-                // The whole match turns up with the player — their own unit
-                // included, loadout and all. The class pick is the last thing
-                // standing between the menu and the arena, so it's also the
-                // first moment there's anything for two squads to do.
-                m_world.StartMatch(m_class, m_team);
-                m_eyePos = m_world.Local()->pos;
-                camera.SetTarget(m_eyePos);
-                camera.SnapToTarget();
-            }
+            m_phase = Phase::Connecting;
         }
         return;
     }
@@ -581,18 +659,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
-    // In a connected arena, escape leaves the server and lands on the menu —
-    // somebody else's match goes on without you, and quitting their game
-    // shouldn't cost you yours. Solo, it still ends the game outright, which
-    // is the honest state of things: there's no pause menu to fall into yet,
-    // and quietly making the key do nothing would be worse than the bluntness
-    // of what it does.
+    // Escape leaves the match and lands on the menu. Somebody else's fight
+    // goes on without you; one hosted here ends, because you were the only
+    // person in it. Either way the key means the same thing — leave — and
+    // QUIT on the menu is what closes the game.
     if (input.KeyPressed(VK_ESCAPE))
     {
-        if (m_net)
-            LeaveMatch();
-        else
-            m_quit = true;
+        LeaveMatch();
         return;
     }
 
@@ -611,44 +684,19 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // firefight the player is watching out still sounds like one.
     if (m_phase == Phase::Dead)
     {
+        // The wait is the server's; the timer here only feeds the countdown
+        // text, and Respawned is what actually brings us back (see NetPump).
+        // The ragdolls still need local gravity.
         m_respawnTimer -= dt;
-        if (m_net)
-        {
-            // The wait is really the server's; the timer here only feeds the
-            // countdown text, and Respawned is what actually brings us back
-            // (see NetPump). The ragdolls still need local gravity.
-            NetPump(dt, camera);
-            if (!m_net)
-                return; // the session ended out from under the wait
-            m_snapElapsed += dt;
-            m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
-            m_world.Phys().Step(dt);
-        }
-        else
-        {
-            m_tickAccum += dt;
-            while (m_tickAccum >= World::kTickDt)
-            {
-                m_tickAccum -= World::kTickDt;
-                m_world.Tick(nullptr, m_events);
-            }
-            m_renderAlpha = m_tickAccum / World::kTickDt;
-        }
+        NetPump(dt, camera);
+        if (!m_net)
+            return; // the session ended out from under the wait
+        m_snapElapsed += dt;
+        m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
+        m_world.Phys().Step(dt);
         ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
-        // A match that has ended doesn't hand anybody back their soldier: the
-        // wait is over, but there's nothing left to wait for. The next match
-        // puts everyone on the field at once, and that's what this player is
-        // waiting for now.
-        if (!m_net && m_world.MatchOver())
-        {
-            if (m_world.Intermission() <= 0.0f)
-                StartNextMatch(camera);
-            return;
-        }
-        if (!m_net && m_respawnTimer <= 0.0f)
-            Respawn(camera);
         return;
     }
 
@@ -657,7 +705,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // pump and wait, rather than dereferencing a roster that hasn't arrived
     // or mistaking "not here yet" for "dead". A frame or two at most, but a
     // frame that used to bet on packet timing.
-    if (m_net && !m_hasPredicted && !m_world.Local())
+    if (!m_hasPredicted && !m_world.Local())
     {
         NetPump(dt, camera);
         return;
@@ -681,132 +729,90 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
 
-    if (m_net)
+    // Commands are made on the same 60 Hz clock the server consumes them on —
+    // one per tick, numbered, kept until acked — and each one drives the
+    // predicted soldier the moment it exists. The latch below is what keeps
+    // the display's rate out of it: held controls are overwritten with
+    // whatever this frame's hands say, edges latch on until a tick spends
+    // them, and the tick spends them into exactly one command.
+    //
+    // None of it happens once the match is over: no command is stamped,
+    // nothing goes out on the wire, and the prediction stays where the
+    // server's last word put it — Repredict keeps it glued there as the
+    // frozen snapshots arrive. The pending command is wiped rather than
+    // left to sit, so the next match doesn't open on a key that was
+    // pressed at the end of the last one.
+    if (over)
     {
-        // Connected: commands are made on the same 60 Hz clock the server
-        // consumes them on — one per tick, numbered, kept until acked — and
-        // each one drives the predicted soldier the moment it exists. The
-        // latch below is the same edge-preserving fold solo play does; the
-        // tick spends the edges into exactly one command.
-        //
-        // None of it happens once the match is over: no command is stamped,
-        // nothing goes out on the wire, and the prediction stays where the
-        // server's last word put it — Repredict keeps it glued there as the
-        // frozen snapshots arrive. The pending command is wiped rather than
-        // left to sit, so the next match doesn't open on a key that was
-        // pressed at the end of the last one.
-        if (over)
-        {
-            m_pendingCmd = {};
-            m_tickAccum = 0.0f;
-            m_predAlpha = 0.0f;
-        }
-        else
-        {
-            m_pendingCmd.move = fresh.move;
-            m_pendingCmd.aim = fresh.aim;
-            m_pendingCmd.aimDist = fresh.aimDist;
-            m_pendingCmd.fire = fresh.fire;
-            m_pendingCmd.melee = fresh.melee;
-            m_pendingCmd.steady = fresh.steady;
-            m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
-            m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
-            m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
-
-            m_tickAccum += dt;
-            while (m_tickAccum >= World::kTickDt)
-            {
-                m_tickAccum -= World::kTickDt;
-                const uint32_t seq = ++m_cmdSeq;
-                m_pendingCmds.push_back({ seq, m_pendingCmd });
-                // A server that stops acking must not turn this buffer into
-                // the whole session's history; past two seconds the oldest
-                // commands are lost causes, and the next ack squares
-                // everything anyway.
-                if (m_pendingCmds.size() > 120)
-                    m_pendingCmds.pop_front();
-                // The packet is this command and up to two predecessors,
-                // oldest first — the pending buffer's tail, which is exactly
-                // the set a lost packet would have cost the server.
-                Net::CmdEntry tail[Net::kCmdRedundancy];
-                size_t count = 0;
-                const size_t start =
-                    m_pendingCmds.size() > Net::kCmdRedundancy
-                        ? m_pendingCmds.size() - Net::kCmdRedundancy
-                        : 0;
-                for (size_t i = start; i < m_pendingCmds.size(); ++i)
-                    tail[count++] = { m_pendingCmds[i].seq, m_pendingCmds[i].cmd };
-                Net::Writer w;
-                Net::WriteCmds(w, tail, count);
-                m_net->SendState(w.bytes);
-                if (m_hasPredicted)
-                {
-                    m_predicted.prevPos = m_predicted.pos;
-                    m_predicted.prevAimDir = m_predicted.aimDir;
-                    m_predicted.prevWalkPhase = m_predicted.walkPhase;
-                    m_predicted.prevMoveBlend = m_predicted.moveBlend;
-                    m_world.MoveCommand(m_predicted, m_pendingCmd, World::kTickDt);
-                }
-                m_pendingCmd.reload = false;
-                m_pendingCmd.grenade = false;
-                m_pendingCmd.ability = false;
-            }
-            m_predAlpha = m_tickAccum / World::kTickDt;
-        }
-
-        NetPump(dt, camera);
-        // The pump may have ended the session — server gone, or the door
-        // closed — in which case there's a menu on screen now, not a match.
-        if (!m_net)
-            return;
-        m_snapElapsed += dt;
-        m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
-        // The replica is never Ticked, but the corpses still fall through the
-        // local physics world; this is their gravity.
-        m_world.Phys().Step(dt);
+        m_pendingCmd = {};
+        m_tickAccum = 0.0f;
+        m_predAlpha = 0.0f;
     }
     else
     {
-        // Fold this frame's hands into the pending command: held controls are
-        // whatever they are right now, edges latch until a tick spends them.
-        // A finished match hears none of it — the Tick below would drop the
-        // command anyway, and clearing it keeps an edge from surviving into
-        // the next match.
-        if (over)
-            m_pendingCmd = {};
-        else
-        {
-            m_pendingCmd.move = fresh.move;
-            m_pendingCmd.aim = fresh.aim;
-            m_pendingCmd.aimDist = fresh.aimDist;
-            m_pendingCmd.fire = fresh.fire;
-            m_pendingCmd.melee = fresh.melee;
-            m_pendingCmd.steady = fresh.steady;
-            m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
-            m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
-            m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
-        }
+        m_pendingCmd.move = fresh.move;
+        m_pendingCmd.aim = fresh.aim;
+        m_pendingCmd.aimDist = fresh.aimDist;
+        m_pendingCmd.fire = fresh.fire;
+        m_pendingCmd.melee = fresh.melee;
+        m_pendingCmd.steady = fresh.steady;
+        m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+        m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+        m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
 
-        // Simulation time passes in whole ticks; the frame deposits its dt
-        // and the loop spends what's there. The leftover is where this
-        // frame's picture sits between two ticks, which is what the renderer
-        // blends by.
         m_tickAccum += dt;
         while (m_tickAccum >= World::kTickDt)
         {
             m_tickAccum -= World::kTickDt;
-            m_world.Tick(&m_pendingCmd, m_events);
-            // The tick spent the edges; a second tick in the same frame must
-            // not spend them again.
+            const uint32_t seq = ++m_cmdSeq;
+            m_pendingCmds.push_back({ seq, m_pendingCmd });
+            // A server that stops acking must not turn this buffer into
+            // the whole session's history; past two seconds the oldest
+            // commands are lost causes, and the next ack squares
+            // everything anyway.
+            if (m_pendingCmds.size() > 120)
+                m_pendingCmds.pop_front();
+            // The packet is this command and up to two predecessors,
+            // oldest first — the pending buffer's tail, which is exactly
+            // the set a lost packet would have cost the server.
+            Net::CmdEntry tail[Net::kCmdRedundancy];
+            size_t count = 0;
+            const size_t start =
+                m_pendingCmds.size() > Net::kCmdRedundancy
+                    ? m_pendingCmds.size() - Net::kCmdRedundancy
+                    : 0;
+            for (size_t i = start; i < m_pendingCmds.size(); ++i)
+                tail[count++] = { m_pendingCmds[i].seq, m_pendingCmds[i].cmd };
+            Net::Writer w;
+            Net::WriteCmds(w, tail, count);
+            m_net->SendState(w.bytes);
+            if (m_hasPredicted)
+            {
+                m_predicted.prevPos = m_predicted.pos;
+                m_predicted.prevAimDir = m_predicted.aimDir;
+                m_predicted.prevWalkPhase = m_predicted.walkPhase;
+                m_predicted.prevMoveBlend = m_predicted.moveBlend;
+                m_world.MoveCommand(m_predicted, m_pendingCmd, World::kTickDt);
+            }
             m_pendingCmd.reload = false;
             m_pendingCmd.grenade = false;
             m_pendingCmd.ability = false;
         }
-        m_renderAlpha = m_tickAccum / World::kTickDt;
+        m_predAlpha = m_tickAccum / World::kTickDt;
     }
 
-    // Everything those ticks did — or the wire delivered — turned into
-    // something to see and hear.
+    NetPump(dt, camera);
+    // The pump may have ended the session — server gone, or the door
+    // closed — in which case there's a menu on screen now, not a match.
+    if (!m_net)
+        return;
+    m_snapElapsed += dt;
+    m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
+    // The replica is never Ticked, but the corpses still fall through the
+    // local physics world; this is their gravity.
+    m_world.Phys().Step(dt);
+
+    // Everything the wire delivered, turned into something to see and hear.
     ProcessEvents();
 
     // Particles are the client's own weather — they never touch the outcome
@@ -816,21 +822,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     UpdateParticles(dt);
     UpdateCorpses(dt);
 
-    // The result has stood its fifteen seconds. Solo, this machine starts the
-    // next match, because it's the one that started the last one; connected,
-    // the server does it and the news arrives as a Respawned.
-    if (!m_net && m_world.MatchOver() && m_world.Intermission() <= 0.0f)
-    {
-        StartNextMatch(camera);
-        return;
-    }
-
     // Death is noticed by absence. Whatever emptied the local soldier's
-    // health, the World has already reaped them on the same terms as anyone
-    // else, and the Death event has already put their corpse on the floor.
-    // What remains is the part that belongs to the player rather than the
-    // soldier: stop drawing a swing whose arm is gone, start the wait, and
-    // let the camera hold where the body fell (m_eyePos keeps the spot).
+    // health, the server has already reaped them on the same terms as anyone
+    // else — they're gone from the snapshot — and the Death event has already
+    // put their corpse on the floor. What remains is the part that belongs to
+    // the player rather than the soldier: stop drawing a swing whose arm is
+    // gone, start the wait, and let the camera hold where the body fell
+    // (m_eyePos keeps the spot).
     if (!m_world.Local())
     {
         m_meleeFlash = 0.0f;
@@ -843,10 +841,11 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
 
     // The eye, the ear, and the camera all follow the soldier as drawn — the
-    // blend between ticks — not the soldier as simulated, so nothing on
-    // screen leads or trails the body it's about. In connected play "as
-    // drawn" means the prediction: the camera answers the keys on the frame
-    // they're pressed, the same as the body does.
+    // blend between ticks — not the soldier as the server last said, so
+    // nothing on screen leads or trails the body it's about. "As drawn" means
+    // the prediction: the camera answers the keys on the frame they're
+    // pressed, the same as the body does. The fallback below is the frame or
+    // two before the first own-snapshot has landed.
     if (m_hasPredicted)
         m_eyePos = Vector3::Lerp(m_predicted.prevPos, m_predicted.pos, m_predAlpha);
     else
@@ -1007,42 +1006,6 @@ void Game::ProcessEvents()
         }
     }
     m_events.clear();
-}
-
-void Game::Respawn(IsoCamera& camera)
-{
-    // A respawn is a fresh soldier, not a repaired one: the World issues the
-    // whole loadout off the class table the same way it did at the class pick,
-    // so there's no list here of things to remember to put back.
-    m_world.SpawnLocal();
-    m_phase = Phase::Playing;
-    // The eye arrives with the body: the camera cut and the first fog polygon
-    // both read from here, and neither should spend a frame looking at
-    // wherever the last life ended.
-    m_eyePos = m_world.Local()->pos;
-    // A cut, not a sweep: the spawn is somewhere else entirely, and panning
-    // the whole arena to get there would take longer than the wait did.
-    camera.SetTarget(m_eyePos);
-    camera.SnapToTarget();
-}
-
-void Game::StartNextMatch(IsoCamera& camera)
-{
-    // Everything the last match left on the ground goes with it, and then the
-    // arena is set up exactly the way the class pick set it up the first time
-    // — the same two calls, so a second match is a first match and there's no
-    // second version of "a match starts" to keep in step.
-    ClearBattlefield();
-    m_world.Reset();
-    m_world.StartMatch(m_class, m_team);
-    m_phase = Phase::Playing;
-    m_respawnTimer = 0.0f;
-    m_tickAccum = 0.0f;
-    m_renderAlpha = 0.0f;
-    m_pendingCmd = {};
-    m_eyePos = m_world.Local()->pos;
-    camera.SetTarget(m_eyePos);
-    camera.SnapToTarget();
 }
 
 void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
@@ -1337,10 +1300,12 @@ void Game::Render(Renderer& renderer)
     }
 
     // Connecting: nothing to draw but the fact of it. The arena arrives with
-    // the first snapshot, moments after this screen stops existing.
+    // the first snapshot, moments after this screen stops existing. A match
+    // hosted here says what it's doing rather than where it's dialing —
+    // "connecting to 127.0.0.1" is true and tells the player nothing.
     if (m_phase == Phase::Connecting)
     {
-        std::string text = "CONNECTING TO " + m_connectHost;
+        std::string text = m_server ? "STARTING MATCH" : "CONNECTING TO " + m_connectHost;
         for (char& c : text)
             c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         const float size = renderer.Height() * 0.03f;

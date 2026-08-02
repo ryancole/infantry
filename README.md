@@ -13,9 +13,10 @@ Prototype scaffold with a working game loop:
 - Player movement, mouse aim, and projectile firing
 - A match is fifteen minutes long and won by the side that has killed more when the clock runs out. The kill goes to whoever last put damage on the body, so the score is a reading of who is winning rather than of who is standing — a side can be wiped out repeatedly and still be ahead. The clock and both scores live in the corner panel next to the strength counts, because "who's winning, by how much, and how long have I got" is one glance. On the whistle the arena freezes where it stands: nothing further is decided, the rounds still in the air are swept, and the result stands for fifteen seconds before a fresh match starts on the same ground — a draw is a real outcome, not something broken by a tiebreak nobody saw
 - Every soldier's kills and deaths are counted, and holding TAB puts the whole board up: both sides, five rows each, sorted by kills and then by deaths, with your own row lifted out of the list and the people told from the bots by color. The tally hangs on a *slot* rather than on a unit — a unit is one life and is swept off the roster when it ends, so a slot is a place on a side for the length of the match that a succession of soldiers stand in, and it's what a record can outlive its holder on. A side's score is only ever the sum of its slots' kills, so the corner panel and the board can't disagree. It arrives unfiltered over the wire like the standing counts do: the fog hides bodies, not the board. A player who leaves keeps their row, greyed out, and the side keeps their kills — the soldier the side is owed goes to a fresh slot instead, so the AI filling in starts from nothing rather than inheriting a stranger's tally, and quitting can never take points off the board
-- Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is one list of units, and who drives each (a brain, this machine's input) is a fact about the soldier rather than a difference in kind
+- Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is one list of units, and who drives each (a brain, a command off the wire) is a fact about the soldier rather than a difference in kind
 - The simulation is severed from the machine it's watched on: a `World` that steps on a fixed 60 Hz tick, hears input only as a `Command`, and reports what happened as events for the presentation to spend on blood, sound, and ragdolls. The renderer draws the blend between ticks, so a fast display sees motion rather than sixty stills
-- True multiplayer over that seam: `infantry_server.exe` hosts the match headless (no D3D on its link line) with AI in every unclaimed slot, and clients join over ENet — numbered commands up, snapshots and events down, sixty a second. A joining player displaces an AI soldier from the emptier side; a leaver's slot goes back to the AI on the same reinforcement clock a death starts
+- True multiplayer over that seam: a `Server` hosts the match with AI in every unclaimed slot, and clients join over ENet — numbered commands up, snapshots and events down, sixty a second. A joining player displaces an AI soldier from the emptier side; a leaver's slot goes back to the AI on the same reinforcement clock a death starts. `infantry_server.exe` is that class with a console loop around it and no D3D on its link line
+- There is no offline mode, because there is no second way to run a match. DEPLOY starts a `Server` inside the game's own process — bound to loopback on a port the OS picks, so it's listed nowhere and reachable from nothing — and joins it as a client over that socket. Playing on your own is a one-player match on a real server: the fog is server-enforced, your soldier is predicted and reconciled, the snapshots are quantized and the bytes are the same bytes. What it costs is that the trigger is answered on the server's next tick, which is a tick away when the server is an inch away. What it buys is that the code that decides a match has one reader and one set of bugs, and a fix to either lands in both places at once
 - Client-side prediction with server reconciliation: your own soldier answers movement and aim on the frame you press, simulated locally by the same `MoveCommand` the server runs, then squared against every snapshot — acked commands retired, in-flight ones replayed on top of the server's answer, so when nothing contradicted you the correction is exactly zero. Firing stays server-authoritative; everyone else stays snapshot-interpolated
 - The fog of war is enforced by the server, not the renderer: each client's snapshot is filtered through the same `Visibility` test the fog is drawn with, from their own soldier's eye (or the spot they died), so an enemy behind a wall is absent from the bytes and no packet sniffer can find them. Events travel by earshot instead — gunfire behind cover is still a thing you hear — and the corner scoreboard arrives unfiltered, because a scoreboard is meant to know
 - The wire is built for roads worse than a LAN: every command packet carries its two predecessors, so a lost packet can't eat a grenade press; snapshots are quantized (a position is two bytes an axis, an angle two bytes, health one) to about half their float weight with no statefulness to resync; the protocol carries a version and a server refuses a mismatched build or a full house at the door; and losing the server — or pressing Escape in somebody else's match — lands on the main menu with the world swept clean, not on the desktop. Delta compression is deliberately absent: full snapshots self-heal from any loss, and ten soldiers don't weigh enough to trade that away
@@ -41,7 +42,7 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | `V` | Melee swing (every class, three charges then a recovery) |
 | `Shift` | Hold steady (slow walk, much slower turn) |
 | Mouse wheel | Zoom |
-| `Esc` | Quit |
+| `Esc` | Leave the match (back to the main menu; QUIT there closes the game) |
 
 ## Requirements
 
@@ -64,12 +65,14 @@ The dedicated server builds alongside the game:
 ```
 
 Joining a server: JOIN on the main menu lists every server on the LAN and
-takes a typed address for the rest. The command line remains as the fast
+takes a typed address for the rest. DEPLOY hosts a match on this machine and
+joins that instead — same road, shorter. The command line remains as the fast
 lane while iterating on netcode:
 
 ```powershell
 .\build\Debug\infantry.exe --connect 192.168.1.10
 .\build\Debug\infantry.exe --connect 127.0.0.1 --class marine
+.\build\Debug\infantry.exe --class marine   # host here and take the field, no menus
 ```
 
 CMake generates a Visual Studio solution in `build/` — open `build\infantry.sln` to work in the IDE.

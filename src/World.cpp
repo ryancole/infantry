@@ -203,12 +203,11 @@ void World::Reset()
     m_matchTime = kMatchLength;
     m_intermission = 0.0f;
     m_matchOver = false;
-    m_localClass = nullptr;
     // Unit ids keep counting: nothing that survives a reset is allowed to
     // mistake a new soldier for an old one.
 }
 
-void World::StartMatch(const ClassDef* localClass, int localTeam)
+void World::StartMatch()
 {
     // A match is a fresh clock and a scoreboard at nothing, whatever the
     // arena did before it. StartMatch is the only place either is set, which
@@ -227,30 +226,14 @@ void World::StartMatch(const ClassDef* localClass, int localTeam)
         for (int i = 0; i < kTeamSize; ++i)
             m_roster.push_back({ team, nullptr, Slot::Held::Ai, false, 0, 0 });
 
-    m_localClass = localClass;
-    m_localTeam = std::min(localTeam, static_cast<int>(m_teamSpawns.size()) - 1);
-    if (m_localClass)
-    {
-        m_localSlot = ClaimSlot(m_localTeam);
-        m_localTeam = SlotTeam(m_localSlot);
-        m_roster[m_localSlot].local = true;
-        SpawnLocal();
-    }
-    // Whatever the humans didn't take is the AI's, and every one of those
-    // places gets a soldier now: the sides come up to strength together at the
-    // start of a match rather than trickling in off the reinforcement queue.
+    // Every place is the AI's until somebody claims one, and every one of them
+    // gets a soldier now: the sides come up to strength together at the start
+    // of a match rather than trickling in off the reinforcement queue. A
+    // player who is already connected takes their slot back immediately
+    // afterward, which is one soldier rotating out, not a side short.
     for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
         if (m_roster[slot].held == Slot::Held::Ai)
             SpawnAi(slot);
-}
-
-void World::SpawnLocal()
-{
-    // Nothing to spawn on a machine that never picked a class — a dedicated
-    // server calls StartMatch with no local and never comes back here.
-    if (!m_localClass)
-        return;
-    SpawnHuman(*m_localClass, m_localSlot, Unit::Controller::Local);
 }
 
 int World::SpawnRemote(const ClassDef& cls, int slot)
@@ -441,7 +424,7 @@ void World::SpawnAi(int slot)
     m_units.push_back(unit);
 }
 
-void World::Tick(const Command* cmd, std::vector<Event>& events)
+void World::Tick(std::vector<Event>& events)
 {
     m_out = &events;
 
@@ -470,15 +453,11 @@ void World::Tick(const Command* cmd, std::vector<Event>& events)
         return;
     }
 
-    if (cmd)
-        if (Unit* local = Local())
-            ApplyCommand(*local, *cmd, kTickDt);
-
-    // The connected players' commands, staged since the last tick. Applied
-    // the same way the local one is, because they are the same thing; the
-    // stage is consumed whole, so a client that goes quiet stops moving
-    // rather than repeating its last wish forever — holding the last command
-    // through a gap is its server session's call to make, not this class's.
+    // The connected players' commands, staged since the last tick — which is
+    // every player there is. The stage is consumed whole, so a client that
+    // goes quiet stops moving rather than repeating its last wish forever;
+    // holding the last command through a gap is its server session's call to
+    // make, not this class's.
     for (const auto& [id, staged] : m_staged)
         if (Unit* unit = UnitById(id))
             if (unit->controller == Unit::Controller::Remote && unit->hp > 0.0f)
@@ -599,7 +578,6 @@ void World::TickClocks(Unit& unit, float dt)
             Event ev;
             ev.type = Event::Type::ReloadEnd;
             ev.unit = unit.id;
-            ev.local = unit.controller == Unit::Controller::Local;
             ev.pos = unit.pos;
             Emit(ev);
         }
@@ -728,7 +706,6 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
         Event ev;
         ev.type = Event::Type::AbilityStart;
         ev.unit = unit.id;
-        ev.local = unit.controller == Unit::Controller::Local;
         ev.pos = unit.pos;
         ev.cls = unit.cls; // rides the wire as a class index; the sound comes back off it
         ev.sound = ability.startSound;
@@ -750,7 +727,6 @@ void World::BeginReload(Unit& unit)
     Event ev;
     ev.type = Event::Type::ReloadStart;
     ev.unit = unit.id;
-    ev.local = unit.controller == Unit::Controller::Local;
     ev.pos = unit.pos;
     Emit(ev);
 }
@@ -771,7 +747,6 @@ void World::SwingMelee(Unit& attacker)
     Event swing;
     swing.type = Event::Type::MeleeSwing;
     swing.unit = attacker.id;
-    swing.local = attacker.controller == Unit::Controller::Local;
     swing.pos = attacker.pos;
     swing.dir = attacker.aimDir;
     Emit(swing);
@@ -813,7 +788,6 @@ void World::SwingMelee(Unit& attacker)
     Event hit;
     hit.type = Event::Type::Hit;
     hit.unit = target->id;
-    hit.local = target->controller == Unit::Controller::Local;
     hit.pos = { target->pos.x, kPlayerHalf, target->pos.z };
     hit.dir = attacker.aimDir;
     hit.damage = kMelee.damage;
@@ -1107,7 +1081,6 @@ void World::ApplyBlast(const Vector3& center, float radius, float damage, int ow
         Event ev;
         ev.type = Event::Type::Hit;
         ev.unit = unit.id;
-        ev.local = unit.controller == Unit::Controller::Local;
         ev.pos = { unit.pos.x, kPlayerHalf, unit.pos.z };
         ev.dir = unit.pos - center;
         ev.damage = dmg;
@@ -1189,7 +1162,6 @@ void World::UpdateProjectiles(float dt)
                 Event ev;
                 ev.type = Event::Type::Hit;
                 ev.unit = unit.id;
-                ev.local = unit.controller == Unit::Controller::Local;
                 ev.pos = pos;
                 ev.dir = travel;
                 ev.damage = shot.damage;
@@ -1256,7 +1228,6 @@ void World::ReapDead()
             Event ev;
             ev.type = Event::Type::Death;
             ev.unit = unit.id;
-            ev.local = unit.controller == Unit::Controller::Local;
             ev.pos = unit.pos;
             ev.dir = unit.aimDir;
             ev.walkPhase = unit.walkPhase;

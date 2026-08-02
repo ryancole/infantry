@@ -44,10 +44,15 @@ struct Unit
 {
     using Vector3 = DirectX::SimpleMath::Vector3;
 
-    // Who decides what this soldier does next: a Brain, this machine's
-    // Command, or a Command that arrived over the wire. Nothing below the
-    // controller differs by it — Remote joining this enum and not this
-    // struct was the whole bet of the refactor, and it paid.
+    // Who decides what this soldier does next: a Brain, or a Command that
+    // arrived over the wire. Nothing below the controller differs by it —
+    // Remote joining this enum and not this struct was the whole bet of the
+    // refactor, and it paid.
+    //
+    // Local is the odd one out: no simulation ever produces it, because every
+    // player reaches a match through a socket. It exists on a client's replica
+    // alone, where ApplySnapshot stamps it on whichever unit the wire says is
+    // yours — the mark a drawing path reads to ask "is this me".
     enum class Controller
     {
         Ai,
@@ -152,8 +157,9 @@ struct Event
     int unit = -1;
     // The local soldier's own doing or suffering. Presentation reads it to
     // route a sound to the listener's hands rather than a spot on the floor,
-    // and to know whose pad to rumble. Set directly by the in-process path;
-    // derived from `unit` on arrival over the wire.
+    // and to know whose pad to rumble. Never set by the simulation, which has
+    // no local soldier: it's derived from `unit` on arrival over the wire,
+    // because "local" is a fact about the reader, not the event.
     bool local = false;
     Vector3 pos;
     Vector3 dir;
@@ -313,34 +319,25 @@ public:
     // server doesn't unload the ground, and the next match starts on it.
     void Reset();
 
-    // Puts both sides on the field at full strength. On a machine with a
-    // player, `localClass` is the class they picked and their unit spawns
-    // among the rest; on a machine without one — a dedicated server —
-    // `localClass` is null, every slot is the AI's, and humans will claim
-    // slots the way the local player does here: by being one more controller.
-    // Called once, when the match starts — nothing simulates until then and
-    // there's nobody for a squad to fight.
-    void StartMatch(const ClassDef* localClass, int localTeam);
+    // Puts both sides on the field at full strength: every slot is the AI's,
+    // and humans claim them one at a time as they join (ClaimSlot). Nobody
+    // sitting at the machine running this has a soldier in it — a player is
+    // always a connection, even when the connection is to a server inside
+    // their own process. Called once, when the match starts: nothing
+    // simulates until then and there's nobody for a squad to fight.
+    void StartMatch();
 
-    // Puts the local player's unit back on the field: the class and team
-    // StartMatch recorded, at their team's spawn, with the whole loadout
-    // issued fresh off the class table. Every respawn comes through here,
-    // which is what makes a respawn a new soldier rather than a checklist of
-    // things to remember to put back.
-    void SpawnLocal();
+    // One fixed step of everything, in the order the systems have always run.
+    // Whatever happened worth showing is appended to `events`. This is the
+    // function a server's loop calls, and the only place simulation time
+    // passes — a client's replica is never handed one.
+    void Tick(std::vector<Event>& events);
 
-    // One fixed step of everything: the local command first (null while
-    // there's no local soldier to drive — the arena runs on without them),
-    // then every other system in the order they've always run. Whatever
-    // happened worth showing is appended to `events`. This is the function a
-    // server's loop calls; it is the only place simulation time passes.
-    void Tick(const Command* cmd, std::vector<Event>& events);
-
-    // The unit driven by this machine, or null while there isn't one — before
-    // a match starts, and for the length of the respawn wait. Dying really
-    // does take the player off the roster: the systems that sweep it (shots,
-    // blasts, sights) stop finding them without any of them asking who's
-    // alive.
+    // The unit this machine's player is driving, or null while there isn't
+    // one — before the first snapshot arrives, and for the length of the
+    // respawn wait. Only ever set on a replica (see ApplySnapshot): the
+    // simulation itself has no idea which of its soldiers somebody is
+    // watching, and every system that sweeps the roster is better for it.
     Unit* Local();
     const Unit* Local() const;
     Unit* UnitById(int id);
@@ -537,9 +534,8 @@ private:
     // in the squad, not a character, and the squad's makeup is the rotation's
     // business.
     void SpawnAi(int slot);
-    // The one spawn under SpawnLocal and SpawnRemote: a human's soldier —
-    // full loadout off the class table, no brain woken — differing only in
-    // which controller drives it.
+    // What SpawnRemote is: a human's soldier — full loadout off the class
+    // table, no brain woken — spawned into the slot they hold.
     int SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller);
     // The first slot on `team` the AI still holds and nobody is standing in, or
     // -1 if the side has none: what a joining player takes over. Preferring an
@@ -586,11 +582,11 @@ private:
     void Emit(const Event& ev);
 
     Physics m_physics;
-    const ClassDef* m_localClass = nullptr; // set by StartMatch; null on a server
-    int m_localTeam = 0;
     int m_nextUnitId = 1; // 0 never issued, so an uninitialized id matches nobody
-    // The slot the local player holds for this match, or -1 on a machine
-    // without one — a dedicated server, or a client before it's been welcomed.
+    // The slot this client's player holds for the match, or -1 on a world
+    // running one — a server holds no claim of its own — and on a client
+    // before it's been welcomed. Set from the snapshot, like everything else
+    // on a replica.
     int m_localSlot = -1;
     // Commands staged for remote units, consumed whole by the next Tick.
     std::vector<std::pair<int, Command>> m_staged;

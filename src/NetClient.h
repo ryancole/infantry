@@ -42,6 +42,14 @@ public:
     void SendReliable(const std::vector<uint8_t>& bytes);
     void SendState(const std::vector<uint8_t>& bytes);
 
+    // Puts whatever is queued on the wire now rather than at the next Poll.
+    // Nobody needs this when the server is a machine away — a few
+    // microseconds either side of a network hop is nothing. It matters when
+    // the server is in this process: flushing before the host takes its turn
+    // is what fits the whole round trip inside one frame instead of costing a
+    // frame of latency to a match hosted an inch away.
+    void Flush();
+
     // Says goodbye politely if the wire is up; either way, after this the
     // status is Closed and Poll has nothing further to say.
     void Disconnect();

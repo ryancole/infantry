@@ -89,10 +89,11 @@ namespace
 }
 
 // The command line, wide and quoted by Windows, folded down to the two
-// options the game takes: `--connect <host>` points it at a server instead
-// of its own simulation, and `--class <name>` (with --connect) skips the
-// menus and joins as that class on launch — a second machine into the fight
-// is one shortcut with both.
+// options the game takes: `--connect <host>` points it at somebody else's
+// server, and `--class <name>` skips the menus and takes the field as that
+// class on launch. Together they put a second machine into a fight in one
+// shortcut; `--class` on its own does the same for a match hosted on this
+// one, which is the shortest road from a build to a firefight.
 static void ParseArgs(Game& game)
 {
     int argc = 0;
@@ -115,7 +116,7 @@ static void ParseArgs(Game& game)
         else if (wcscmp(argv[i], L"--class") == 0 && i + 1 < argc)
             cls = narrow(argv[++i]);
     }
-    if (!host.empty())
+    if (!host.empty() || !cls.empty())
         game.SetMultiplayer(host, cls);
     LocalFree(argv);
 }
