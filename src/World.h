@@ -199,7 +199,8 @@ public:
 
     struct Projectile
     {
-        Physics::BodyHandle body; // 0 on a client replica: the shot is the server's to fly
+        // kInvalidBody on a client replica: the shot is the server's to fly.
+        Physics::BodyHandle body;
         float life;
         // Where the shot is, refreshed from the physics body each tick — or
         // from a snapshot, on a replica that has no body to ask. Everything
@@ -219,6 +220,12 @@ public:
     // physics world, sight-blockers into the occluder list, spawn points into
     // the roster's geography. The level's models are somebody else's half.
     void Init(const LevelData& level);
+
+    // Empties the match out of the arena: the roster, the shots (and their
+    // physics bodies, where they're real), the reinforcement queue, every
+    // human claim. The level stays — walls, floor, spawns — because leaving a
+    // server doesn't unload the ground, and the next match starts on it.
+    void Reset();
 
     // Puts both sides on the field at full strength. On a machine with a
     // player, `localClass` is the class they picked and their unit spawns

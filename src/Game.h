@@ -151,6 +151,13 @@ private:
     // Respawned into who-am-I and the phase. The camera comes along for the
     // cut a (re)spawn makes.
     void NetPump(float dt, IsoCamera& camera);
+    // Ends a connected session and lands back on the main menu, whoever ended
+    // it — the player leaving, the server dying, or the door being closed at
+    // the join. The replica empties (World::Reset), the corpses and weather
+    // this client conjured from its events go with it, and the menus work
+    // exactly as if the game had just launched: Deploy starts a solo match on
+    // the same ground.
+    void LeaveMatch();
     // Reconciliation: the server's own-block just landed, naming the newest
     // command it consumed. Everything up to it is history and retired;
     // everything after is replayed — the same MoveCommand, the same tick

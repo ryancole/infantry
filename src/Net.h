@@ -4,6 +4,7 @@
 #include "PlayerClass.h"
 #include "World.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +36,11 @@ namespace Net
     using DirectX::SimpleMath::Vector3;
 
     constexpr uint16_t kPort = 27650;
+    // Bumped whenever anything below changes shape. The version rides in the
+    // Join, and a mismatch is refused outright — two builds disagreeing about
+    // what a byte means should fail at the door, not decode each other into
+    // nonsense mid-match.
+    constexpr uint8_t kProtocolVersion = 2;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -42,15 +48,66 @@ namespace Net
     constexpr uint8_t kChannelState = 1;
     constexpr size_t kChannels = 2;
 
+    // How many commands each Cmd packet carries: the newest, and this many
+    // ticks of its predecessors. A lost packet's commands ride again in the
+    // next two, so an edge — the one press of a grenade key — survives any
+    // loss short of three consecutive packets, and the server's sequence
+    // guard makes the duplicates free.
+    constexpr size_t kCmdRedundancy = 3;
+
     enum class MsgType : uint8_t
     {
-        Join,      // c->s, reliable: uint8 classId
-        Cmd,       // c->s, state: the player's Command for the next tick(s)
+        Join,      // c->s, reliable: protocol version + uint8 classId
+        Cmd,       // c->s, state: the player's recent Commands, newest last
         Welcome,   // s->c, reliable: your unit id and team
         Respawned, // s->c, reliable: your fresh unit's id
-        Snapshot,  // s->c, state: the whole visible world, this tick
+        Snapshot,  // s->c, state: the visible world, this tick
         Events,    // s->c, state: what the tick did
+        Reject,    // s->c, reliable: the door, closed, with a reason
     };
+
+    enum class RejectReason : uint8_t
+    {
+        Version, // different build of the game; nothing to negotiate
+        Full,    // every slot is a human already
+    };
+
+    // --- Quantization ------------------------------------------------------
+    // The snapshot's numbers, sized to what they can say. A position lands on
+    // a 1/128-unit grid — under a hundredth of a soldier's width, well under
+    // a pixel at gameplay zoom — and an angle on 1/32768th of a half-turn.
+    // What is deliberately NOT quantized: commands (the client must predict
+    // with exactly the bytes the server will apply, and floats make that
+    // equality free) and the own-block's momentum (reconciliation replays
+    // from it, and it deserves the full word).
+
+    inline int16_t QPos(float v) { return static_cast<int16_t>(std::lround(v * 128.0f)); }
+    inline float DqPos(int16_t v) { return static_cast<float>(v) / 128.0f; }
+
+    inline int16_t QAngle(float rad) // [-pi, pi], atan2's own range
+    {
+        return static_cast<int16_t>(std::lround(rad * (32767.0f / 3.14159265f)));
+    }
+    inline float DqAngle(int16_t v) { return static_cast<float>(v) * (3.14159265f / 32767.0f); }
+
+    inline uint16_t QPhase(float rad) // any angle, wrapped onto one cycle
+    {
+        constexpr float kTau = 6.2831853f;
+        float wrapped = std::fmod(rad, kTau);
+        if (wrapped < 0.0f)
+            wrapped += kTau;
+        return static_cast<uint16_t>(wrapped * (65535.0f / kTau));
+    }
+    inline float DqPhase(uint16_t v)
+    {
+        return static_cast<float>(v) * (6.2831853f / 65535.0f);
+    }
+
+    inline uint8_t QUnorm8(float v)
+    {
+        return static_cast<uint8_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+    }
+    inline float DqUnorm8(uint8_t v) { return static_cast<float>(v) / 255.0f; }
 
     // --- Byte plumbing -----------------------------------------------------
 
@@ -59,6 +116,8 @@ namespace Net
         std::vector<uint8_t> bytes;
 
         void U8(uint8_t v) { bytes.push_back(v); }
+        void I16(int16_t v) { Raw(&v, sizeof v); }
+        void U16(uint16_t v) { Raw(&v, sizeof v); }
         void I32(int32_t v) { Raw(&v, sizeof v); }
         void U32(uint32_t v) { Raw(&v, sizeof v); }
         void F32(float v) { Raw(&v, sizeof v); }
@@ -84,6 +143,8 @@ namespace Net
         Reader(const void* data, size_t n) : p(static_cast<const uint8_t*>(data)), left(n) {}
 
         uint8_t U8() { uint8_t v = 0; Raw(&v, sizeof v); return v; }
+        int16_t I16() { int16_t v = 0; Raw(&v, sizeof v); return v; }
+        uint16_t U16() { uint16_t v = 0; Raw(&v, sizeof v); return v; }
         int32_t I32() { int32_t v = 0; Raw(&v, sizeof v); return v; }
         uint32_t U32() { uint32_t v = 0; Raw(&v, sizeof v); return v; }
         float F32() { float v = 0; Raw(&v, sizeof v); return v; }
@@ -115,42 +176,63 @@ namespace Net
         kCmdAbility = 1 << 5,
     };
 
-    // `seq` is the command's tick-stamp on the client's own clock. The server
-    // applies each numbered command exactly once and acks the highest it has
-    // consumed (SnapOwn::ackSeq), which is what lets the client throw away
-    // confirmed history and replay only the commands still in flight.
-    inline void WriteCmd(Writer& w, uint32_t seq, const Command& cmd)
+    // One numbered command: the tick-stamp on the client's own clock, and
+    // what was asked for on it. The server applies each exactly once and
+    // acks the highest it has consumed (SnapOwn::ackSeq), which is what lets
+    // the client throw away confirmed history and replay only the commands
+    // still in flight.
+    struct CmdEntry
+    {
+        uint32_t seq;
+        Command cmd;
+    };
+
+    // A Cmd packet is the newest command and up to kCmdRedundancy-1 of its
+    // predecessors, oldest first. The tail is the loss insurance: every
+    // command gets three chances to arrive, and the ones the server has
+    // already seen cost it two comparisons each to ignore.
+    inline void WriteCmds(Writer& w, const CmdEntry* entries, size_t count)
     {
         w.U8(static_cast<uint8_t>(MsgType::Cmd));
-        w.U32(seq);
-        w.Vec2XZ(cmd.move);
-        w.Vec2XZ(cmd.aim);
-        w.F32(cmd.aimDist);
-        uint8_t bits = 0;
-        if (cmd.fire) bits |= kCmdFire;
-        if (cmd.melee) bits |= kCmdMelee;
-        if (cmd.steady) bits |= kCmdSteady;
-        if (cmd.reload) bits |= kCmdReload;
-        if (cmd.grenade) bits |= kCmdGrenade;
-        if (cmd.ability) bits |= kCmdAbility;
-        w.U8(bits);
+        w.U8(static_cast<uint8_t>(count));
+        for (size_t i = 0; i < count; ++i)
+        {
+            const Command& cmd = entries[i].cmd;
+            w.U32(entries[i].seq);
+            w.Vec2XZ(cmd.move);
+            w.Vec2XZ(cmd.aim);
+            w.F32(cmd.aimDist);
+            uint8_t bits = 0;
+            if (cmd.fire) bits |= kCmdFire;
+            if (cmd.melee) bits |= kCmdMelee;
+            if (cmd.steady) bits |= kCmdSteady;
+            if (cmd.reload) bits |= kCmdReload;
+            if (cmd.grenade) bits |= kCmdGrenade;
+            if (cmd.ability) bits |= kCmdAbility;
+            w.U8(bits);
+        }
     }
 
-    inline Command ReadCmd(Reader& r, uint32_t& seq)
+    inline void ReadCmds(Reader& r, std::vector<CmdEntry>& out)
     {
-        seq = r.U32();
-        Command cmd;
-        cmd.move = r.Vec2XZ();
-        cmd.aim = r.Vec2XZ();
-        cmd.aimDist = r.F32();
-        const uint8_t bits = r.U8();
-        cmd.fire = bits & kCmdFire;
-        cmd.melee = bits & kCmdMelee;
-        cmd.steady = bits & kCmdSteady;
-        cmd.reload = bits & kCmdReload;
-        cmd.grenade = bits & kCmdGrenade;
-        cmd.ability = bits & kCmdAbility;
-        return cmd;
+        const size_t count = std::min<size_t>(r.U8(), kCmdRedundancy);
+        for (size_t i = 0; i < count && r.ok; ++i)
+        {
+            CmdEntry entry;
+            entry.seq = r.U32();
+            entry.cmd.move = r.Vec2XZ();
+            entry.cmd.aim = r.Vec2XZ();
+            entry.cmd.aimDist = r.F32();
+            const uint8_t bits = r.U8();
+            entry.cmd.fire = bits & kCmdFire;
+            entry.cmd.melee = bits & kCmdMelee;
+            entry.cmd.steady = bits & kCmdSteady;
+            entry.cmd.reload = bits & kCmdReload;
+            entry.cmd.grenade = bits & kCmdGrenade;
+            entry.cmd.ability = bits & kCmdAbility;
+            if (r.ok)
+                out.push_back(entry);
+        }
     }
 
     // --- Snapshot (server -> client) ----------------------------------------
@@ -251,12 +333,14 @@ namespace Net
             w.I32(u.id);
             w.U8(static_cast<uint8_t>(u.cls - kClassDefs)); // index into the one table
             w.U8(static_cast<uint8_t>(u.team));
-            w.F32(u.pos.x);
-            w.F32(u.pos.z);
-            w.F32(std::atan2(u.aimDir.z, u.aimDir.x));
-            w.F32(u.walkPhase);
-            w.F32(u.moveBlend);
-            w.F32(u.hp);
+            w.I16(QPos(u.pos.x));
+            w.I16(QPos(u.pos.z));
+            w.I16(QAngle(std::atan2(u.aimDir.z, u.aimDir.x)));
+            w.U16(QPhase(u.walkPhase));
+            w.U8(QUnorm8(u.moveBlend));
+            // Ceiling, not rounding: a soldier at half a point of health is
+            // wounded, not a corpse, and their bar shouldn't say otherwise.
+            w.U8(static_cast<uint8_t>(std::clamp(std::ceil(u.hp), 0.0f, 255.0f)));
         }
 
         uint8_t shotCount = 0;
@@ -268,9 +352,11 @@ namespace Net
         {
             if (!visible(shot.pos.x, shot.pos.z))
                 continue;
-            w.Vec3(shot.pos);
-            w.F32(shot.radius);
-            w.F32(shot.life);
+            w.I16(QPos(shot.pos.x));
+            w.I16(QPos(shot.pos.y));
+            w.I16(QPos(shot.pos.z));
+            w.U8(static_cast<uint8_t>(std::lround(shot.radius * 64.0f)));
+            w.U16(static_cast<uint16_t>(std::clamp(std::lround(shot.life * 256.0f), 0l, 65535l)));
             w.U8(shot.fused ? 1 : 0);
         }
     }
@@ -309,12 +395,12 @@ namespace Net
             u.id = r.I32();
             u.classId = r.U8();
             u.team = r.U8();
-            u.posX = r.F32();
-            u.posZ = r.F32();
-            u.aimYaw = r.F32();
-            u.walkPhase = r.F32();
-            u.moveBlend = r.F32();
-            u.hp = r.F32();
+            u.posX = DqPos(r.I16());
+            u.posZ = DqPos(r.I16());
+            u.aimYaw = DqAngle(r.I16());
+            u.walkPhase = DqPhase(r.U16());
+            u.moveBlend = DqUnorm8(r.U8());
+            u.hp = static_cast<float>(r.U8());
             snap.units.push_back(u);
         }
         const int shotCount = r.U8();
@@ -322,9 +408,11 @@ namespace Net
         for (int i = 0; i < shotCount && r.ok; ++i)
         {
             SnapProjectile s;
-            s.pos = r.Vec3();
-            s.radius = r.F32();
-            s.life = r.F32();
+            s.pos.x = DqPos(r.I16());
+            s.pos.y = DqPos(r.I16());
+            s.pos.z = DqPos(r.I16());
+            s.radius = static_cast<float>(r.U8()) / 64.0f;
+            s.life = static_cast<float>(r.U16()) / 256.0f;
             s.fused = r.U8() != 0;
             snap.projectiles.push_back(s);
         }
@@ -420,7 +508,14 @@ namespace Net
     inline void WriteJoin(Writer& w, uint8_t classId)
     {
         w.U8(static_cast<uint8_t>(MsgType::Join));
+        w.U8(kProtocolVersion);
         w.U8(classId);
+    }
+
+    inline void WriteReject(Writer& w, RejectReason why)
+    {
+        w.U8(static_cast<uint8_t>(MsgType::Reject));
+        w.U8(static_cast<uint8_t>(why));
     }
 
     inline void WriteWelcome(Writer& w, int32_t unitId, uint8_t team)

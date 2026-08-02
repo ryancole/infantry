@@ -188,6 +188,23 @@ void World::Init(const LevelData& level)
     }
 }
 
+void World::Reset()
+{
+    for (const Projectile& shot : m_projectiles)
+        if (shot.body != Physics::kInvalidBody)
+            m_physics.RemoveBody(shot.body);
+    m_projectiles.clear();
+    m_units.clear();
+    m_reinforcements.clear();
+    m_staged.clear();
+    m_standingOverride.clear();
+    m_humanSlots.assign(m_teamSpawns.size(), 0);
+    m_nextAiClass.assign(m_teamSpawns.size(), 0);
+    m_localClass = nullptr;
+    // Unit ids keep counting: nothing that survives a reset is allowed to
+    // mistake a new soldier for an old one.
+}
+
 void World::StartMatch(const ClassDef* localClass, int localTeam)
 {
     m_localClass = localClass;
@@ -1121,7 +1138,14 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
         unit.team = su.team;
         unit.pos = { su.posX, 0.0f, su.posZ };
         unit.aimDir = { std::cos(su.aimYaw), 0.0f, std::sin(su.aimYaw) };
+        // The wire wraps the walk phase to one cycle; unwrap it back onto
+        // whichever turn of the legs we were already drawing, or the blend
+        // between old and new would swing the stride backwards through half
+        // a cycle once per lap.
         unit.walkPhase = su.walkPhase;
+        if (old)
+            unit.walkPhase +=
+                XM_2PI * std::round((old->walkPhase - su.walkPhase) / XM_2PI);
         unit.moveBlend = su.moveBlend;
         unit.hp = su.hp;
         if (old)
@@ -1179,7 +1203,7 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
     for (const Net::SnapProjectile& sp : snap.projectiles)
     {
         Projectile shot = {};
-        shot.body = 0;
+        shot.body = Physics::kInvalidBody;
         shot.life = sp.life;
         shot.pos = sp.pos;
         shot.prevPos = sp.pos;

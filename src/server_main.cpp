@@ -138,6 +138,7 @@ int main(int argc, char** argv)
     QueryPerformanceCounter(&prev);
 
     std::vector<Event> events;
+    std::vector<Net::CmdEntry> cmdScratch;
     float accum = 0.0f;
     float sinceReport = 0.0f;
     uint32_t tick = 0;
@@ -167,36 +168,78 @@ int main(int argc, char** argv)
                 const auto type = static_cast<Net::MsgType>(r.U8());
                 if (session && type == Net::MsgType::Join && !session->joined)
                 {
-                    session->classId = r.U8() % kClassCount;
-                    // The emptier side of the fence, humans-wise: the AI
-                    // balances itself around whatever this decides.
-                    int team = 0;
-                    for (int t = 1; t < world.TeamCount(); ++t)
-                        if (world.HumanSlots(t) < world.HumanSlots(team))
-                            team = t;
-                    session->team = world.ClaimSlot(team);
-                    session->unitId =
-                        world.SpawnRemote(kClassDefs[session->classId], session->team);
-                    if (const Unit* me = world.UnitById(session->unitId))
-                        session->viewPos = { me->pos.x, me->pos.z };
-                    session->joined = true;
-                    Net::Writer w;
-                    Net::WriteWelcome(w, session->unitId,
-                                      static_cast<uint8_t>(session->team));
-                    SendReliable(session->peer, w);
-                    std::printf("player joined: %s on team %d, unit %d\n",
-                                kClassDefs[session->classId].name, session->team,
-                                session->unitId);
+                    const uint8_t version = r.U8();
+                    const uint8_t classId = r.U8() % kClassCount;
+
+                    // The two ways the door stays shut: a different build of
+                    // the game, or a match already full of humans. Refused
+                    // loudly and then hung up on — a rejected client should
+                    // know why, not time out wondering.
+                    Net::RejectReason why = {};
+                    bool reject = false;
+                    if (!r.ok || version != Net::kProtocolVersion)
+                    {
+                        why = Net::RejectReason::Version;
+                        reject = true;
+                    }
+                    else
+                    {
+                        int humans = 0;
+                        for (int t = 0; t < world.TeamCount(); ++t)
+                            humans += world.HumanSlots(t);
+                        if (humans >= World::kTeamSize * world.TeamCount())
+                        {
+                            why = Net::RejectReason::Full;
+                            reject = true;
+                        }
+                    }
+                    if (reject)
+                    {
+                        Net::Writer w;
+                        Net::WriteReject(w, why);
+                        SendReliable(session->peer, w);
+                        enet_peer_disconnect_later(session->peer, 0);
+                        std::printf("join refused (%s)\n",
+                                    why == Net::RejectReason::Version ? "version" : "full");
+                    }
+                    else
+                    {
+                        session->classId = classId;
+                        // The emptier side of the fence, humans-wise: the AI
+                        // balances itself around whatever this decides.
+                        int team = 0;
+                        for (int t = 1; t < world.TeamCount(); ++t)
+                            if (world.HumanSlots(t) < world.HumanSlots(team))
+                                team = t;
+                        session->team = world.ClaimSlot(team);
+                        session->unitId =
+                            world.SpawnRemote(kClassDefs[session->classId], session->team);
+                        if (const Unit* me = world.UnitById(session->unitId))
+                            session->viewPos = { me->pos.x, me->pos.z };
+                        session->joined = true;
+                        Net::Writer w;
+                        Net::WriteWelcome(w, session->unitId,
+                                          static_cast<uint8_t>(session->team));
+                        SendReliable(session->peer, w);
+                        std::printf("player joined: %s on team %d, unit %d\n",
+                                    kClassDefs[session->classId].name, session->team,
+                                    session->unitId);
+                    }
                 }
                 else if (session && type == Net::MsgType::Cmd && session->joined)
                 {
-                    uint32_t seq = 0;
-                    const Command cmd = Net::ReadCmd(r, seq);
-                    // The state channel drops out-of-order arrivals, so the
-                    // only thing to reject here is a replayed or stale stamp.
-                    if (r.ok && seq > session->acked &&
-                        (session->queue.empty() || seq > session->queue.back().first))
-                        session->queue.push_back({ seq, cmd });
+                    // The packet is the newest command plus its recent
+                    // predecessors; anything already seen fails the sequence
+                    // guard and costs nothing. The state channel drops
+                    // out-of-order arrivals, so within one packet the entries
+                    // are the only ordering to keep.
+                    cmdScratch.clear();
+                    Net::ReadCmds(r, cmdScratch);
+                    for (const Net::CmdEntry& entry : cmdScratch)
+                        if (entry.seq > session->acked &&
+                            (session->queue.empty() ||
+                             entry.seq > session->queue.back().first))
+                            session->queue.push_back({ entry.seq, entry.cmd });
                 }
                 enet_packet_destroy(netEvent.packet);
                 break;

@@ -285,6 +285,37 @@ void Game::Shutdown()
     m_sound.Shutdown();
 }
 
+void Game::LeaveMatch()
+{
+    if (m_net)
+        m_net->Disconnect();
+    m_net.reset();
+    m_connectHost.clear();
+    m_autoClass.clear();
+    m_joinSent = false;
+    m_myUnitId = -1;
+    m_camSnapPending = false;
+    m_hasPredicted = false;
+    m_pendingCmds.clear();
+    m_pendingCmd = {};
+    m_events.clear();
+    // The weather this client conjured from the match's events goes with the
+    // match: the corpses give their bodies back to the physics world, and the
+    // floor gives up its history.
+    while (!m_corpses.empty())
+        RemoveCorpse(m_corpses.size() - 1);
+    m_particles.clear();
+    m_splatVerts.clear();
+    m_world.Reset();
+    m_class = nullptr;
+    m_meleeFlash = 0.0f;
+    m_respawnTimer = 0.0f;
+    m_tickAccum = 0.0f;
+    m_renderAlpha = 0.0f;
+    m_snapElapsed = 0.0f;
+    m_phase = Phase::MainMenu;
+}
+
 void Game::NetPump(float dt, IsoCamera& camera)
 {
     (void)dt;
@@ -292,11 +323,11 @@ void Game::NetPump(float dt, IsoCamera& camera)
     m_net->Poll(packets);
 
     // The far end going away is the end of the session, however far into it
-    // we were: there's no local simulation to fall back into a match with,
-    // and pretending otherwise would leave the player aiming at statues.
+    // we were — but it's the end of the session, not the game: back to the
+    // menu, where Deploy still starts a solo match on the same ground.
     if (m_net->GetStatus() == NetClient::Status::Failed)
     {
-        m_quit = true;
+        LeaveMatch();
         return;
     }
 
@@ -355,6 +386,11 @@ void Game::NetPump(float dt, IsoCamera& camera)
         case Net::MsgType::Events:
             Net::ReadEvents(r, m_myUnitId, m_events);
             break;
+        case Net::MsgType::Reject:
+            // The door, closed — wrong build or a full house. Either way the
+            // session never was; the menu is where we came from.
+            LeaveMatch();
+            return;
         default:
             break;
         }
@@ -472,12 +508,13 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
 
     // Connecting: the handshake and the join, out from under the menus. All
     // that can happen here is the server answering (NetPump flips the phase
-    // on Welcome), the attempt failing, or the player giving up.
+    // on Welcome), the attempt failing, or the player giving up — and giving
+    // up on a connection is backing out of it, not out of the game.
     if (m_phase == Phase::Connecting)
     {
         if (input.KeyPressed(VK_ESCAPE))
         {
-            m_quit = true;
+            LeaveMatch();
             return;
         }
         if (m_net->GetStatus() == NetClient::Status::Connected && !m_joinSent && m_class)
@@ -491,14 +528,18 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
-    // In the arena, escape still ends the game outright, which is what it did
-    // from the window procedure before there were any screens to back out
-    // through. It's the honest state of things: there's no pause menu to fall
-    // into yet, and quietly making the key do nothing would be worse than the
-    // bluntness of what it does.
+    // In a connected arena, escape leaves the server and lands on the menu —
+    // somebody else's match goes on without you, and quitting their game
+    // shouldn't cost you yours. Solo, it still ends the game outright, which
+    // is the honest state of things: there's no pause menu to fall into yet,
+    // and quietly making the key do nothing would be worse than the bluntness
+    // of what it does.
     if (input.KeyPressed(VK_ESCAPE))
     {
-        m_quit = true;
+        if (m_net)
+            LeaveMatch();
+        else
+            m_quit = true;
         return;
     }
 
@@ -516,6 +557,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             // countdown text, and Respawned is what actually brings us back
             // (see NetPump). The ragdolls still need local gravity.
             NetPump(dt, camera);
+            if (!m_net)
+                return; // the session ended out from under the wait
             m_snapElapsed += dt;
             m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
             m_world.Phys().Step(dt);
@@ -535,6 +578,17 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         UpdateCorpses(dt);
         if (!m_net && m_respawnTimer <= 0.0f)
             Respawn(camera);
+        return;
+    }
+
+    // Welcomed but not yet seen: until the first snapshot that carries our
+    // soldier lands, there is nothing to command and nothing to predict —
+    // pump and wait, rather than dereferencing a roster that hasn't arrived
+    // or mistaking "not here yet" for "dead". A frame or two at most, but a
+    // frame that used to bet on packet timing.
+    if (m_net && !m_hasPredicted && !m_world.Local())
+    {
+        NetPump(dt, camera);
         return;
     }
 
@@ -572,15 +626,26 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             m_tickAccum -= World::kTickDt;
             const uint32_t seq = ++m_cmdSeq;
-            Net::Writer w;
-            Net::WriteCmd(w, seq, m_pendingCmd);
-            m_net->SendState(w.bytes);
             m_pendingCmds.push_back({ seq, m_pendingCmd });
             // A server that stops acking must not turn this buffer into the
             // whole session's history; past two seconds the oldest commands
             // are lost causes, and the next ack squares everything anyway.
             if (m_pendingCmds.size() > 120)
                 m_pendingCmds.pop_front();
+            // The packet is this command and up to two predecessors, oldest
+            // first — the pending buffer's tail, which is exactly the set a
+            // lost packet would have cost the server.
+            Net::CmdEntry tail[Net::kCmdRedundancy];
+            size_t count = 0;
+            const size_t start =
+                m_pendingCmds.size() > Net::kCmdRedundancy
+                    ? m_pendingCmds.size() - Net::kCmdRedundancy
+                    : 0;
+            for (size_t i = start; i < m_pendingCmds.size(); ++i)
+                tail[count++] = { m_pendingCmds[i].seq, m_pendingCmds[i].cmd };
+            Net::Writer w;
+            Net::WriteCmds(w, tail, count);
+            m_net->SendState(w.bytes);
             if (m_hasPredicted)
             {
                 m_predicted.prevPos = m_predicted.pos;
@@ -596,6 +661,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_predAlpha = m_tickAccum / World::kTickDt;
 
         NetPump(dt, camera);
+        // The pump may have ended the session — server gone, or the door
+        // closed — in which case there's a menu on screen now, not a match.
+        if (!m_net)
+            return;
         m_snapElapsed += dt;
         m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
         // The replica is never Ticked, but the corpses still fall through the
