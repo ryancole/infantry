@@ -44,6 +44,12 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | Mouse wheel | Zoom |
 | `Esc` | Leave the match (back to the main menu; QUIT there closes the game) |
 
+OPTIONS on the main menu holds the settings screens: KEY BINDS puts any of the
+above on another key or mouse button, and AUDIO decides whether the game keeps
+making noise while its window is behind something else (off by default). Both
+save to `%LOCALAPPDATA%\Infantry\` — `bindings.toml` and `settings.toml` — and
+both files are safe to edit by hand.
+
 ## Requirements
 
 - Windows 10/11 with a D3D12-capable GPU

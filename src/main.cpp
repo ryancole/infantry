@@ -28,6 +28,10 @@ namespace
         std::unique_ptr<DirectX::Mouse> mouse;
         std::unique_ptr<DirectX::GamePad> gamepad;
         bool rendererReady = false;
+        // Whether we're the application the player is working in. Starts true
+        // because ShowWindow activates us, and the activation message that
+        // says so arrives before the first frame either way.
+        bool focused = true;
     };
 
     LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -56,6 +60,11 @@ namespace
             // focus is lost.
             DirectX::Keyboard::ProcessMessage(msg, wParam, lParam);
             DirectX::Mouse::ProcessMessage(msg, wParam, lParam);
+            // WM_ACTIVATEAPP is the one that means the whole application went
+            // to the back, which is the question the game is asking; WM_ACTIVATE
+            // also fires for windows of our own trading focus between them.
+            if (app && msg == WM_ACTIVATEAPP)
+                app->focused = wParam != FALSE;
             break;
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
@@ -217,6 +226,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
             app.camera.AddYaw(static_cast<float>(app.input.mouse.x) * kOrbitSensitivity);
 
         app.camera.AddZoom(app.input.wheel);
+        app.game.SetWindowFocused(app.focused);
         app.game.Update(dt, app.input, app.camera);
         // Quitting from the menu takes the same road out as the close box: tear
         // the window down and let the next pump pick up the WM_QUIT, rather than

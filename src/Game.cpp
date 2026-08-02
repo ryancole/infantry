@@ -232,6 +232,7 @@ void Game::LoadContent(Renderer& renderer)
     // file isn't an error worth stopping for — it just means the defaults, which
     // is what a first run is — so nothing here checks the answer.
     m_binds.Load();
+    m_settings.Load(); // same terms: a missing or broken file means the defaults
 
     // Pointed at somebody else's server from the command line: start the
     // handshake now, behind the menus, so by the time a class is picked the
@@ -521,6 +522,12 @@ void Game::Repredict(uint32_t ackSeq)
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
 {
+    // Recomputed every frame rather than latched when either half changes,
+    // because both halves move: the window is activated and deactivated by the
+    // player, and the setting is flipped on a screen of ours. One line that
+    // reads both is one place the two can't fall out of step, and Sound only
+    // touches the engine when the answer is actually different.
+    m_sound.SetMuted(!m_windowFocused && !m_settings.backgroundAudio);
     m_sound.Update();
 
     // Smoothed so the HUD is readable; raw frame times jitter far too much to
@@ -558,8 +565,8 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
                 m_phase = Phase::Join;
                 m_scan.Start();
                 break;
-            case MainMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
-            case MainMenu::Choice::Quit:     m_quit = true; break;
+            case MainMenu::Choice::Options: m_phase = Phase::Options; break;
+            case MainMenu::Choice::Quit:    m_quit = true; break;
             }
         }
         return;
@@ -589,16 +596,50 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
-    // The settings screen edits the bindings in place; the write to disk
-    // happens here, once, on the way out. A save per keystroke would put a file
-    // write in the middle of a player trying three keys to see which feels
-    // right, and there's nothing to lose by waiting until they're done.
+    // The settings landing. Nothing is edited here — it only says which screen
+    // to open — and each of those comes back to this one rather than to the
+    // main menu, so a player changing two things doesn't walk out to the title
+    // and back in between them.
+    if (m_phase == Phase::Options)
+    {
+        if (const auto picked =
+                m_optionsMenu.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
+        {
+            switch (*picked)
+            {
+            case OptionsMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
+            case OptionsMenu::Choice::Audio:    m_phase = Phase::Audio; break;
+            case OptionsMenu::Choice::Back:     m_phase = Phase::MainMenu; break;
+            }
+        }
+        return;
+    }
+
+    // The settings screens edit their half of the player's preferences in
+    // place; the write to disk happens here, once, on the way out. A save per
+    // keystroke would put a file write in the middle of a player trying three
+    // keys to see which feels right, and there's nothing to lose by waiting
+    // until they're done.
     if (m_phase == Phase::KeyBinds)
     {
         if (m_bindMenu.Update(input, m_binds, camera.ViewportWidth(), camera.ViewportHeight()))
         {
             m_binds.Save();
-            m_phase = Phase::MainMenu;
+            m_phase = Phase::Options;
+        }
+        return;
+    }
+
+    // Audio, on the same terms. The toggles take effect the frame they're
+    // flipped — Update's first line reads them — and the file is written when
+    // the player is done with the screen.
+    if (m_phase == Phase::Audio)
+    {
+        if (m_audioMenu.Update(input, m_settings, camera.ViewportWidth(),
+                               camera.ViewportHeight()))
+        {
+            m_settings.Save();
+            m_phase = Phase::Options;
         }
         return;
     }
@@ -1287,9 +1328,21 @@ void Game::Render(Renderer& renderer)
         return;
     }
 
+    if (m_phase == Phase::Options)
+    {
+        m_optionsMenu.Render(renderer);
+        return;
+    }
+
     if (m_phase == Phase::KeyBinds)
     {
         m_bindMenu.Render(renderer, m_binds);
+        return;
+    }
+
+    if (m_phase == Phase::Audio)
+    {
+        m_audioMenu.Render(renderer, m_settings);
         return;
     }
 

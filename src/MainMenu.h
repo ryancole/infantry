@@ -22,10 +22,10 @@ class MainMenu
 public:
     enum class Choice
     {
-        Deploy,   // on to the class select, and a match of our own
-        Join,     // the server browser: somebody else's match
-        KeyBinds, // the rebinding screen
-        Quit,     // close the game
+        Deploy,  // on to the class select, and a match of our own
+        Join,    // the server browser: somebody else's match
+        Options, // the settings screens, one door for all of them
+        Quit,    // close the game
     };
 
     // Returns the picked entry on the frame it's chosen, otherwise nullopt.

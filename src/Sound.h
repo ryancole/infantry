@@ -41,6 +41,14 @@ public:
     // Recovers when the default audio device changes or disappears.
     void Update();
 
+    // Silences everything at the master out, rather than stopping the voices
+    // under it: a muted game is still a game that's running, and the wind loop
+    // and the one-shots in flight carry on exactly as they would with somebody
+    // listening. Coming back is a volume change and nothing else, so nothing
+    // has to be restarted and no sound is left half-played. Cheap enough to
+    // call every frame — it only touches the engine when the answer changes.
+    void SetMuted(bool muted);
+
     // Where the ear is and which world direction appears "up" on screen, so
     // stereo panning matches what the player sees. Call once per frame before
     // any Play3D.
@@ -60,6 +68,7 @@ private:
     // is inaudible.
     std::vector<std::unique_ptr<DirectX::SoundEffectInstance>> m_active;
     DirectX::AudioListener m_listener;
+    bool m_muted = false;
 
     // Wind ambience: submitted buffers must stay alive until the voice has
     // consumed them, so generation rotates through a small ring. The ring is
