@@ -1,5 +1,7 @@
 #include "World.h"
 
+#include "Net.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -161,6 +163,7 @@ void World::Init(const LevelData& level)
     for (const LevelData::Spawn& spawn : level.spawns)
         m_teamSpawns.push_back(spawn.pos);
     m_nextAiClass.assign(m_teamSpawns.size(), 0);
+    m_humanSlots.assign(m_teamSpawns.size(), 0);
 
     // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
     // despawn on their first contact with anything solid.
@@ -190,7 +193,10 @@ void World::StartMatch(const ClassDef* localClass, int localTeam)
     m_localClass = localClass;
     m_localTeam = std::min(localTeam, static_cast<int>(m_teamSpawns.size()) - 1);
     if (m_localClass)
+    {
+        m_localTeam = ClaimSlot(m_localTeam);
         SpawnLocal();
+    }
     for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
         for (int i = AiCount(team); i < AiQuota(team); ++i)
             SpawnAi(team);
@@ -202,12 +208,22 @@ void World::SpawnLocal()
     // server calls StartMatch with no local and never comes back here.
     if (!m_localClass)
         return;
+    SpawnHuman(*m_localClass, m_localTeam, Unit::Controller::Local);
+}
 
+int World::SpawnRemote(const ClassDef& cls, int team)
+{
+    return SpawnHuman(cls, team, Unit::Controller::Remote);
+}
+
+int World::SpawnHuman(const ClassDef& cls, int team, Unit::Controller controller)
+{
     Unit unit = {};
-    unit.cls = m_localClass;
-    unit.controller = Unit::Controller::Local;
-    unit.team = m_localTeam;
-    unit.pos = m_teamSpawns[m_localTeam];
+    unit.id = m_nextUnitId++;
+    unit.cls = &cls;
+    unit.controller = controller;
+    unit.team = team;
+    unit.pos = m_teamSpawns[team];
     unit.aimDir = Vector3::UnitX;
     unit.hp = kMaxHealth;
     unit.fireCooldown = kFireGrace; // so the click that got them here doesn't fire a shot
@@ -220,6 +236,61 @@ void World::SpawnLocal()
     unit.prevWalkPhase = unit.walkPhase;
     unit.prevMoveBlend = unit.moveBlend;
     m_units.push_back(unit);
+    return unit.id;
+}
+
+int World::ClaimSlot(int team)
+{
+    team = std::clamp(team, 0, TeamCount() - 1);
+    ++m_humanSlots[team];
+    // The AI hands the slot over now rather than on its next death: a living
+    // AI soldier on the side is removed outright — no corpse, no event,
+    // nobody watching a squadmate evaporate would call it a death, because
+    // it isn't one. Whoever is furthest down the roster rotates out.
+    while (AiCount(team) > AiQuota(team))
+    {
+        for (size_t i = m_units.size(); i-- > 0;)
+        {
+            Unit& u = m_units[i];
+            if (u.controller == Unit::Controller::Ai && u.team == team && u.hp > 0.0f)
+            {
+                m_units.erase(m_units.begin() + i);
+                break;
+            }
+        }
+    }
+    return team;
+}
+
+void World::ReleaseSlot(int team)
+{
+    team = std::clamp(team, 0, TeamCount() - 1);
+    if (m_humanSlots[team] > 0)
+        --m_humanSlots[team];
+    // The side is owed a soldier again, on the same clock a death starts: a
+    // leaver's slot refills the way a casualty's does, not instantly.
+    m_reinforcements.push_back({ team, kRespawnDelay });
+}
+
+int World::HumanSlots(int team) const
+{
+    return team < static_cast<int>(m_humanSlots.size()) ? m_humanSlots[team] : 0;
+}
+
+void World::RemoveUnit(int id)
+{
+    std::erase_if(m_units, [id](const Unit& u) { return u.id == id; });
+}
+
+void World::SetCommand(int id, const Command& cmd)
+{
+    for (auto& staged : m_staged)
+        if (staged.first == id)
+        {
+            staged.second = cmd;
+            return;
+        }
+    m_staged.push_back({ id, cmd });
 }
 
 void World::SpawnAi(int team)
@@ -229,6 +300,7 @@ void World::SpawnAi(int team)
     // up where the player turns up and a hostile across the arena, because the
     // spawn a soldier comes from is a fact about the side they're on.
     Unit unit = {};
+    unit.id = m_nextUnitId++;
     unit.cls = &kClassDefs[m_nextAiClass[team]];
     m_nextAiClass[team] = (m_nextAiClass[team] + 1) % static_cast<int>(kClassCount);
     unit.controller = Unit::Controller::Ai;
@@ -271,6 +343,17 @@ void World::Tick(const Command* cmd, std::vector<Event>& events)
         if (Unit* local = Local())
             ApplyCommand(*local, *cmd, kTickDt);
 
+    // The connected players' commands, staged since the last tick. Applied
+    // the same way the local one is, because they are the same thing; the
+    // stage is consumed whole, so a client that goes quiet stops moving
+    // rather than repeating its last wish forever — holding the last command
+    // through a gap is its server session's call to make, not this class's.
+    for (const auto& [id, staged] : m_staged)
+        if (Unit* unit = UnitById(id))
+            if (unit->controller == Unit::Controller::Remote && unit->hp > 0.0f)
+                ApplyCommand(*unit, staged, kTickDt);
+    m_staged.clear();
+
     UpdateUnits(kTickDt);
     m_physics.Step(kTickDt);
     UpdateProjectiles(kTickDt);
@@ -291,6 +374,14 @@ Unit* World::Local()
 const Unit* World::Local() const
 {
     return const_cast<World*>(this)->Local();
+}
+
+Unit* World::UnitById(int id)
+{
+    for (Unit& unit : m_units)
+        if (unit.id == id)
+            return &unit;
+    return nullptr;
 }
 
 int World::AiCount(int team) const
@@ -328,6 +419,7 @@ void World::TickClocks(Unit& unit, float dt)
             unit.ammo = unit.cls->primary.magazine;
             Event ev;
             ev.type = Event::Type::ReloadEnd;
+            ev.unit = unit.id;
             ev.local = unit.controller == Unit::Controller::Local;
             ev.pos = unit.pos;
             Emit(ev);
@@ -451,8 +543,10 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
     {
         Event ev;
         ev.type = Event::Type::AbilityStart;
+        ev.unit = unit.id;
         ev.local = unit.controller == Unit::Controller::Local;
         ev.pos = unit.pos;
+        ev.cls = unit.cls; // rides the wire as a class index; the sound comes back off it
         ev.sound = ability.startSound;
         Emit(ev);
     }
@@ -471,6 +565,7 @@ void World::BeginReload(Unit& unit)
     unit.reloadTimer = weapon.reloadTime;
     Event ev;
     ev.type = Event::Type::ReloadStart;
+    ev.unit = unit.id;
     ev.local = unit.controller == Unit::Controller::Local;
     ev.pos = unit.pos;
     Emit(ev);
@@ -491,6 +586,7 @@ void World::SwingMelee(Unit& attacker)
 
     Event swing;
     swing.type = Event::Type::MeleeSwing;
+    swing.unit = attacker.id;
     swing.local = attacker.controller == Unit::Controller::Local;
     swing.pos = attacker.pos;
     swing.dir = attacker.aimDir;
@@ -531,6 +627,7 @@ void World::SwingMelee(Unit& attacker)
     target->knock = CorpseKnock(attacker.aimDir, kCorpseKnock);
     Event hit;
     hit.type = Event::Type::Hit;
+    hit.unit = target->id;
     hit.local = target->controller == Unit::Controller::Local;
     hit.pos = { target->pos.x, kPlayerHalf, target->pos.z };
     hit.dir = attacker.aimDir;
@@ -573,7 +670,7 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
         dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
                                                         weapon.projectileMass, weapon.bounce),
-                              weapon.projectileLife, pos, team, weapon.damage,
+                              weapon.projectileLife, pos, pos, team, weapon.damage,
                               weapon.projectileRadius, weapon.blastRadius,
                               weapon.bounce > 0.0f, weapon.explodes });
 
@@ -819,6 +916,7 @@ void World::ApplyBlast(const Vector3& center, float radius, float damage, int te
         // Blood goes the same way the blast threw them, out of the middle.
         Event ev;
         ev.type = Event::Type::Hit;
+        ev.unit = unit.id;
         ev.local = unit.controller == Unit::Controller::Local;
         ev.pos = { unit.pos.x, kPlayerHalf, unit.pos.z };
         ev.dir = unit.pos - center;
@@ -848,6 +946,7 @@ void World::UpdateProjectiles(float dt)
     {
         shot.life -= dt;
         const XMFLOAT3 pos = m_physics.GetPosition(shot.body);
+        shot.pos = pos; // the one place flight state leaves the physics world
         // Out of the arena: gone quietly, no impact and no detonation, even for
         // a live fuse. Skips the rest so a fused shot doesn't blow up out there.
         if (pos.x < -m_arenaHalf || pos.x > m_arenaHalf ||
@@ -898,6 +997,7 @@ void World::UpdateProjectiles(float dt)
                 // was going.
                 Event ev;
                 ev.type = Event::Type::Hit;
+                ev.unit = unit.id;
                 ev.local = unit.controller == Unit::Controller::Local;
                 ev.pos = pos;
                 ev.dir = travel;
@@ -964,6 +1064,7 @@ void World::ReapDead()
         {
             Event ev;
             ev.type = Event::Type::Death;
+            ev.unit = unit.id;
             ev.local = unit.controller == Unit::Controller::Local;
             ev.pos = unit.pos;
             ev.dir = unit.aimDir;
@@ -981,4 +1082,86 @@ void World::ReapDead()
                 m_reinforcements.push_back({ unit.team, kRespawnDelay });
         }
     std::erase_if(m_units, [](const Unit& u) { return u.hp <= 0.0f; });
+}
+
+void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
+{
+    // Rebuild the roster in the snapshot's image, carrying each surviving
+    // unit's current state over as its previous state — the same two-frame
+    // pair a Tick writes, so the renderer's between-ticks blend works
+    // unchanged on a roster it has never seen ticked.
+    std::vector<Unit> next;
+    next.reserve(snap.units.size());
+    for (const Net::SnapUnit& su : snap.units)
+    {
+        const Unit* old = UnitById(su.id);
+        Unit unit = {};
+        unit.id = su.id;
+        unit.cls = &kClassDefs[su.classId % kClassCount];
+        unit.controller =
+            su.id == myUnitId ? Unit::Controller::Local : Unit::Controller::Remote;
+        unit.team = su.team;
+        unit.pos = { su.posX, 0.0f, su.posZ };
+        unit.aimDir = { std::cos(su.aimYaw), 0.0f, std::sin(su.aimYaw) };
+        unit.walkPhase = su.walkPhase;
+        unit.moveBlend = su.moveBlend;
+        unit.hp = su.hp;
+        if (old)
+        {
+            unit.prevPos = old->pos;
+            unit.prevAimDir = old->aimDir;
+            unit.prevWalkPhase = old->walkPhase;
+            unit.prevMoveBlend = old->moveBlend;
+            // The loadout fields below ride along from last time; for anyone
+            // but the own-unit they're meaningless and stay zero.
+            unit.ammo = old->ammo;
+            unit.reloadTimer = old->reloadTimer;
+            unit.grenades = old->grenades;
+            unit.meleeCharges = old->meleeCharges;
+            unit.meleeRecover = old->meleeRecover;
+            unit.meleeCooldown = old->meleeCooldown;
+            unit.ability = old->ability;
+        }
+        else
+        {
+            unit.prevPos = unit.pos;
+            unit.prevAimDir = unit.aimDir;
+            unit.prevWalkPhase = unit.walkPhase;
+            unit.prevMoveBlend = unit.moveBlend;
+        }
+        next.push_back(unit);
+    }
+    m_units = std::move(next);
+
+    // The own-block: the receiving player's loadout, which is the one part
+    // of a soldier the wire only tells its owner.
+    if (snap.own.has)
+        if (Unit* me = UnitById(snap.own.id))
+        {
+            me->ammo = snap.own.ammo;
+            me->reloadTimer = snap.own.reloadTimer;
+            me->grenades = snap.own.grenades;
+            me->meleeCharges = snap.own.meleeCharges;
+            me->meleeRecover = snap.own.meleeRecover;
+            me->meleeCooldown = snap.own.meleeCooldown;
+            me->ability.time = snap.own.abilityTime;
+            me->ability.cooldown = snap.own.abilityCooldown;
+        }
+
+    // Shots are replaced wholesale: they have no ids because they need no
+    // history — a replica draws them where the server says and never asks the
+    // physics for a body that isn't there.
+    m_projectiles.clear();
+    m_projectiles.reserve(snap.projectiles.size());
+    for (const Net::SnapProjectile& sp : snap.projectiles)
+    {
+        Projectile shot = {};
+        shot.body = 0;
+        shot.life = sp.life;
+        shot.pos = sp.pos;
+        shot.prevPos = sp.pos;
+        shot.radius = sp.radius;
+        shot.fused = sp.fused;
+        m_projectiles.push_back(shot);
+    }
 }

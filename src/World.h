@@ -9,8 +9,15 @@
 
 #include <DirectXMath.h>
 #include <SimpleMath.h>
+#include <algorithm>
 #include <random>
+#include <utility>
 #include <vector>
+
+namespace Net
+{
+    struct Snapshot;
+}
 
 // The simulation, whole and blind. Everything that decides the outcome of a
 // match lives behind this class — the roster, the shots in the air, the
@@ -37,15 +44,22 @@ struct Unit
 {
     using Vector3 = DirectX::SimpleMath::Vector3;
 
-    // Who decides what this soldier does next: a Brain, or a Command. Nothing
-    // below the controller differs by it — a networked player joins this
-    // enum, not this struct.
+    // Who decides what this soldier does next: a Brain, this machine's
+    // Command, or a Command that arrived over the wire. Nothing below the
+    // controller differs by it — Remote joining this enum and not this
+    // struct was the whole bet of the refactor, and it paid.
     enum class Controller
     {
         Ai,
         Local,
+        Remote,
     };
 
+    // Stable for the unit's whole life and never reused within a match. The
+    // roster's indices shift every time somebody dies, so anything that
+    // outlives a tick — a server's session, a snapshot, an event — names
+    // soldiers by this instead.
+    int id;
     const ClassDef* cls;
     Controller controller;
     int team;
@@ -117,10 +131,15 @@ struct Event
     };
 
     Type type;
+    // The soldier the event is about, by roster id, or -1 when it's about
+    // nobody in particular (a detonation, a bounce). The wire carries this
+    // and each client reconstructs `local` from it, since "local" is a fact
+    // about the reader, not the event.
+    int unit = -1;
     // The local soldier's own doing or suffering. Presentation reads it to
     // route a sound to the listener's hands rather than a spot on the floor,
-    // and to know whose pad to rumble; a server would decide it per client
-    // instead of carrying it here.
+    // and to know whose pad to rumble. Set directly by the in-process path;
+    // derived from `unit` on arrival over the wire.
     bool local = false;
     Vector3 pos;
     Vector3 dir;
@@ -180,8 +199,12 @@ public:
 
     struct Projectile
     {
-        Physics::BodyHandle body;
+        Physics::BodyHandle body; // 0 on a client replica: the shot is the server's to fly
         float life;
+        // Where the shot is, refreshed from the physics body each tick — or
+        // from a snapshot, on a replica that has no body to ask. Everything
+        // outside the simulation reads this rather than the physics world.
+        Vector3 pos;
         Vector3 prevPos; // last tick's position, for swept hit tests
         int team;        // whose shot this is; it only hurts the other side
         float damage;
@@ -227,6 +250,48 @@ public:
     // alive.
     Unit* Local();
     const Unit* Local() const;
+    Unit* UnitById(int id);
+
+    // --- The server's half of the surface. A connected player is three
+    // calls: ClaimSlot when they pick a side, SpawnRemote when they take the
+    // field, SetCommand every tick they're on it. None of it means anything
+    // to a client or to solo play, and none of it is one line of special case
+    // inside the simulation — a Remote unit is a unit.
+
+    // Reserves one of `team`'s slots for a human. The AI gives the slot up
+    // immediately — a living AI soldier on that side is removed, quietly, no
+    // corpse: they rotate out, they don't die of somebody connecting. The
+    // claim holds through deaths and respawns, exactly like the local
+    // player's; returns the (clamped) team actually claimed.
+    int ClaimSlot(int team);
+    // Hands a claimed slot back — a disconnect. The side is owed a soldier
+    // again, on the same reinforcement clock a death starts: a leaver's slot
+    // refills the way a casualty's does, not instantly.
+    void ReleaseSlot(int team);
+    // Human claims currently held on `team`, the local player's included.
+    int HumanSlots(int team) const;
+    int TeamCount() const { return static_cast<int>(m_teamSpawns.size()); }
+
+    // Puts a connected player's soldier on the field: `cls` at `team`'s
+    // spawn, full loadout, driven by whatever SetCommand says from now on.
+    // Returns the unit's id — the name the server and the wire know them by.
+    int SpawnRemote(const ClassDef& cls, int team);
+    // Takes a soldier off the field without a death: no corpse, no event, no
+    // reinforcement. For the body a disconnect leaves behind; a slot released
+    // is a separate matter (ReleaseSlot).
+    void RemoveUnit(int id);
+    // Stages `cmd` to be applied to unit `id` on the next Tick. One command
+    // per unit per tick — staging again before the tick replaces, it doesn't
+    // stack. The tick consumes the whole stage.
+    void SetCommand(int id, const Command& cmd);
+
+    // --- The client replica's half: a World that is never Ticked, whose
+    // state arrives readymade. Everything a snapshot doesn't mention is
+    // removed; everything it does is upserted, with the previous state kept
+    // for the same between-ticks blend the solo renderer does. `myUnitId`
+    // marks which unit gets Controller::Local, so every drawing path that
+    // asks "is this me" keeps working against a wire-fed roster.
+    void ApplySnapshot(const Net::Snapshot& snap, int myUnitId);
 
     const std::vector<Unit>& Units() const { return m_units; }
     const std::vector<Projectile>& Projectiles() const { return m_projectiles; }
@@ -303,14 +368,22 @@ private:
     // Deals the next class off `team`'s rotation and puts an AI soldier on
     // the field with it.
     void SpawnAi(int team);
+    // The one spawn under SpawnLocal and SpawnRemote: a human's soldier —
+    // full loadout off the class table, no brain woken — differing only in
+    // which controller drives it.
+    int SpawnHuman(const ClassDef& cls, int team, Unit::Controller controller);
     // How many AI soldiers `team` is meant to be fielding: its share of the
-    // roster, less the slot the local player holds on their own side. The
-    // player's slot is theirs whether they're alive or waiting to respawn, so
-    // nothing fills in for them and nothing has to be sent away when they're
-    // back.
+    // roster, less every slot a human has claimed on it — the local player
+    // and connected ones alike. A claim holds whether its holder is alive or
+    // waiting to respawn, so nothing fills in for them and nothing has to be
+    // sent away when they're back.
     int AiQuota(int team) const
     {
-        return kTeamSize - (m_localClass && team == m_localTeam ? 1 : 0);
+        const int humans =
+            team < static_cast<int>(m_humanSlots.size()) ? m_humanSlots[team] : 0;
+        // A side already full of humans owes the AI nothing — and never a
+        // negative number of soldiers, however oversubscribed it gets.
+        return std::max(0, kTeamSize - humans);
     }
     // Living AI soldiers currently on `team`.
     int AiCount(int team) const;
@@ -341,6 +414,11 @@ private:
     Physics m_physics;
     const ClassDef* m_localClass = nullptr; // set by StartMatch; null on a server
     int m_localTeam = 0;
+    int m_nextUnitId = 1; // 0 never issued, so an uninitialized id matches nobody
+    // Human claims per team (see ClaimSlot); what AiQuota subtracts.
+    std::vector<int> m_humanSlots;
+    // Commands staged for remote units, consumed whole by the next Tick.
+    std::vector<std::pair<int, Command>> m_staged;
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id.
     std::vector<Vector3> m_teamSpawns;

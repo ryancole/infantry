@@ -2,8 +2,10 @@
 
 #include "Hud.h"
 #include "Level.h"
+#include "Net.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -208,12 +210,35 @@ namespace
     }
 }
 
+void Game::SetMultiplayer(std::string host, std::string autoClass)
+{
+    m_connectHost = std::move(host);
+    m_autoClass = std::move(autoClass);
+}
+
 void Game::LoadContent(Renderer& renderer)
 {
     // The player's own layout, if they've made one. A missing or unreadable
     // file isn't an error worth stopping for — it just means the defaults, which
     // is what a first run is — so nothing here checks the answer.
     m_binds.Load();
+
+    // Connected play: start the handshake now, behind the menus, so by the
+    // time a class is picked the socket is usually already up. With a class
+    // named on the command line the menus are skipped entirely — launch to
+    // firefight in one step, which is what iterating on netcode wants.
+    if (!m_connectHost.empty())
+    {
+        m_net = std::make_unique<NetClient>();
+        m_net->Start(m_connectHost, Net::kPort);
+        for (size_t i = 0; i < kClassCount; ++i)
+            if (_stricmp(kClassDefs[i].name, m_autoClass.c_str()) == 0)
+            {
+                m_class = &kClassDefs[i];
+                m_phase = Phase::Connecting;
+                break;
+            }
+    }
 
     m_sound.Init(); // loads the wave bank and starts the ambience
 
@@ -255,7 +280,75 @@ void Game::LoadContent(Renderer& renderer)
 
 void Game::Shutdown()
 {
+    if (m_net)
+        m_net->Disconnect();
     m_sound.Shutdown();
+}
+
+void Game::NetPump(float dt, IsoCamera& camera)
+{
+    (void)dt;
+    std::vector<std::vector<uint8_t>> packets;
+    m_net->Poll(packets);
+
+    // The far end going away is the end of the session, however far into it
+    // we were: there's no local simulation to fall back into a match with,
+    // and pretending otherwise would leave the player aiming at statues.
+    if (m_net->GetStatus() == NetClient::Status::Failed)
+    {
+        m_quit = true;
+        return;
+    }
+
+    for (const std::vector<uint8_t>& packet : packets)
+    {
+        Net::Reader r(packet.data(), packet.size());
+        switch (static_cast<Net::MsgType>(r.U8()))
+        {
+        case Net::MsgType::Welcome:
+        {
+            m_myUnitId = r.I32();
+            m_team = r.U8();
+            m_camSnapPending = true;
+            if (m_phase == Phase::Connecting)
+                m_phase = Phase::Playing;
+            break;
+        }
+        case Net::MsgType::Respawned:
+        {
+            m_myUnitId = r.I32();
+            m_camSnapPending = true;
+            if (m_phase == Phase::Dead)
+                m_phase = Phase::Playing;
+            break;
+        }
+        case Net::MsgType::Snapshot:
+        {
+            const Net::Snapshot snap = Net::ReadSnapshot(r);
+            if (!r.ok)
+                break;
+            m_world.ApplySnapshot(snap, m_myUnitId);
+            m_snapElapsed = 0.0f;
+            // The cut a spawn deserves, taken on the first snapshot that
+            // actually has us in it — Welcome says who we are, but only a
+            // snapshot says where.
+            if (m_camSnapPending)
+                if (const Unit* me = m_world.Local())
+                {
+                    m_eyePos = me->pos;
+                    camera.SetTarget(m_eyePos);
+                    camera.SnapToTarget();
+                    m_camSnapPending = false;
+                }
+            break;
+        }
+        case Net::MsgType::Events:
+            Net::ReadEvents(r, m_myUnitId, m_events);
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 void Game::Update(float dt, const Input& input, IsoCamera& camera)
@@ -315,16 +408,47 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
                 m_classSelect.Update(input, camera.ViewportWidth(), camera.ViewportHeight()))
         {
             m_class = &GetClassDef(*picked);
-            m_phase = Phase::Playing;
-            // The whole match turns up with the player — their own unit
-            // included, loadout and all. The class pick is the last thing
-            // standing between the menu and the arena, so it's also the first
-            // moment there's anything for two squads to do.
-            m_world.StartMatch(m_class, m_team);
-            m_eyePos = m_world.Local()->pos;
-            camera.SetTarget(m_eyePos);
-            camera.SnapToTarget();
+            if (m_net)
+            {
+                // The match is somebody else's: ask to be in it. The join
+                // goes out from the Connecting phase, which also covers a
+                // handshake that hasn't finished yet.
+                m_phase = Phase::Connecting;
+            }
+            else
+            {
+                m_phase = Phase::Playing;
+                // The whole match turns up with the player — their own unit
+                // included, loadout and all. The class pick is the last thing
+                // standing between the menu and the arena, so it's also the
+                // first moment there's anything for two squads to do.
+                m_world.StartMatch(m_class, m_team);
+                m_eyePos = m_world.Local()->pos;
+                camera.SetTarget(m_eyePos);
+                camera.SnapToTarget();
+            }
         }
+        return;
+    }
+
+    // Connecting: the handshake and the join, out from under the menus. All
+    // that can happen here is the server answering (NetPump flips the phase
+    // on Welcome), the attempt failing, or the player giving up.
+    if (m_phase == Phase::Connecting)
+    {
+        if (input.KeyPressed(VK_ESCAPE))
+        {
+            m_quit = true;
+            return;
+        }
+        if (m_net->GetStatus() == NetClient::Status::Connected && !m_joinSent && m_class)
+        {
+            Net::Writer w;
+            Net::WriteJoin(w, static_cast<uint8_t>(m_class - kClassDefs));
+            m_net->SendReliable(w.bytes);
+            m_joinSent = true;
+        }
+        NetPump(dt, camera);
         return;
     }
 
@@ -347,61 +471,96 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     if (m_phase == Phase::Dead)
     {
         m_respawnTimer -= dt;
-        m_tickAccum += dt;
-        while (m_tickAccum >= World::kTickDt)
+        if (m_net)
         {
-            m_tickAccum -= World::kTickDt;
-            m_world.Tick(nullptr, m_events);
+            // The wait is really the server's; the timer here only feeds the
+            // countdown text, and Respawned is what actually brings us back
+            // (see NetPump). The ragdolls still need local gravity.
+            NetPump(dt, camera);
+            m_snapElapsed += dt;
+            m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
+            m_world.Phys().Step(dt);
         }
-        m_renderAlpha = m_tickAccum / World::kTickDt;
+        else
+        {
+            m_tickAccum += dt;
+            while (m_tickAccum >= World::kTickDt)
+            {
+                m_tickAccum -= World::kTickDt;
+                m_world.Tick(nullptr, m_events);
+            }
+            m_renderAlpha = m_tickAccum / World::kTickDt;
+        }
         ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
-        if (m_respawnTimer <= 0.0f)
+        if (!m_net && m_respawnTimer <= 0.0f)
             Respawn(camera);
         return;
     }
 
     // Input becomes a Command, and the Command is all the simulation hears:
     // the bindings, the pad, and the cursor's trip through the camera all end
-    // inside ReadCommand, and the World would do exactly the same work on a
+    // inside ReadCommand, and the World does exactly the same work on a
     // sentence that arrived over a socket. The one keepsake this side holds
     // onto is the aim distance, which the aim indicator wants at render time.
     m_screenRight = camera.ScreenRightOnGround();
     const Command fresh = ReadCommand(input, camera, m_world.Local()->pos);
     m_aimDist = fresh.aimDist;
 
-    // Fold this frame's hands into the pending command: held controls are
-    // whatever they are right now, edges latch until a tick spends them.
-    m_pendingCmd.move = fresh.move;
-    m_pendingCmd.aim = fresh.aim;
-    m_pendingCmd.aimDist = fresh.aimDist;
-    m_pendingCmd.fire = fresh.fire;
-    m_pendingCmd.melee = fresh.melee;
-    m_pendingCmd.steady = fresh.steady;
-    m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
-    m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
-    m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
-
     m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
 
-    // Simulation time passes in whole ticks; the frame deposits its dt and
-    // the loop spends what's there. The leftover is where this frame's
-    // picture sits between two ticks, which is what the renderer blends by.
-    m_tickAccum += dt;
-    while (m_tickAccum >= World::kTickDt)
+    if (m_net)
     {
-        m_tickAccum -= World::kTickDt;
-        m_world.Tick(&m_pendingCmd, m_events);
-        // The tick spent the edges; a second tick in the same frame must not
-        // spend them again.
-        m_pendingCmd.reload = false;
-        m_pendingCmd.grenade = false;
-        m_pendingCmd.ability = false;
-    }
-    m_renderAlpha = m_tickAccum / World::kTickDt;
+        // Connected: the command goes to the far end instead of a local tick.
+        // Sent fresh every frame — the server latches edges between its own
+        // ticks the way solo play latches them here, so a click can't slip
+        // between two of anybody's ticks.
+        Net::Writer w;
+        Net::WriteCmd(w, fresh);
+        m_net->SendState(w.bytes);
 
-    // Everything those ticks did, turned into something to see and hear.
+        NetPump(dt, camera);
+        m_snapElapsed += dt;
+        m_renderAlpha = std::clamp(m_snapElapsed / World::kTickDt, 0.0f, 1.0f);
+        // The replica is never Ticked, but the corpses still fall through the
+        // local physics world; this is their gravity.
+        m_world.Phys().Step(dt);
+    }
+    else
+    {
+        // Fold this frame's hands into the pending command: held controls are
+        // whatever they are right now, edges latch until a tick spends them.
+        m_pendingCmd.move = fresh.move;
+        m_pendingCmd.aim = fresh.aim;
+        m_pendingCmd.aimDist = fresh.aimDist;
+        m_pendingCmd.fire = fresh.fire;
+        m_pendingCmd.melee = fresh.melee;
+        m_pendingCmd.steady = fresh.steady;
+        m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+        m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+        m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+
+        // Simulation time passes in whole ticks; the frame deposits its dt
+        // and the loop spends what's there. The leftover is where this
+        // frame's picture sits between two ticks, which is what the renderer
+        // blends by.
+        m_tickAccum += dt;
+        while (m_tickAccum >= World::kTickDt)
+        {
+            m_tickAccum -= World::kTickDt;
+            m_world.Tick(&m_pendingCmd, m_events);
+            // The tick spent the edges; a second tick in the same frame must
+            // not spend them again.
+            m_pendingCmd.reload = false;
+            m_pendingCmd.grenade = false;
+            m_pendingCmd.ability = false;
+        }
+        m_renderAlpha = m_tickAccum / World::kTickDt;
+    }
+
+    // Everything those ticks did — or the wire delivered — turned into
+    // something to see and hear.
     ProcessEvents();
 
     // Particles are the client's own weather — they never touch the outcome
@@ -887,6 +1046,21 @@ void Game::Render(Renderer& renderer)
         return;
     }
 
+    // Connecting: nothing to draw but the fact of it. The arena arrives with
+    // the first snapshot, moments after this screen stops existing.
+    if (m_phase == Phase::Connecting)
+    {
+        std::string text = "CONNECTING TO " + m_connectHost;
+        for (char& c : text)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        const float size = renderer.Height() * 0.03f;
+        renderer.DrawScreenText(text,
+                                (renderer.Width() - renderer.MeasureScreenText(text, size)) *
+                                    0.5f,
+                                renderer.Height() * 0.46f, size, kHudColor);
+        return;
+    }
+
     const XMMATRIX identity = XMMatrixIdentity();
 
     renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
@@ -968,7 +1142,7 @@ void Game::Render(Renderer& renderer)
 
     for (const World::Projectile& shot : m_world.Projectiles())
     {
-        const XMFLOAT3 pos = m_world.Phys().GetPosition(shot.body);
+        const Vector3& pos = shot.pos;
         if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
         {
             // Per-shot radius, not the class's: a thrown grenade is a fatter

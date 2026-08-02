@@ -7,6 +7,7 @@
 #include "Command.h"
 #include "Input.h"
 #include "MainMenu.h"
+#include "NetClient.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
 #include "Soldier.h"
@@ -35,6 +36,13 @@
 class Game
 {
 public:
+    // Points the game at a server instead of its own simulation; call before
+    // LoadContent. `autoClass` may name a class ("marine") to skip the menus
+    // and join on launch — a dev convenience that makes "second machine into
+    // the fight" one command line. Empty strings mean solo play, exactly as
+    // before this function existed.
+    void SetMultiplayer(std::string host, std::string autoClass);
+
     // Loads the level (assets/levels/) and GPU assets; call once after
     // Renderer::Init. Throws std::runtime_error on a bad level or model.
     void LoadContent(Renderer& renderer);
@@ -63,12 +71,15 @@ private:
     // as. From there they must pick a class before they spawn, and the arena
     // only starts simulating once that choice is made. Dying drops back out of
     // Playing for the respawn wait: the arena keeps running, the player just
-    // isn't in it.
+    // isn't in it. Connecting sits between the class pick and Playing when
+    // the arena is somebody else's: the class is chosen, the join is in
+    // flight, and there's nothing to draw until the server says who you are.
     enum class Phase
     {
         MainMenu,
         KeyBinds,
         ClassSelect,
+        Connecting,
         Playing,
         Dead,
     };
@@ -131,8 +142,14 @@ private:
     // into what it looks and sounds like — blood for a Hit, a ragdoll for a
     // Death, a thud for a Bounce, a rumble for the local soldier's pain. Runs
     // once a frame over however many ticks' worth of events accumulated, then
-    // forgets them.
+    // forgets them. In connected play the events arrived over the wire
+    // instead of from a local Tick, and nothing in here can tell.
     void ProcessEvents();
+    // Connected play's inbox: pumps the socket and applies what came —
+    // snapshots into the replica World, events into the queue, Welcome and
+    // Respawned into who-am-I and the phase. The camera comes along for the
+    // cut a (re)spawn makes.
+    void NetPump(float dt, IsoCamera& camera);
     // Puts the player back on the field via the World and returns to
     // Phase::Playing; the camera cuts rather than sweeps across.
     void Respawn(IsoCamera& camera);
@@ -163,12 +180,30 @@ private:
     void AppendFog(std::vector<Vertex>& out) const;
     void RenderHud(Renderer& renderer);
 
-    // The whole match, behind its seam. Everything this class knows about the
-    // fight it learns by looking in (const accessors, for drawing and the
-    // HUD) or by the events Tick hands back.
+    // The whole match, behind its seam. In solo play this is the match; in
+    // connected play it's a replica the server's snapshots keep dressed, and
+    // it is never Ticked. Everything this class knows about the fight it
+    // learns by looking in (const accessors, for drawing and the HUD) or by
+    // the events that arrive — from Tick or from the wire, same shape.
     World m_world;
     // Events the ticks of the current frame produced, spent by ProcessEvents.
     std::vector<Event> m_events;
+
+    // The wire, when there is one. Null is solo play, and every branch on it
+    // reads as "who runs the simulation" — this machine, or the far end.
+    std::unique_ptr<NetClient> m_net;
+    std::string m_connectHost; // where SetMultiplayer pointed us
+    std::string m_autoClass;   // class to auto-join as, or empty for the menus
+    int m_myUnitId = -1;       // the wire's name for our soldier; -1 while dead or unjoined
+    bool m_joinSent = false;
+    // Cut the camera to our soldier when they next appear in a snapshot: set
+    // by Welcome and Respawned, spent by the first snapshot that has us. The
+    // spawn is somewhere else entirely, and the camera shouldn't sweep there.
+    bool m_camSnapPending = false;
+    // Render-time interpolation against snapshot cadence: seconds since the
+    // last snapshot landed, over the tick length, is how far the drawn frame
+    // sits past the state we're holding — the wire's version of m_tickAccum.
+    float m_snapElapsed = 0.0f;
 
     Sound m_sound;
     Phase m_phase = Phase::MainMenu;

@@ -5,9 +5,11 @@
 
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <exception>
 #include <memory>
+#include <string>
 
 namespace
 {
@@ -86,6 +88,38 @@ namespace
     }
 }
 
+// The command line, wide and quoted by Windows, folded down to the two
+// options the game takes: `--connect <host>` points it at a server instead
+// of its own simulation, and `--class <name>` (with --connect) skips the
+// menus and joins as that class on launch — a second machine into the fight
+// is one shortcut with both.
+static void ParseArgs(Game& game)
+{
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv)
+        return;
+
+    const auto narrow = [](const wchar_t* wide) {
+        std::string out;
+        for (; *wide; ++wide)
+            out.push_back(static_cast<char>(*wide)); // hosts and class names are ASCII
+        return out;
+    };
+
+    std::string host, cls;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (wcscmp(argv[i], L"--connect") == 0 && i + 1 < argc)
+            host = narrow(argv[++i]);
+        else if (wcscmp(argv[i], L"--class") == 0 && i + 1 < argc)
+            cls = narrow(argv[++i]);
+    }
+    if (!host.empty())
+        game.SetMultiplayer(host, cls);
+    LocalFree(argv);
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     // GamePad's Windows.Gaming.Input backend activates WinRT factories, which
@@ -93,6 +127,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     App app;
+    ParseArgs(app.game);
     app.keyboard = std::make_unique<DirectX::Keyboard>();
     app.mouse = std::make_unique<DirectX::Mouse>();
     app.gamepad = std::make_unique<DirectX::GamePad>();
