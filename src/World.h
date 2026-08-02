@@ -91,6 +91,14 @@ struct Unit
     float walkPhase;   // leg-swing angle for the soldier model, advances with distance
     float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
     Vector3 knock;     // launch velocity the last hit would give its corpse
+    // The side that last put damage on this soldier, and so the side that
+    // gets the kill if the next blow is the last one. -1 until somebody has
+    // touched them. Every system that takes health off sets it, which is the
+    // same reason ReapDead can collect the dead without knowing who killed
+    // them: whoever it was said so on the way past. With two sides and no
+    // friendly fire this is always "the other one", but a score is about who
+    // did it rather than about there being exactly two of them.
+    int lastHitTeam = -1;
 
     // Where this soldier was at the top of the current tick, kept so a
     // renderer can draw the moment between two ticks rather than the stutter
@@ -175,8 +183,10 @@ public:
     // another until you respawn, which is what makes the throw a decision.
     static constexpr int kGrenadesPerLife = 1;
     // Dying costs time as well as position: long enough that a death is felt,
-    // short enough that watching it out isn't the game. A placeholder value
-    // until there's something to tune it against (round length, ticket bleed).
+    // short enough that watching it out isn't the game. There's a match length
+    // to weigh it against now — five seconds against fifteen minutes is a
+    // couple of hundred lives a side, which is enough that the score reads as
+    // the whole match rather than as whoever won the last exchange.
     static constexpr float kRespawnDelay = 5.0f;
     // Soldiers a side puts on the field, the local player included. Five a side
     // is the smallest number that makes the arena read as a fight rather than a
@@ -185,6 +195,19 @@ public:
     // because it's a statement about the game mode, and there's only one of
     // those so far; when a server decides team sizes, this is what it sets.
     static constexpr int kTeamSize = 5;
+
+    // How long a match lasts, and what the whole thing is for: at the end of
+    // it the side that has killed more has won. Fifteen minutes is long
+    // enough that one good push doesn't decide it and short enough that a
+    // side being ground down can see the end of it — and at a five second
+    // respawn it's a couple of hundred lives a side, so the score is a
+    // reading of the whole match rather than of one exchange.
+    static constexpr float kMatchLength = 15.0f * 60.0f;
+    // How long the result stands before the next match starts on the same
+    // ground. Long enough to read who won and by how much, short enough that
+    // nobody goes to make tea — a server between matches is a server nobody
+    // is playing on.
+    static constexpr float kIntermission = 15.0f;
 
     // Runtime halves of a level object the simulation cares about: solid
     // objects contribute a collider (physics + soldier push-out). Whether one
@@ -284,6 +307,31 @@ public:
     // filtered roster only holds what this client is allowed to see and the
     // corner panel is a scoreboard, not a wallhack.
     int Standing(int team) const;
+
+    // --- The match: a clock, a score, and the one thing they decide.
+    //
+    // The clock runs down from kMatchLength on every Tick, and when it
+    // reaches zero the match is over: the arena freezes where it stands,
+    // nothing further is decided, and the side with the most kills has won.
+    // What happens next is deliberately not this class's business — it can
+    // count the intermission down, but it can't start the next match, because
+    // starting one means telling somebody (a player, five connected clients)
+    // that it started. Whoever called StartMatch calls it again.
+
+    // Seconds left in the match; zero once it's over.
+    float MatchTime() const { return m_matchTime; }
+    // Seconds until the next match is due; zero while one is running. Only
+    // meaningful alongside MatchOver.
+    float Intermission() const { return m_intermission; }
+    bool MatchOver() const { return m_matchOver; }
+    // Kills credited to `team` this match — one per enemy soldier its fire
+    // brought down. Zero for a team that doesn't exist, so a replica can be
+    // asked about a side its snapshot hasn't mentioned.
+    int Score(int team) const;
+    // The side that is ahead, or -1 when two or more are level at the top. A
+    // draw is a real outcome of "most kills wins" rather than a tie broken by
+    // something the players never saw.
+    int Winner() const;
 
     // Puts a connected player's soldier on the field: `cls` at `team`'s
     // spawn, full loadout, driven by whatever SetCommand says from now on.
@@ -419,6 +467,11 @@ private:
     // field when one comes due, unless the side is somehow already up to
     // strength.
     void UpdateReinforcements(float dt);
+    // The whistle: stops the clock, starts the intermission, and sweeps the
+    // rounds still in the air — they were fired at a match that no longer
+    // has anything to decide, and leaving them would hang tracers in the
+    // frozen arena for the length of the result.
+    void EndMatch();
     // Ends `shot` at `pos`: splash damage for explosives, then the Detonation
     // event (which differs for a hit on `hitUnit` vs. world geometry).
     void Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit);
@@ -444,6 +497,14 @@ private:
     // The server's per-team standing counts, held by a replica whose own
     // roster is fog-filtered. Empty on any world whose roster is the truth.
     std::vector<int> m_standingOverride;
+    // The match: what's left of it, whether it's finished, how long the
+    // result has left to stand, and what each side has killed. On a replica
+    // all four arrive in the snapshot rather than being counted here — the
+    // score is the server's word, the same as the standing counts above.
+    float m_matchTime = kMatchLength;
+    float m_intermission = 0.0f;
+    bool m_matchOver = false;
+    std::vector<int> m_scores; // kills per team, indexed by team id
     float m_arenaHalf = 32.0f;
     // Team spawn points from the level, indexed by team id.
     std::vector<Vector3> m_teamSpawns;

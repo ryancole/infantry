@@ -153,6 +153,15 @@ namespace
         }
     }
 
+    // Mixes `f` of the way to white. A team color is chosen to read as armor
+    // at arena distance; the same color set as text over a lit floor wants
+    // more light than that, and lifting it leaves the hue — which is the part
+    // that says which side won — untouched.
+    XMFLOAT4 Brighten(const XMFLOAT4& c, float f)
+    {
+        return { c.x + (1.0f - c.x) * f, c.y + (1.0f - c.y) * f, c.z + (1.0f - c.z) * f, c.w };
+    }
+
     // How a projectile in flight is drawn: tracers are a steady bright dot,
     // while a fused grenade blinks its casing and then holds bright for the
     // last moment before it goes off, so anyone watching can time it. Phase
@@ -299,21 +308,25 @@ void Game::LeaveMatch()
     m_pendingCmds.clear();
     m_pendingCmd = {};
     m_events.clear();
-    // The weather this client conjured from the match's events goes with the
-    // match: the corpses give their bodies back to the physics world, and the
-    // floor gives up its history.
-    while (!m_corpses.empty())
-        RemoveCorpse(m_corpses.size() - 1);
-    m_particles.clear();
-    m_splatVerts.clear();
+    ClearBattlefield();
     m_world.Reset();
     m_class = nullptr;
-    m_meleeFlash = 0.0f;
     m_respawnTimer = 0.0f;
     m_tickAccum = 0.0f;
     m_renderAlpha = 0.0f;
     m_snapElapsed = 0.0f;
     m_phase = Phase::MainMenu;
+}
+
+void Game::ClearBattlefield()
+{
+    // The corpses give their bodies back to the physics world, the weather in
+    // the air goes out, and the floor gives up its history.
+    while (!m_corpses.empty())
+        RemoveCorpse(m_corpses.size() - 1);
+    m_particles.clear();
+    m_splatVerts.clear();
+    m_meleeFlash = 0.0f;
 }
 
 void Game::NetPump(float dt, IsoCamera& camera)
@@ -362,7 +375,14 @@ void Game::NetPump(float dt, IsoCamera& camera)
             const Net::Snapshot snap = Net::ReadSnapshot(r);
             if (!r.ok)
                 break;
+            // A match ending and the next one starting are both facts about
+            // the server's clock, and both arrive here. The only one this
+            // side has to act on is the new match: it starts on ground the
+            // last one left bodies and blood all over.
+            const bool wasOver = m_world.MatchOver();
             m_world.ApplySnapshot(snap, m_myUnitId);
+            if (wasOver && !m_world.MatchOver())
+                ClearBattlefield();
             m_snapElapsed = 0.0f;
             // The cut a spawn deserves, taken on the first snapshot that
             // actually has us in it — Welcome says who we are, but only a
@@ -609,6 +629,16 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
+        // A match that has ended doesn't hand anybody back their soldier: the
+        // wait is over, but there's nothing left to wait for. The next match
+        // puts everyone on the field at once, and that's what this player is
+        // waiting for now.
+        if (!m_net && m_world.MatchOver())
+        {
+            if (m_world.Intermission() <= 0.0f)
+                StartNextMatch(camera);
+            return;
+        }
         if (!m_net && m_respawnTimer <= 0.0f)
             Respawn(camera);
         return;
@@ -635,6 +665,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         input, camera, m_hasPredicted ? m_predicted.pos : m_world.Local()->pos);
     m_aimDist = fresh.aimDist;
 
+    // The whistle has gone: the arena is frozen and nothing pressed reaches
+    // it. The controls stop being read rather than being read and ignored,
+    // because a command that went on being predicted would walk this
+    // machine's soldier away from the one the server has standing still.
+    const bool over = m_world.MatchOver();
+
     m_meleeFlash = std::max(0.0f, m_meleeFlash - dt);
 
     if (m_net)
@@ -644,54 +680,71 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         // each one drives the predicted soldier the moment it exists. The
         // latch below is the same edge-preserving fold solo play does; the
         // tick spends the edges into exactly one command.
-        m_pendingCmd.move = fresh.move;
-        m_pendingCmd.aim = fresh.aim;
-        m_pendingCmd.aimDist = fresh.aimDist;
-        m_pendingCmd.fire = fresh.fire;
-        m_pendingCmd.melee = fresh.melee;
-        m_pendingCmd.steady = fresh.steady;
-        m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
-        m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
-        m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
-
-        m_tickAccum += dt;
-        while (m_tickAccum >= World::kTickDt)
+        //
+        // None of it happens once the match is over: no command is stamped,
+        // nothing goes out on the wire, and the prediction stays where the
+        // server's last word put it — Repredict keeps it glued there as the
+        // frozen snapshots arrive. The pending command is wiped rather than
+        // left to sit, so the next match doesn't open on a key that was
+        // pressed at the end of the last one.
+        if (over)
         {
-            m_tickAccum -= World::kTickDt;
-            const uint32_t seq = ++m_cmdSeq;
-            m_pendingCmds.push_back({ seq, m_pendingCmd });
-            // A server that stops acking must not turn this buffer into the
-            // whole session's history; past two seconds the oldest commands
-            // are lost causes, and the next ack squares everything anyway.
-            if (m_pendingCmds.size() > 120)
-                m_pendingCmds.pop_front();
-            // The packet is this command and up to two predecessors, oldest
-            // first — the pending buffer's tail, which is exactly the set a
-            // lost packet would have cost the server.
-            Net::CmdEntry tail[Net::kCmdRedundancy];
-            size_t count = 0;
-            const size_t start =
-                m_pendingCmds.size() > Net::kCmdRedundancy
-                    ? m_pendingCmds.size() - Net::kCmdRedundancy
-                    : 0;
-            for (size_t i = start; i < m_pendingCmds.size(); ++i)
-                tail[count++] = { m_pendingCmds[i].seq, m_pendingCmds[i].cmd };
-            Net::Writer w;
-            Net::WriteCmds(w, tail, count);
-            m_net->SendState(w.bytes);
-            if (m_hasPredicted)
-            {
-                m_predicted.prevPos = m_predicted.pos;
-                m_predicted.prevAimDir = m_predicted.aimDir;
-                m_predicted.prevWalkPhase = m_predicted.walkPhase;
-                m_predicted.prevMoveBlend = m_predicted.moveBlend;
-                m_world.MoveCommand(m_predicted, m_pendingCmd, World::kTickDt);
-            }
-            m_pendingCmd.reload = false;
-            m_pendingCmd.grenade = false;
-            m_pendingCmd.ability = false;
+            m_pendingCmd = {};
+            m_tickAccum = 0.0f;
+            m_predAlpha = 0.0f;
         }
-        m_predAlpha = m_tickAccum / World::kTickDt;
+        else
+        {
+            m_pendingCmd.move = fresh.move;
+            m_pendingCmd.aim = fresh.aim;
+            m_pendingCmd.aimDist = fresh.aimDist;
+            m_pendingCmd.fire = fresh.fire;
+            m_pendingCmd.melee = fresh.melee;
+            m_pendingCmd.steady = fresh.steady;
+            m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+            m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+            m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+
+            m_tickAccum += dt;
+            while (m_tickAccum >= World::kTickDt)
+            {
+                m_tickAccum -= World::kTickDt;
+                const uint32_t seq = ++m_cmdSeq;
+                m_pendingCmds.push_back({ seq, m_pendingCmd });
+                // A server that stops acking must not turn this buffer into
+                // the whole session's history; past two seconds the oldest
+                // commands are lost causes, and the next ack squares
+                // everything anyway.
+                if (m_pendingCmds.size() > 120)
+                    m_pendingCmds.pop_front();
+                // The packet is this command and up to two predecessors,
+                // oldest first — the pending buffer's tail, which is exactly
+                // the set a lost packet would have cost the server.
+                Net::CmdEntry tail[Net::kCmdRedundancy];
+                size_t count = 0;
+                const size_t start =
+                    m_pendingCmds.size() > Net::kCmdRedundancy
+                        ? m_pendingCmds.size() - Net::kCmdRedundancy
+                        : 0;
+                for (size_t i = start; i < m_pendingCmds.size(); ++i)
+                    tail[count++] = { m_pendingCmds[i].seq, m_pendingCmds[i].cmd };
+                Net::Writer w;
+                Net::WriteCmds(w, tail, count);
+                m_net->SendState(w.bytes);
+                if (m_hasPredicted)
+                {
+                    m_predicted.prevPos = m_predicted.pos;
+                    m_predicted.prevAimDir = m_predicted.aimDir;
+                    m_predicted.prevWalkPhase = m_predicted.walkPhase;
+                    m_predicted.prevMoveBlend = m_predicted.moveBlend;
+                    m_world.MoveCommand(m_predicted, m_pendingCmd, World::kTickDt);
+                }
+                m_pendingCmd.reload = false;
+                m_pendingCmd.grenade = false;
+                m_pendingCmd.ability = false;
+            }
+            m_predAlpha = m_tickAccum / World::kTickDt;
+        }
 
         NetPump(dt, camera);
         // The pump may have ended the session — server gone, or the door
@@ -708,15 +761,23 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     {
         // Fold this frame's hands into the pending command: held controls are
         // whatever they are right now, edges latch until a tick spends them.
-        m_pendingCmd.move = fresh.move;
-        m_pendingCmd.aim = fresh.aim;
-        m_pendingCmd.aimDist = fresh.aimDist;
-        m_pendingCmd.fire = fresh.fire;
-        m_pendingCmd.melee = fresh.melee;
-        m_pendingCmd.steady = fresh.steady;
-        m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
-        m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
-        m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+        // A finished match hears none of it — the Tick below would drop the
+        // command anyway, and clearing it keeps an edge from surviving into
+        // the next match.
+        if (over)
+            m_pendingCmd = {};
+        else
+        {
+            m_pendingCmd.move = fresh.move;
+            m_pendingCmd.aim = fresh.aim;
+            m_pendingCmd.aimDist = fresh.aimDist;
+            m_pendingCmd.fire = fresh.fire;
+            m_pendingCmd.melee = fresh.melee;
+            m_pendingCmd.steady = fresh.steady;
+            m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
+            m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
+            m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+        }
 
         // Simulation time passes in whole ticks; the frame deposits its dt
         // and the loop spends what's there. The leftover is where this
@@ -746,6 +807,15 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // body lies around is a fact about the picture, not the fight.
     UpdateParticles(dt);
     UpdateCorpses(dt);
+
+    // The result has stood its fifteen seconds. Solo, this machine starts the
+    // next match, because it's the one that started the last one; connected,
+    // the server does it and the news arrives as a Respawned.
+    if (!m_net && m_world.MatchOver() && m_world.Intermission() <= 0.0f)
+    {
+        StartNextMatch(camera);
+        return;
+    }
 
     // Death is noticed by absence. Whatever emptied the local soldier's
     // health, the World has already reaped them on the same terms as anyone
@@ -944,6 +1014,25 @@ void Game::Respawn(IsoCamera& camera)
     m_eyePos = m_world.Local()->pos;
     // A cut, not a sweep: the spawn is somewhere else entirely, and panning
     // the whole arena to get there would take longer than the wait did.
+    camera.SetTarget(m_eyePos);
+    camera.SnapToTarget();
+}
+
+void Game::StartNextMatch(IsoCamera& camera)
+{
+    // Everything the last match left on the ground goes with it, and then the
+    // arena is set up exactly the way the class pick set it up the first time
+    // — the same two calls, so a second match is a first match and there's no
+    // second version of "a match starts" to keep in step.
+    ClearBattlefield();
+    m_world.Reset();
+    m_world.StartMatch(m_class, m_team);
+    m_phase = Phase::Playing;
+    m_respawnTimer = 0.0f;
+    m_tickAccum = 0.0f;
+    m_renderAlpha = 0.0f;
+    m_pendingCmd = {};
+    m_eyePos = m_world.Local()->pos;
     camera.SetTarget(m_eyePos);
     camera.SnapToTarget();
 }
@@ -1411,8 +1500,11 @@ void Game::Render(Renderer& renderer)
     // throw touches down. Drawn after the fog pass so it stays bright. There's
     // nothing to aim while dead, so it goes with the soldier. The whole
     // indicator greys out through a reload — where the shot would land is still
-    // worth showing, but not as something the player can act on yet.
-    if (m_phase == Phase::Playing)
+    // worth showing, but not as something the player can act on yet. It goes
+    // entirely once the match is over: the arena is frozen, and a line still
+    // tracking the cursor across it would be the one thing on screen claiming
+    // there was still something to shoot.
+    if (m_phase == Phase::Playing && !m_world.MatchOver())
     {
         Unit& u = *m_world.Local();
         // The indicators hang off the soldier as drawn, so the aim line grows
@@ -1576,6 +1668,18 @@ void Game::RenderHud(Renderer& renderer)
         if (team != m_team)
             hud.enemies += m_world.Standing(team);
     hud.teamSize = World::kTeamSize;
+    // What the match is decided on, counted the same way the standing is: the
+    // World's word, because on a connected client the kills happened to
+    // soldiers this player never saw. The clock reads zero once the match is
+    // over — what's counting then is the wait for the next one, and that goes
+    // under the result rather than in the corner.
+    hud.clock = m_world.MatchTime();
+    hud.matchOver = m_world.MatchOver();
+    hud.allyScore = m_world.Score(m_team);
+    hud.enemyScore = 0;
+    for (int team = 0; team < m_world.TeamCount(); ++team)
+        if (team != m_team)
+            hud.enemyScore += m_world.Score(team);
     // The same two colors the soldiers are wearing, so the corner and the field
     // agree. With two sides the enemy is simply the other one; a third team
     // would need this to be something better than "not mine", but it would need
@@ -1610,11 +1714,33 @@ void Game::RenderHud(Renderer& renderer)
     hud.hintCount = hintCount;
     Hud::Render(renderer, hud);
 
+    // The result. Fifteen minutes are up and the side that killed more has
+    // won — said in that side's own color, in the middle of the screen, over
+    // an arena that has stopped moving. It replaces the respawn countdown
+    // rather than sharing the screen with it: a player waiting to respawn
+    // into a match that has ended isn't waiting for anything, and what they
+    // are actually waiting for is the line underneath.
+    if (m_world.MatchOver())
+    {
+        const int winner = m_world.Winner();
+        const std::string headline =
+            winner < 0 ? "DRAW" : std::string(GetTeamDef(winner).name) + " WINS";
+        const float headSize = size * 2.2f;
+        renderer.DrawScreenText(headline,
+                                (w - renderer.MeasureScreenText(headline, headSize)) * 0.5f,
+                                h * 0.36f, headSize,
+                                winner < 0 ? kHudColor : Brighten(TeamColor(winner), 0.35f));
+
+        const std::string next =
+            "NEXT MATCH IN " + std::to_string(static_cast<int>(std::ceil(m_world.Intermission())));
+        renderer.DrawScreenText(next, (w - renderer.MeasureScreenText(next, size)) * 0.5f,
+                                h * 0.36f + headSize * 1.5f, size, kHudHintColor);
+    }
     // Respawn countdown, centered and big: while it's up there's nothing else
     // to do, so it's the one thing on screen worth reading. Counts whole
     // seconds remaining, so it reaches 1 for the last second and never shows a
     // 0 the player can't act on.
-    if (m_phase == Phase::Dead)
+    else if (m_phase == Phase::Dead)
     {
         const std::string countdown =
             "RESPAWNING IN " + std::to_string(static_cast<int>(std::ceil(m_respawnTimer)));

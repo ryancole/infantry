@@ -11,6 +11,7 @@ Prototype scaffold with a working game loop:
 - Fixed-angle isometric camera (orthographic, smoothed follow, mouse-wheel zoom)
 - Grid arena with obstacle bunkers and scattered trees
 - Player movement, mouse aim, and projectile firing
+- A match is fifteen minutes long and won by the side that has killed more when the clock runs out. The kill goes to whoever last put damage on the body, so the score is a reading of who is winning rather than of who is standing — a side can be wiped out repeatedly and still be ahead. The clock and both scores live in the corner panel next to the strength counts, because "who's winning, by how much, and how long have I got" is one glance. On the whistle the arena freezes where it stands: nothing further is decided, the rounds still in the air are swept, and the result stands for fifteen seconds before a fresh match starts on the same ground — a draw is a real outcome, not something broken by a tiebreak nobody saw
 - Five a side: picking a class starts a match rather than dropping you into an empty arena. Both squads come up to strength at their own spawn, and a slot that empties is refilled after the same wait the player serves, so the fight stays five against five. Everyone but you is driven by the AI today — the roster is one list of units, and who drives each (a brain, this machine's input) is a fact about the soldier rather than a difference in kind
 - The simulation is severed from the machine it's watched on: a `World` that steps on a fixed 60 Hz tick, hears input only as a `Command`, and reports what happened as events for the presentation to spend on blood, sound, and ragdolls. The renderer draws the blend between ticks, so a fast display sees motion rather than sixty stills
 - True multiplayer over that seam: `infantry_server.exe` hosts the match headless (no D3D on its link line) with AI in every unclaimed slot, and clients join over ENet — numbered commands up, snapshots and events down, sixty a second. A joining player displaces an AI soldier from the emptier side; a leaver's slot goes back to the AI on the same reinforcement clock a death starts
@@ -92,4 +93,4 @@ authored in Blender and exported as glTF (.glb).
 - Replace placeholder cubes with glTF models (player, bunkers, bases)
 - Tile-based map format + loader (Infantry-style zones)
 - Netcode, the rest of it: predicted muzzle effects so your own shot sounds on the press, and an internet server browser once there's somewhere to host the list
-- Audio (DirectXTK12 audio module — re-enable `BUILD_XAUDIO_WIN10`), effects, teams/CTF game modes
+- Audio (DirectXTK12 audio module — re-enable `BUILD_XAUDIO_WIN10`), effects, game modes past the kill count (CTF, ticket bleed, objectives)

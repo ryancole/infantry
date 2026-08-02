@@ -1,12 +1,14 @@
 #include "Discovery.h"
 #include "Level.h"
 #include "Net.h"
+#include "Team.h"
 #include "World.h"
 
 #include <enet/enet.h>
 
 #include <windows.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -137,9 +139,10 @@ int main(int argc, char** argv)
         std::printf("discovery port %u unavailable; joinable by address only\n",
                     Discovery::kPort);
 
-    std::printf("infantry_server: port %u, arena %.0f half-units, %d a side, tick %d Hz\n",
+    std::printf("infantry_server: port %u, arena %.0f half-units, %d a side, tick %d Hz, "
+                "match %.0f min\n",
                 Net::kPort, world.ArenaHalf(), World::kTeamSize,
-                static_cast<int>(1.0f / World::kTickDt + 0.5f));
+                static_cast<int>(1.0f / World::kTickDt + 0.5f), World::kMatchLength / 60.0f);
 
     std::vector<std::unique_ptr<Session>> sessions;
 
@@ -153,6 +156,10 @@ int main(int argc, char** argv)
     float sinceReport = 0.0f;
     uint32_t tick = 0;
     long long eventsSeen = 0;
+    // The World knows the match is over; this is how the server notices it
+    // just became so, which is the moment worth reporting and the moment the
+    // intermission starts being watched.
+    bool matchOver = false;
 
     for (;;)
     {
@@ -299,10 +306,13 @@ int main(int argc, char** argv)
         prev = now;
         dt = std::min(dt, 0.1f); // avoid huge steps after stalls, same as the client
 
-        // Respawn waits run on wall time, like the client's own.
+        // Respawn waits run on wall time, like the client's own. A match
+        // that's over hands nobody back their soldier: the next one puts
+        // everybody on the field at once, and a wait that expired during the
+        // result is served by that instead.
         for (auto& session : sessions)
         {
-            if (!session->joined || session->unitId >= 0)
+            if (!session->joined || session->unitId >= 0 || world.MatchOver())
                 continue;
             session->respawnTimer -= dt;
             if (session->respawnTimer <= 0.0f)
@@ -381,6 +391,49 @@ int main(int argc, char** argv)
                             session->held = {};
                         }
 
+            // --- The whistle, and the match after it. The World freezes the
+            // arena and counts the result out; what it can't do is tell five
+            // clients that a new match has started, so the restart is here.
+            if (world.MatchOver() != matchOver)
+            {
+                matchOver = world.MatchOver();
+                if (matchOver)
+                {
+                    const int winner = world.Winner();
+                    std::printf("match over: %s %d, %s %d (%s)\n", GetTeamDef(0).name,
+                                world.Score(0), GetTeamDef(1).name, world.Score(1),
+                                winner < 0 ? "draw" : GetTeamDef(winner).name);
+                }
+            }
+            if (matchOver && world.Intermission() <= 0.0f)
+            {
+                // A new match on the same ground: the arena is emptied and
+                // both squads come up to strength again, then everyone still
+                // connected takes back the slot they were holding. They get a
+                // Respawned, which is the message their client already knows
+                // means "here is your new soldier".
+                world.Reset();
+                world.StartMatch(nullptr, 0);
+                for (auto& session : sessions)
+                {
+                    if (!session->joined)
+                        continue;
+                    session->team = world.ClaimSlot(session->team);
+                    session->unitId =
+                        world.SpawnRemote(kClassDefs[session->classId], session->team);
+                    session->respawnTimer = 0.0f;
+                    session->queue.clear();
+                    session->held = {};
+                    if (const Unit* me = world.UnitById(session->unitId))
+                        session->viewPos = { me->pos.x, me->pos.z };
+                    Net::Writer w;
+                    Net::WriteRespawned(w, session->unitId);
+                    SendReliable(session->peer, w);
+                }
+                matchOver = false;
+                std::printf("new match: %.0f minutes\n", World::kMatchLength / 60.0f);
+            }
+
             // --- Down the wire: what happened, then where everything is —
             // both as seen from each client's own soldier. The snapshot is
             // fog-filtered per viewer (a soldier you can't see is absent from
@@ -437,8 +490,14 @@ int main(int argc, char** argv)
             for (const Unit& unit : world.Units())
                 if (unit.hp > 0.0f)
                     ++alive[unit.team % 2];
-            std::printf("tick %u  blue %d  red %d  shots %zu  players %zu  events %lld\n",
-                        tick, alive[0], alive[1], world.Projectiles().size(),
+            // Standing and killed, per side, against the clock — a headless
+            // server's only window on the match it's running.
+            const int left = static_cast<int>(
+                std::ceil(world.MatchOver() ? world.Intermission() : world.MatchTime()));
+            std::printf("%s %d:%02d  blue %d up %d killed  red %d up %d killed  shots %zu  "
+                        "players %zu  events %lld\n",
+                        world.MatchOver() ? "result" : "match", left / 60, left % 60, alive[0],
+                        world.Score(0), alive[1], world.Score(1), world.Projectiles().size(),
                         sessions.size(), eventsSeen);
         }
 
