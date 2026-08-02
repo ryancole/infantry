@@ -596,6 +596,14 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         return;
     }
 
+    // The scoreboard is a held key, read here rather than in ReadCommand
+    // because it asks nothing of the simulation: it's this machine deciding
+    // what to put on its own screen, and a server has no business hearing that
+    // a player looked at the board. Read before the Dead branch below so it
+    // works either side of a respawn — the wait is exactly when a player has
+    // nothing to do but read it.
+    m_showScores = m_binds.Down(input, Act::Scoreboard);
+
     // Dead: the arena runs on without the player — NPCs keep fighting, shots
     // keep flying, the corpse keeps falling — but no command reaches the
     // simulation and the camera holds on the spot where the body dropped
@@ -1709,10 +1717,56 @@ void Game::RenderHud(Renderer& renderer)
     addHint(m_binds.Label(Act::Grenade), "GRENADE");
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
+    addHint(m_binds.Label(Act::Scoreboard), "SCORES");
 
     hud.hints = hints;
     hud.hintCount = hintCount;
     Hud::Render(renderer, hud);
+
+    // The scoreboard, while the key is down. Every place on the field, both
+    // sides, whether or not this player has ever laid eyes on the soldier
+    // standing in it — the fog hides bodies, not the board, which is why the
+    // rows come off the World (the server's word, in connected play) rather
+    // than off the roster this client can see.
+    if (m_showScores)
+    {
+        // The simulation's three holders become the HUD's three, which is the
+        // whole of what that file needs to know about a slot: how loudly to
+        // draw it. A departed player's row comes over with the rest — their
+        // kills are still in their side's total, so leaving them out would
+        // leave a column that didn't add up.
+        const auto holder = [](World::Slot::Held held) {
+            switch (held)
+            {
+            case World::Slot::Held::Human: return Hud::Holder::Human;
+            case World::Slot::Held::Left:  return Hud::Holder::Left;
+            default:                       return Hud::Holder::Ai;
+            }
+        };
+        m_scoreRows.clear();
+        for (const World::Slot& slot : m_world.Roster())
+            m_scoreRows.push_back({ slot.team, slot.cls ? slot.cls->name : nullptr,
+                                    holder(slot.held), slot.local, slot.kills, slot.deaths });
+
+        // Your side's column first, the same way the corner panel puts your row
+        // on top. Two columns for two sides; a third team would want a third
+        // column, and it would want the corner panel rebuilt too.
+        const int enemyTeam = (m_team + 1) % std::max(m_world.TeamCount(), 1);
+        Hud::Scoreboard board = {};
+        board.rows = m_scoreRows.data();
+        board.rowCount = m_scoreRows.size();
+        board.teams[0] = m_team;
+        board.teams[1] = enemyTeam;
+        for (int side = 0; side < 2; ++side)
+        {
+            board.teamNames[side] = GetTeamDef(board.teams[side]).name;
+            board.teamColors[side] = TeamColor(board.teams[side]);
+            board.teamScores[side] = m_world.Score(board.teams[side]);
+        }
+        board.clock = m_world.MatchTime();
+        board.matchOver = m_world.MatchOver();
+        Hud::RenderScoreboard(renderer, board);
+    }
 
     // The result. Fifteen minutes are up and the side that killed more has
     // won — said in that side's own color, in the middle of the screen, over
@@ -1720,7 +1774,16 @@ void Game::RenderHud(Renderer& renderer)
     // rather than sharing the screen with it: a player waiting to respawn
     // into a match that has ended isn't waiting for anything, and what they
     // are actually waiting for is the line underneath.
-    if (m_world.MatchOver())
+    //
+    // Both of these are the middle of the screen, which is where the
+    // scoreboard is, so they stand down while it's up. Nothing is lost: the
+    // board is titled FINAL once the match is over and both totals are on it,
+    // which is the result said in more detail than the headline says it.
+    if (m_showScores)
+    {
+        // Nothing centered while the board has the middle.
+    }
+    else if (m_world.MatchOver())
     {
         const int winner = m_world.Winner();
         const std::string headline =

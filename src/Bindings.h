@@ -44,6 +44,12 @@ public:
         Melee,
         Ability,
         Steady,
+        // Held, not toggled: the scoreboard is a thing you look at, and looking
+        // away is letting go. It's an action rather than a nailed-down key like
+        // the menu arrows because it's pressed with the hands that are playing
+        // — TAB is only where it starts out, and the HUD has to be able to say
+        // where the player moved it to.
+        Scoreboard,
         OrbitCamera,
         Count
     };

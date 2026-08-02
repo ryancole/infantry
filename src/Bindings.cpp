@@ -37,6 +37,7 @@ namespace
         { "melee",        "MELEE",        Key('V') },
         { "ability",      "ABILITY",      Key('Q') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
+        { "scoreboard",   "SCOREBOARD",   Key(VK_TAB) },
         { "orbit_camera", "ORBIT CAMERA", Mouse(2) },
     };
 

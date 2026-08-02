@@ -53,6 +53,32 @@ namespace
     // how the fight should be played, and only right at the end.
     constexpr float kClockWarning = 60.0f;
 
+    // The scoreboard, held up over the middle of the screen. Authored at the
+    // same 1080 scale as everything else, and deliberately the largest thing
+    // the HUD draws: nothing is happening while it's up — the player is reading
+    // rather than fighting — so it can afford the room the corner panel can't.
+    constexpr float kBoardWidth = 900.0f;
+    constexpr float kBoardPad = 26.0f;
+    constexpr float kBoardTitleSize = 30.0f;
+    constexpr float kBoardClockSize = 22.0f;
+    constexpr float kBoardHeadSize = 24.0f; // a side's name over its column
+    constexpr float kBoardLabelSize = 14.0f; // the K / D column captions
+    constexpr float kBoardRowSize = 20.0f;
+    constexpr float kBoardRowHeight = 30.0f;
+    constexpr float kBoardColumnGap = 34.0f;
+    constexpr float kBoardHeadGap = 16.0f;
+    constexpr float kBoardTitleGap = 20.0f;
+    // What the two number columns are given, and what's left over goes to the
+    // name. Fixed rather than measured so both sides' digits line up in the
+    // same place whichever column they're in.
+    constexpr float kBoardNumberWidth = 62.0f;
+    constexpr XMFLOAT4 kBoardBg = { 0.025f, 0.035f, 0.055f, 0.92f };
+    constexpr XMFLOAT4 kBoardRowBg = { 1.00f, 1.00f, 1.00f, 0.035f };
+    // The player's own row, lifted out of the list. Brighter than a row and
+    // dimmer than a side's color, so it reads as "this one is you" without
+    // competing with which side you're on.
+    constexpr XMFLOAT4 kBoardYouBg = { 1.00f, 1.00f, 1.00f, 0.10f };
+
     constexpr float kHintSize = 13.0f;
     constexpr float kHintGap = 15.0f; // hint row -> panel
     constexpr float kHintKeyPad = 7.0f;
@@ -774,6 +800,177 @@ void Hud::Render(Renderer& renderer, const State& st)
         for (int p = 0; p < st.teamSize; ++p)
             AppendRoundRect(tris, rx + p * (pipW + kPipGap * s), pipY, pipW, barH, barH * 0.35f,
                             p < side.up ? side.color : kTrack);
+    }
+
+    renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
+}
+
+void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
+{
+    const float w = static_cast<float>(renderer.Width());
+    const float h = static_cast<float>(renderer.Height());
+
+    // Split the roster into its two columns and put each in the order a
+    // scoreboard is read in: most kills first, then fewest deaths, and on a
+    // dead heat the people ahead of the bots and the present ahead of the
+    // departed. That last pair of rules is the only part that isn't about
+    // performance — the players in the match are who somebody opening this is
+    // looking for, and burying them among bots with identical lines is how a
+    // board becomes something to search rather than something to read. A leaver
+    // who topped the column still sits at the top of it, though: what they did
+    // is why the total says what it says.
+    const auto rank = [](const ScoreRow* row) {
+        switch (row->holder)
+        {
+        case Holder::Human: return 0;
+        case Holder::Ai:    return 1;
+        default:            return 2; // Left
+        }
+    };
+    std::vector<const ScoreRow*> columns[2];
+    for (int side = 0; side < 2; ++side)
+    {
+        for (size_t i = 0; i < board.rowCount; ++i)
+            if (board.rows[i].team == board.teams[side])
+                columns[side].push_back(&board.rows[i]);
+        std::stable_sort(columns[side].begin(), columns[side].end(),
+                         [&](const ScoreRow* a, const ScoreRow* b) {
+                             if (a->kills != b->kills)
+                                 return a->kills > b->kills;
+                             if (a->deaths != b->deaths)
+                                 return a->deaths < b->deaths;
+                             return rank(a) < rank(b);
+                         });
+    }
+
+    const size_t rowCount = std::max(columns[0].size(), columns[1].size());
+
+    // The board is authored at the same 1080 scale as the rest of the HUD, but
+    // it's the one panel whose height is decided by its contents: every player
+    // who leaves adds a row that stays for the match. So it shrinks to fit
+    // rather than running off the screen — everything in proportion, because a
+    // board that dropped rows to make room would be a board that stopped adding
+    // up, which is the one thing it can't do.
+    const float designH = kBoardPad * 2.0f + kBoardTitleSize + kBoardTitleGap + kBoardHeadSize +
+                          kBoardHeadGap + kBoardLabelSize +
+                          kBoardRowHeight * static_cast<float>(rowCount);
+    float s = h / kDesignHeight;
+    s = std::min(s, (h - kTopMargin * s * 2.0f) / designH);
+
+    const float pad = kBoardPad * s;
+    const float rowH = kBoardRowHeight * s;
+    const float titleSize = kBoardTitleSize * s;
+    const float clockSize = kBoardClockSize * s;
+    const float headSize = kBoardHeadSize * s;
+    const float labelSize = kBoardLabelSize * s;
+    const float rowSize = kBoardRowSize * s;
+    const float numberW = kBoardNumberWidth * s;
+
+    const float boardW = std::min(kBoardWidth * s, w - kSideMargin * s * 2.0f);
+    const float columnW = (boardW - pad * 2.0f - kBoardColumnGap * s) * 0.5f;
+    const float boardH = pad * 2.0f + titleSize + kBoardTitleGap * s + headSize +
+                         kBoardHeadGap * s + labelSize + rowH * static_cast<float>(rowCount);
+    const float boardX = std::floor((w - boardW) * 0.5f);
+    const float boardY = std::floor((h - boardH) * 0.5f);
+
+    std::vector<Vertex> tris;
+    AppendRoundRect(tris, boardX, boardY, boardW, boardH, kPanelCorner * s * 1.5f, kBoardBg);
+
+    // The heading: what the board is, and how long there is left of the thing
+    // it's counting. Once the match is over the clock belongs to the result
+    // screen behind this panel, so the word takes its place — a board still
+    // showing a countdown would be counting something that has already
+    // finished.
+    const char* title = board.matchOver ? "FINAL" : "SCOREBOARD";
+    renderer.DrawScreenText(title, boardX + pad, boardY + pad, titleSize, kValueColor);
+    if (!board.matchOver)
+    {
+        const std::string clock = ClockText(board.clock);
+        renderer.DrawScreenText(clock,
+                                boardX + boardW - pad -
+                                    renderer.MeasureScreenText(clock, clockSize),
+                                boardY + pad + (titleSize - clockSize) * 0.5f, clockSize,
+                                board.clock <= kClockWarning ? kReloadColor : kMutedColor);
+    }
+
+    const float headY = boardY + pad + titleSize + kBoardTitleGap * s;
+    const float labelY = headY + headSize + kBoardHeadGap * s;
+    const float rowsY = labelY + labelSize;
+
+    for (int side = 0; side < 2; ++side)
+    {
+        const float colX = boardX + pad + static_cast<float>(side) * (columnW + kBoardColumnGap * s);
+        const XMFLOAT4 color = Lift(board.teamColors[side], kSideLift);
+        // Where each column's numbers end: deaths against the column's right
+        // edge, kills a fixed step in from it. Right-aligned, because two
+        // numbers being compared down a list want to share their last digit's
+        // column and not their first's — the same rule the corner panel's
+        // scores follow.
+        const float killsRight = colX + columnW - numberW;
+        const float deathsRight = colX + columnW;
+
+        // The side's name and what it has killed, over its own column, in its
+        // own color. The total is the loud number here: it's the one the match
+        // is decided on, and the rows underneath are the working.
+        renderer.DrawScreenText(board.teamNames[side], colX, headY, headSize, color);
+        const std::string total = std::to_string(std::max(board.teamScores[side], 0));
+        renderer.DrawScreenText(total,
+                                deathsRight - renderer.MeasureScreenText(total, headSize), headY,
+                                headSize, color);
+        AppendQuad(tris, colX, headY + headSize + kBoardHeadGap * s * 0.45f, columnW,
+                   std::max(1.0f * s, 1.0f), kDivider);
+
+        // The column captions. Single letters because the numbers under them
+        // are what's being read and a word would outweigh them.
+        const auto caption = [&](const char* text, float right) {
+            renderer.DrawScreenText(text, right - renderer.MeasureScreenText(text, labelSize),
+                                    labelY, labelSize, kMutedColor);
+        };
+        caption("K", killsRight);
+        caption("D", deathsRight);
+
+        for (size_t i = 0; i < columns[side].size(); ++i)
+        {
+            const ScoreRow& row = *columns[side][i];
+            const float rowY = rowsY + static_cast<float>(i) * rowH;
+            const float textY = rowY + (rowH - rowSize) * 0.5f;
+
+            // Banded rows, with the player's own lifted clear of the pattern.
+            if (row.you)
+                AppendRoundRect(tris, colX - pad * 0.35f, rowY, columnW + pad * 0.7f, rowH,
+                                rowH * 0.25f, kBoardYouBg);
+            else if (i % 2 == 1)
+                AppendQuad(tris, colX - pad * 0.35f, rowY, columnW + pad * 0.7f, rowH, kBoardRowBg);
+
+            // Three brightnesses, loudest first: a player present is drawn in
+            // their side's own color, the AI in the panel's muted grey, and a
+            // player who has left in the darker grey everything spent is drawn
+            // in — a magazine's fired rounds, a wiped-out side's icon. Their
+            // score stays on the board because it's part of the total above it,
+            // but they aren't in the fight any more and shouldn't read as
+            // though they are. Which of the ten are people is the first thing
+            // anybody wants off this board, and color carries it better than a
+            // marker glyph next to a name would.
+            const XMFLOAT4 present = row.you ? kValueColor : color;
+            const XMFLOAT4 nameColor = row.holder == Holder::Left  ? kSpentColor
+                                       : row.holder == Holder::Ai ? kMutedColor
+                                                                  : present;
+            // A place nothing has stood in yet: the five seconds between a side
+            // being owed a soldier and getting one. Said with a dash rather
+            // than a blank, so the row reads as empty rather than as broken.
+            renderer.DrawScreenText(row.name ? row.name : "-", colX, textY, rowSize, nameColor);
+
+            const XMFLOAT4 numberColor = row.holder == Holder::Left ? kSpentColor
+                                         : row.holder == Holder::Human ? kValueColor
+                                                                       : kMutedColor;
+            const auto number = [&](int value, float right) {
+                const std::string text = std::to_string(std::max(value, 0));
+                renderer.DrawScreenText(text, right - renderer.MeasureScreenText(text, rowSize),
+                                        textY, rowSize, numberColor);
+            };
+            number(row.kills, killsRight);
+            number(row.deaths, deathsRight);
+        }
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
