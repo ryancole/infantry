@@ -1,0 +1,51 @@
+#pragma once
+
+#include <DirectXMath.h>
+#include <SimpleMath.h>
+
+// Everything a soldier's driver may say to the simulation about one slice of
+// time, and the only way to say it.
+//
+// The controls used to be consumed where they were read: the movement block
+// asked the bindings about W, the firing block asked about the trigger, and
+// the answer went straight into the world. That's fine right up until the
+// simulation has to run somewhere the keyboard isn't — and that is the whole
+// project now. A command is the seam: the client owns everything above it
+// (bindings, cursor, camera, the screen-relative arithmetic), the simulation
+// owns everything below it (speeds, turn rates, cooldowns, what a press is
+// allowed to mean), and what crosses is plain data that could as easily have
+// arrived over a socket. The AI's Brain::Intent is this same idea for minds;
+// a command is it for hands.
+//
+// Directions arrive in world space, already resolved: which way the camera
+// faces is a fact about this machine's screen, and the simulation has no
+// business knowing there is a screen. Nothing here is in units per second
+// either — a command says what's wanted, and what that costs is the class
+// table's side of the conversation.
+//
+// A tick number joins these fields when the fixed tick lands: "what you did"
+// is only half a sentence until the simulation can say when.
+struct Command
+{
+    using Vector3 = DirectX::SimpleMath::Vector3;
+
+    Vector3 move; // where to walk, unit length, or zero to stand still
+    Vector3 aim;  // where to come around to point, unit length, or zero to leave it
+    // Distance to the aimed-at ground point, so a lobbed shot can fall on it
+    // rather than at max range. Huge means there is no point, only a direction
+    // — the stick aims that way, and it reads as "past everything".
+    float aimDist = 1e9f;
+
+    // Held controls: true for as long as the driver holds them.
+    bool fire = false;   // the trigger
+    bool melee = false;  // the blade; held like the trigger, see Game's melee notes
+    bool steady = false; // the posture: slow walk, much slower turn
+
+    // Edge controls: true on the slice the key went down, then spent. The
+    // distinction is the driver's to honor because only the driver has edges
+    // to detect — the simulation just believes what it's told, which is all it
+    // could do about a remote player's keyboard anyway.
+    bool reload = false;
+    bool grenade = false;
+    bool ability = false;
+};

@@ -31,8 +31,9 @@ namespace
         MainMenu::Choice choice;
     };
 
-    constexpr std::array<Item, 3> kItems = { {
+    constexpr std::array<Item, 4> kItems = { {
         { "DEPLOY", "PICK A CLASS AND TAKE THE FIELD", MainMenu::Choice::Deploy },
+        { "JOIN", "FIND A SERVER AND FIGHT SOMEBODY REAL", MainMenu::Choice::Join },
         { "KEY BINDS", "PUT THE CONTROLS WHERE YOU WANT THEM", MainMenu::Choice::KeyBinds },
         { "QUIT", "LEAVE THE ARENA", MainMenu::Choice::Quit },
     } };
@@ -40,10 +41,12 @@ namespace
 
 MainMenu::Rect MainMenu::ItemRect(size_t index, float width, float height)
 {
+    // Sized so four rows and the bottom hint share the lower half without
+    // touching; a fifth entry means shrinking these again, not scrolling.
     const float itemW = width * 0.28f;
-    const float itemH = height * 0.09f;
-    const float gap = height * 0.035f;
-    return { (width - itemW) * 0.5f, height * 0.46f + index * (itemH + gap), itemW, itemH };
+    const float itemH = height * 0.082f;
+    const float gap = height * 0.026f;
+    return { (width - itemW) * 0.5f, height * 0.42f + index * (itemH + gap), itemW, itemH };
 }
 
 std::optional<MainMenu::Choice> MainMenu::Update(const Input& input, uint32_t width,
@@ -102,7 +105,7 @@ void MainMenu::Render(Renderer& renderer)
     // A rule between the name and the choices, the width of the widest entry so
     // the block reads as one column rather than a title with a list under it.
     const Rect first = ItemRect(0, w, h);
-    AppendQuad(m_tris, first.x, h * 0.40f, first.w, std::max(h * 0.002f, 1.0f), kZFill,
+    AppendQuad(m_tris, first.x, h * 0.385f, first.w, std::max(h * 0.002f, 1.0f), kZFill,
                Dim(kAccent, 0.35f));
 
     for (size_t i = 0; i < kItems.size(); ++i)

@@ -52,26 +52,51 @@ FetchContent_Declare(tomlplusplus
     GIT_TAG v3.4.0
 )
 
-FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json tomlplusplus)
+# ENet: reliable-where-asked UDP for the client/server link. Chosen over raw
+# sockets for exactly two services — connection lifecycle and optional
+# per-channel reliability — and over heavier stacks because those two are all
+# the netcode wants from a library; everything above them (snapshots, commands,
+# events) is ours in Net.h.
+FetchContent_Declare(enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG v1.3.18
+)
+
+FetchContent_MakeAvailable(DirectXTK12 cgltf JoltPhysics json tomlplusplus enet)
+
+# The simulation, compiled once and linked into both executables below. What
+# earns a file a place here is that a headless server needs it: the World and
+# everything the World calls. Nothing in this list may touch the renderer,
+# the sound device, or a window — the server target existing is what enforces
+# that, so a rendering include creeping in fails a build instead of a code
+# review.
+set(SIM_SOURCES
+    src/World.cpp
+    src/Ability.cpp
+    src/Brain.cpp
+    src/Level.cpp
+    src/Physics.cpp
+    src/Visibility.cpp
+)
 
 add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
-    src/Ability.cpp
+    src/AbilityDraw.cpp
     src/BindMenu.cpp
     src/Bindings.cpp
-    src/Brain.cpp
     src/Camera.cpp
     src/ClassSelect.cpp
     src/Game.cpp
     src/Hud.cpp
-    src/Level.cpp
+    src/Discovery.cpp
+    src/JoinMenu.cpp
     src/MainMenu.cpp
     src/Model.cpp
-    src/Physics.cpp
+    src/NetClient.cpp
     src/Soldier.cpp
     src/Sound.cpp
-    src/Visibility.cpp
+    ${SIM_SOURCES}
 )
 
 target_compile_definitions(infantry PRIVATE
@@ -87,15 +112,55 @@ target_link_libraries(infantry PRIVATE
     Jolt
     nlohmann_json::nlohmann_json
     tomlplusplus::tomlplusplus
+    enet
     d3d12
     dxgi
     user32
+    shell32
     xaudio2
+    ws2_32
+    winmm
 )
+target_include_directories(infantry PRIVATE ${enet_SOURCE_DIR}/include)
 
 # Ship models next to the exe so they can be loaded at runtime.
 add_custom_command(TARGET infantry POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/assets
         $<TARGET_FILE_DIR:infantry>/assets
+)
+
+# The dedicated server: the simulation with a console loop around it and no
+# renderer, no audio, no window. Note what's absent from its link line —
+# d3d12, dxgi, user32, xaudio2 — which is the point of the target: if the
+# simulation ever grows a quiet dependency on any of them, this is the build
+# that breaks. DirectXTK12 stays because SimpleMath lives there; nothing
+# device-shaped is pulled from it.
+add_executable(infantry_server
+    src/server_main.cpp
+    src/Discovery.cpp
+    ${SIM_SOURCES}
+)
+
+target_compile_definitions(infantry_server PRIVATE
+    UNICODE _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
+target_link_libraries(infantry_server PRIVATE
+    DirectXTK12
+    Jolt
+    nlohmann_json::nlohmann_json
+    enet
+    ws2_32
+    winmm
+)
+target_include_directories(infantry_server PRIVATE ${enet_SOURCE_DIR}/include)
+
+# The server reads the same level files the client does.
+add_custom_command(TARGET infantry_server POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets
+        $<TARGET_FILE_DIR:infantry_server>/assets
 )

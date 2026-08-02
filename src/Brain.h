@@ -8,7 +8,7 @@
 // How a computer-controlled soldier decides what to do, and nothing about how
 // it gets done.
 //
-// The split is body and brain. The body — Game::UpdateNpcs — is everything
+// The split is body and brain. The body — Game::UpdateUnits — is everything
 // every soldier does the same way: running a reload down, working out who can
 // be seen, turning, walking without walking into a wall, keeping a squad from
 // collapsing into one column, spending a round and starting the cadence timer.

@@ -1,42 +1,51 @@
 #pragma once
 
-#include "Ability.h"
 #include "BindMenu.h"
 #include "Bindings.h"
-#include "Brain.h"
 #include "Camera.h"
 #include "ClassSelect.h"
+#include "Command.h"
 #include "Input.h"
+#include "Discovery.h"
+#include "JoinMenu.h"
 #include "MainMenu.h"
-#include "Physics.h"
+#include "NetClient.h"
 #include "PlayerClass.h"
 #include "Renderer.h"
 #include "Soldier.h"
 #include "Sound.h"
 #include "Team.h"
 #include "Visibility.h"
+#include "World.h"
 
 #include <DirectXMath.h>
 #include <SimpleMath.h>
 #include <array>
+#include <deque>
 #include <memory>
 #include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-// Prototype gameplay: two squads on a grid arena, screen-relative WASD
-// movement, mouse aim, and projectiles. This is the seed for Infantry-style
-// systems (vehicles, weapons, teams, net play) to grow from.
-//
-// Everyone on the field but the local player is an NPC today, but the shape of
-// the thing is already the shape a server would keep: each side has a fixed
-// number of slots, a slot that empties is refilled after a wait, and the local
-// player is simply the one slot this machine is driving. When soldiers start
-// arriving over a socket, they take slots that the AI is filling now.
+// The machine the player is sitting at. Everything that decides a match lives
+// in World; what's left here is everything that only exists because somebody
+// is watching — the menus, the camera, the HUD, the fog, the blood, the
+// corpses, the sound — and the two seams between them. Going down, input
+// becomes a Command and the Command is all the simulation hears. Coming back
+// up, the simulation says what happened as Events, and this class decides
+// what each one looks and sounds like. A dedicated server keeps a World and
+// none of this; a spectator client would keep all of this and drive nobody.
 class Game
 {
 public:
+    // Points the game at a server instead of its own simulation; call before
+    // LoadContent. `autoClass` may name a class ("marine") to skip the menus
+    // and join on launch — a dev convenience that makes "second machine into
+    // the fight" one command line. Empty strings mean solo play, exactly as
+    // before this function existed.
+    void SetMultiplayer(std::string host, std::string autoClass);
+
     // Loads the level (assets/levels/) and GPU assets; call once after
     // Renderer::Init. Throws std::runtime_error on a bad level or model.
     void LoadContent(Renderer& renderer);
@@ -65,32 +74,22 @@ private:
     // as. From there they must pick a class before they spawn, and the arena
     // only starts simulating once that choice is made. Dying drops back out of
     // Playing for the respawn wait: the arena keeps running, the player just
-    // isn't in it.
+    // isn't in it. Connecting sits between the class pick and Playing when
+    // the arena is somebody else's: the class is chosen, the join is in
+    // flight, and there's nothing to draw until the server says who you are.
     enum class Phase
     {
         MainMenu,
+        Join, // the server browser: the LAN scan runs while this is up
         KeyBinds,
         ClassSelect,
+        Connecting,
         Playing,
         Dead,
     };
 
     using Vector2 = DirectX::SimpleMath::Vector2;
     using Vector3 = DirectX::SimpleMath::Vector3;
-
-    struct Projectile
-    {
-        Physics::BodyHandle body;
-        float life;
-        Vector3 prevPos; // last frame's position, for swept hit tests
-        int team;        // whose shot this is; it only hurts the other side
-        float damage;
-        float radius;
-        float blastRadius; // > 0: splash damage on impact
-        bool fused;      // rides out `life` bouncing off the world instead of
-                         // dying on its first contact; the fuse detonates it
-        bool explodes;   // grenade: impact gets the big fireball, not a puff
-    };
 
     // A short-lived debris cube from a projectile impact: flies out under
     // gravity and shrinks to nothing over its lifetime.
@@ -108,39 +107,14 @@ private:
         bool blood = false;
     };
 
-    // A computer-controlled soldier. NPCs share the player's class table, so
-    // every weapon can be tested from both ends: fired at them, and dodged when
-    // they fire it back.
-    //
-    // They are not all hostile. An NPC on the player's own team is a squadmate
-    // — it fights the same enemies, soaks the same rounds, and is the thing a
-    // medic's dressing has to have in front of it to be worth anything. Which
-    // side an NPC is on is `team`, and every system that deals damage or picks
-    // a target reads it rather than assuming, the way they all used to.
-    struct Npc
-    {
-        const ClassDef* cls;
-        int team;
-        Vector3 pos;
-        Vector3 aimDir;
-        float hp;
-        float fireCooldown;
-        int ammo;          // rounds left in the magazine
-        float reloadTimer; // > 0 while reloading, and unable to shoot back
-        // Whatever this soldier's brain remembers between frames. Meaningless
-        // out here on purpose: which mind it is comes off the class, and what
-        // it keeps in there is that mind's business.
-        Brain::Memory mind;
-        float walkPhase;   // leg-swing angle for the soldier model, advances with distance
-        float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
-        Vector3 knock;     // launch velocity the last hit would give its corpse
-    };
-
     // What's left of a soldier: the model's segments handed to the physics
     // world as a jointed ragdoll, keeping the pose it died in and then falling
     // out of it. Corpses are decoration — they take no damage, block nothing,
-    // and collide with the level alone — so all the game keeps is what it needs
-    // to draw them and, once they've lain around long enough, to clear them.
+    // and collide with the level alone — which is why they live on this side
+    // of the World seam, built from Death events: the simulation says a
+    // soldier fell, and what falling looks like is presentation's business.
+    // Their parts do borrow the World's physics (see World::Phys), because a
+    // ragdoll still has to land on the same floor everything else stands on.
     struct Corpse
     {
         Physics::BodyHandle parts[Soldier::SegmentCount];
@@ -153,16 +127,8 @@ private:
         float life; // seconds until it's cleaned up
     };
 
-    // Runtime halves of a level object: solid objects contribute a Collider
-    // (physics + player push-out), visible ones a Prop. Collider-only objects
-    // are blockout geometry, drawn as debug cubes until they get a model.
-    struct Collider
-    {
-        Vector3 center;
-        Vector3 size;
-        bool debugDraw; // no model to represent it, so draw the box itself
-    };
-
+    // A visible level object: a model at a spot. The solid half of an object
+    // lives in the World's collider list; this is only what gets drawn.
     struct Prop
     {
         const Model* model; // owned by m_models
@@ -171,67 +137,41 @@ private:
         float yaw;
     };
 
-    // A slot on a team waiting to be filled again. Queued when a soldier dies
-    // and cashed in kRespawnDelay later, which is the same wait the player
-    // serves — a squad is five soldiers, and the only time it isn't is the
-    // moment after one of them is killed.
-    //
-    // It's a queue rather than one timer per side because each death should
-    // start its own clock: a team that loses three at once has three soldiers
-    // coming back at the times they died, not one every five seconds while the
-    // other side runs it down.
-    struct Reinforcement
-    {
-        int team;
-        float timer;
-    };
-
-    // Fires `weapon`'s projectile from `from` along `dir`. Bullets always fly
-    // at full speed; lobbed shots (grenades) shorten their toss to come down
-    // `targetDist` away, up to the weapon's max range.
-    void SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int team,
-                   float targetDist);
-    // Starts the player's reload: empties the rest of the magazine into the
-    // timer and plays the mag-out click. A no-op if one is already running or
-    // the magazine is full, so the reload key can be leaned on harmlessly.
-    void BeginReload();
-    // Spends a melee charge on a swing through the arc in front of the player
-    // and strikes the nearest enemy standing in it, if any. The charge goes
-    // whether or not it lands.
-    void SwingMelee();
-    // What the player's ability is allowed to act on this frame: the player
-    // themselves, and every living squadmate they can currently see. The sight
-    // rule is applied here rather than inside the ability because the fog is
-    // this class's business and an ability has never heard of a wall — which is
-    // also what keeps "can a medic treat someone through cover" answered in
-    // exactly one place. Rebuilt per call into m_abilityAllies, which is kept
-    // around so the per-frame list costs no allocation.
-    Ability::Scene AbilityScene();
-    void SpawnNpc(int team);
-    // Puts both sides on the field at full strength. Called once, when the
-    // player commits to a class, because that's the moment the match starts —
-    // nothing simulates until then and there's nobody for a squad to fight.
-    void FillRosters();
-    // Runs the queue of waiting slots down and puts a soldier back on the field
-    // when one comes due, unless the side is somehow already up to strength.
-    void UpdateReinforcements(float dt);
-    // How many computer soldiers `team` is meant to be fielding: its share of
-    // the roster, less the slot the local player holds on their own side. The
-    // player's slot is theirs whether they're alive or waiting to respawn, so
-    // nothing fills in for them and nothing has to be sent away when they're
-    // back.
-    int NpcQuota(int team) const
-    {
-        return kTeamSize - (team == m_team ? 1 : 0);
-    }
-    // Living computer soldiers currently on `team`.
-    int NpcCount(int team) const;
-    void UpdateNpcs(float dt);
-    void UpdateProjectiles(float dt);
-    // Turns whatever died this frame into a corpse and takes it off the
-    // roster. Runs once, after every system that can deal damage has had its
-    // turn, so it doesn't matter which of them landed the killing blow.
-    void ReapDead();
+    // The client half of the input seam: reads the bindings, the pad, and the
+    // cursor through this machine's camera, and folds them into the one
+    // sentence the simulation accepts. Everything screen-shaped dies here —
+    // past this function nothing knows which way the player's monitor faces.
+    Command ReadCommand(const Input& input, const IsoCamera& camera, const Vector3& pos) const;
+    // The other seam, coming back up: everything the ticks just did, turned
+    // into what it looks and sounds like — blood for a Hit, a ragdoll for a
+    // Death, a thud for a Bounce, a rumble for the local soldier's pain. Runs
+    // once a frame over however many ticks' worth of events accumulated, then
+    // forgets them. In connected play the events arrived over the wire
+    // instead of from a local Tick, and nothing in here can tell.
+    void ProcessEvents();
+    // Connected play's inbox: pumps the socket and applies what came —
+    // snapshots into the replica World, events into the queue, Welcome and
+    // Respawned into who-am-I and the phase. The camera comes along for the
+    // cut a (re)spawn makes.
+    void NetPump(float dt, IsoCamera& camera);
+    // Ends a connected session and lands back on the main menu, whoever ended
+    // it — the player leaving, the server dying, or the door being closed at
+    // the join. The replica empties (World::Reset), the corpses and weather
+    // this client conjured from its events go with it, and the menus work
+    // exactly as if the game had just launched: Deploy starts a solo match on
+    // the same ground.
+    void LeaveMatch();
+    // Reconciliation: the server's own-block just landed, naming the newest
+    // command it consumed. Everything up to it is history and retired;
+    // everything after is replayed — the same MoveCommand, the same tick
+    // length, from the server's authoritative soldier — onto a fresh
+    // prediction. When nothing contradicted us, the replay lands exactly
+    // where the old prediction stood and the correction is invisible, which
+    // is the normal case and the whole design.
+    void Repredict(uint32_t ackSeq);
+    // Puts the player back on the field via the World and returns to
+    // Phase::Playing; the camera cuts rather than sweeps across.
+    void Respawn(IsoCamera& camera);
     // Debris burst where a projectile dies; `scale` is the projectile radius.
     void SpawnImpactBurst(const Vector3& pos, float scale);
     // Grenade detonation: core flash plus a wide fire/smoke burst.
@@ -244,13 +184,6 @@ private:
     // the ground keeps a record of the fight — so the field holds a fixed
     // number of them and the oldest is dropped once it's full.
     void SpawnSplat(const Vector3& pos);
-    // Ends `shot` at `pos`: splash damage for explosives, then the impact
-    // effect and sound (which differ for a hit on `hitUnit` vs. world geometry).
-    void Detonate(const Projectile& shot, const Vector3& pos, bool hitUnit);
-    // Splash damage around `center`, full strength at the middle and falling
-    // off to nothing at `radius`. Only the side opposing `team` is hurt, and
-    // only where the blast has line of sight, so cover still protects.
-    void ApplyBlast(const Vector3& center, float radius, float damage, int team);
     void UpdateParticles(float dt);
     // Leaves a ragdoll where a soldier stood, built from the pose it died in
     // and launched with `knock` so it falls away from the killing blow. Past
@@ -258,49 +191,68 @@ private:
     void SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhase, float moveBlend,
                      const DirectX::XMFLOAT4& teamColor, const DirectX::XMFLOAT4& classColor,
                      const Vector3& knock);
-    // Puts the player back on their team's spawn with a fresh loadout and
-    // returns to Phase::Playing; the camera cuts rather than sweeps across.
-    void Respawn(IsoCamera& camera);
-    // Whether there's a live player body to shoot at. Dying takes the player
-    // out of the world for the respawn wait, so bullets, blasts and NPC AI
-    // all have nothing to aim at until they're back.
-    bool PlayerOnField() const;
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
-    // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
-    // against the colliders and the ground; returns the horizontal distance
-    // from `from` at which the shot stops. When outArc is given, fills it
-    // with the sampled trajectory (muzzle to stop). Powers the aim indicator.
-    float PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
-                          float targetDist, std::vector<Vector3>* outArc = nullptr) const;
-    // Clamps pos to the arena and pushes it out of solid colliders.
-    void ResolveObstacles(Vector3& pos) const;
     // Positional one-shot SFX: panned and attenuated relative to the player.
     void PlaySoundAt(const std::string& name, const Vector3& pos, float pitch = 0.0f);
     float Rand(float lo, float hi);
     void AppendFog(std::vector<Vertex>& out) const;
     void RenderHud(Renderer& renderer);
 
-    static constexpr float kMaxHealth = 100.0f;
-    // Grenades are issued per life, not recharged: spend it and there isn't
-    // another until you respawn, which is what makes the throw a decision.
-    static constexpr int kGrenadesPerLife = 1;
-    // Dying costs time as well as position: long enough that a death is felt,
-    // short enough that watching it out isn't the game. A placeholder value
-    // until there's something to tune it against (round length, ticket bleed).
-    static constexpr float kRespawnDelay = 5.0f;
-    // Soldiers a side puts on the field, the local player included. Five a side
-    // is the smallest number that makes the arena read as a fight rather than a
-    // duel: enough that a flank is covered by somebody, few enough that any one
-    // soldier going down is felt. It's a constant rather than a level property
-    // because it's a statement about the game mode, and there's only one of
-    // those so far; when a server decides team sizes, this is what it sets.
-    static constexpr int kTeamSize = 5;
+    // The whole match, behind its seam. In solo play this is the match; in
+    // connected play it's a replica the server's snapshots keep dressed, and
+    // it is never Ticked. Everything this class knows about the fight it
+    // learns by looking in (const accessors, for drawing and the HUD) or by
+    // the events that arrive — from Tick or from the wire, same shape.
+    World m_world;
+    // Events the ticks of the current frame produced, spent by ProcessEvents.
+    std::vector<Event> m_events;
 
-    Physics m_physics;
+    // The wire, when there is one. Null is solo play, and every branch on it
+    // reads as "who runs the simulation" — this machine, or the far end.
+    std::unique_ptr<NetClient> m_net;
+    std::string m_connectHost; // where SetMultiplayer pointed us
+    std::string m_autoClass;   // class to auto-join as, or empty for the menus
+    int m_myUnitId = -1;       // the wire's name for our soldier; -1 while dead or unjoined
+    bool m_joinSent = false;
+    // Cut the camera to our soldier when they next appear in a snapshot: set
+    // by Welcome and Respawned, spent by the first snapshot that has us. The
+    // spawn is somewhere else entirely, and the camera shouldn't sweep there.
+    bool m_camSnapPending = false;
+    // Render-time interpolation against snapshot cadence: seconds since the
+    // last snapshot landed, over the tick length, is how far the drawn frame
+    // sits past the state we're holding — the wire's version of m_tickAccum.
+    float m_snapElapsed = 0.0f;
+
+    // --- Prediction: the local soldier, answered on the frame. In connected
+    // play the replica's own unit is the server's truth, a round trip old; the
+    // player shouldn't steer that. So their soldier is simulated twice: every
+    // command is applied to this detached copy the tick it's made (movement
+    // and aim only — nothing that spends the kit), and Repredict squares the
+    // copy with the server every time an own-block arrives. Everyone else on
+    // the field stays snapshot-fed; this is one soldier's private fast-forward.
+    struct PendingCmd
+    {
+        uint32_t seq;
+        Command cmd;
+    };
+    std::deque<PendingCmd> m_pendingCmds; // sent but not yet acked
+    uint32_t m_cmdSeq = 0;                // stamp of the newest command made
+    Unit m_predicted = {};                // the soldier as the player feels them
+    bool m_hasPredicted = false;          // false until the first own-snapshot
+    // The prediction's own between-ticks blend, distinct from the snapshot
+    // one: the local soldier advances on this machine's command clock while
+    // everyone else advances on the wire's, and each gets drawn on its own.
+    float m_predAlpha = 0.0f;
+
     Sound m_sound;
     Phase m_phase = Phase::MainMenu;
     MainMenu m_mainMenu;
+    JoinMenu m_joinMenu;
+    // The LAN scan behind the join screen: started walking in, stopped
+    // walking out, so the socket and the once-a-second shout exist only
+    // while somebody is actually looking at the list.
+    Discovery::Scan m_scan;
     BindMenu m_bindMenu;
     ClassSelect m_classSelect;
     // The player's layout, read off disk at startup and written back whenever
@@ -315,15 +267,18 @@ private:
     static constexpr size_t kMaxHints = 8;
     std::array<std::string, kMaxHints> m_hintKeys;
     const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
-    float m_arenaHalf = 32.0f;
-    // Team spawn points from the level, indexed by team id. The local player
-    // is on m_team; a team-select flow can set it before spawning, and future
-    // respawn/teammate logic reads from the same table.
-    std::vector<Vector3> m_teamSpawns;
+    // The side the local player fights on. The World keeps its own copy for
+    // the roster's arithmetic; this one is for everything drawn in "your
+    // side's" color — the rings, the HUD's rows — before and after there's a
+    // live unit to ask.
     int m_team = 0;
-    Vector3 m_playerPos;
-    Vector3 m_moveVel;                 // current ground velocity; the keys steer it, they aren't it
-    Vector3 m_aimDir = Vector3::UnitX;
+    // Where the player is looking from: their unit's drawn position while they
+    // have one, frozen on the spot they died for the length of the wait. The
+    // fog, the culling, and the ear all read it, which is what keeps a dead
+    // player's view — and what they can hear moving through it — anchored to
+    // the body instead of snapping to nowhere when the unit comes off the
+    // roster.
+    Vector3 m_eyePos;
     // Which way is right on screen, in world space, taken off the camera during
     // Update because Render isn't handed one. It's what stands a health bar
     // square to the view. Read a frame later than it's written, which costs
@@ -331,54 +286,37 @@ private:
     // the draw can turn the camera.
     Vector3 m_screenRight = Vector3::UnitX;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
-    float m_fireCooldown = 0.0f;
-    // The magazine, and the wait to refill it. A reload starts on the last
-    // round automatically or on the reload key, and until it finishes the
-    // trigger does nothing — no ammo pool behind it, so the only cost of a
-    // reload is the time.
-    int m_ammo = 0;
-    float m_reloadTimer = 0.0f; // > 0 while reloading
-    int m_grenades = kGrenadesPerLife; // same issue for every class; refilled on respawn
-    // The blade, on its own charges and its own recovery — both entirely off
-    // the magazine, which is what leaves it in the player's hands during a
-    // reload. The flash is the swing the arc indicator draws, and it keeps the
-    // direction it was swung in so aiming away mid-swing doesn't drag it round.
-    int m_meleeCharges = kMelee.charges;
-    float m_meleeRecover = 0.0f;  // > 0 while the charges are coming back
-    float m_meleeCooldown = 0.0f; // time until the next swing
-    float m_meleeFlash = 0.0f;    // seconds of swing arc left to draw
+    // The swing the arc indicator draws, kept in the direction it was swung so
+    // aiming away mid-swing doesn't drag it round. Presentation rather than
+    // soldier state — it's the mark of the local player's last swing, which is
+    // the only one drawn — set off the MeleeSwing event.
+    float m_meleeFlash = 0.0f; // seconds of swing arc left to draw
     Vector3 m_meleeSwingDir = Vector3::UnitX;
-    // The class ability's clocks — off the magazine like the grenade and the
-    // blade, so a reload never takes it away. What they mean and what runs them
-    // is Ability's business; all that's kept here is that they belong to this
-    // soldier, and that a respawn hands back a fresh set.
-    Ability::Runtime m_ability;
-    std::vector<Ability::Target> m_abilityAllies; // reused per frame; see AbilityScene
-    std::vector<Brain::Contact> m_contacts;       // reused per NPC; see UpdateNpcs
-    float m_walkPhase = 0.0f; // same walk-cycle bookkeeping as Npc::walkPhase
-    float m_moveBlend = 0.0f;
-    float m_playerHp = kMaxHealth;
-    float m_frameMs = 0.0f;        // smoothed wall-clock frame time, for the HUD
-    float m_rumbleTime = 0.0f;     // gamepad vibration left on a damage pulse
+    float m_frameMs = 0.0f;      // smoothed wall-clock frame time, for the HUD
+    float m_rumbleTime = 0.0f;   // gamepad vibration left on a damage pulse
     float m_respawnTimer = 0.0f; // seconds left of the wait, while Phase::Dead
-    bool m_playerDied = false;   // set by projectile hits, handled in Update
-    Vector3 m_deathKnock;          // launch velocity for the player's corpse, from the last hit
 
-    std::vector<Npc> m_npcs;
-    // Where each side has got to in the class table. Per team rather than
-    // global so both squads are dealt from the same rotation and come out with
-    // the same makeup, however many soldiers each of them is owed — which is
-    // not the same number, since the player fills one of the slots on their
-    // own side. Sized to the level's team count in LoadContent.
-    std::vector<int> m_nextNpcClass;
-    std::vector<Reinforcement> m_reinforcements; // slots waiting to be refilled
+    // The seam between render time and simulation time. Frames deposit their
+    // dt in the accumulator and the simulation spends it in whole ticks;
+    // whatever's left over is how far the current moment sits between the last
+    // tick and the next, which is the fraction the renderer blends by.
+    float m_tickAccum = 0.0f;
+    float m_renderAlpha = 0.0f;
+    // The command the next tick will consume. Held controls are overwritten
+    // with whatever this frame's hands say; edges latch on and are only wiped
+    // by the tick that spends them — a click that lands between two ticks
+    // of a fast display would otherwise fall through the gap, and a click
+    // that arrives while two ticks fire in one slow frame would otherwise
+    // count twice.
+    Command m_pendingCmd;
+
+    // Presentation's own randomness — pitch detune, debris scatter, splat
+    // shapes. Separate from the World's on purpose: how a shot sounds must
+    // never move the dice that decide where the next one lands.
     std::mt19937 m_rng{ std::random_device{}() };
 
-    std::vector<Projectile> m_projectiles;
     std::vector<Particle> m_particles;
     std::vector<Corpse> m_corpses; // oldest first, so the cap sheds the stalest body
-    std::vector<Collider> m_colliders;
-    std::vector<Visibility::Rect> m_occluders; // footprints of sight-blockers
     std::vector<Vertex> m_fogVerts; // reused per frame
     std::vector<Prop> m_props;
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;

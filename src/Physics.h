@@ -13,6 +13,11 @@ class Physics
 public:
     // Opaque body handle (a JPH::BodyID's raw value).
     using BodyHandle = uint32_t;
+    // No body at all — matches Jolt's own invalid id, and deliberately not 0,
+    // which is a raw value the first body created can legitimately own. A
+    // client replica's projectiles carry this: they have positions, not
+    // bodies.
+    static constexpr BodyHandle kInvalidBody = 0xffffffffu;
 
     Physics();
     ~Physics();
