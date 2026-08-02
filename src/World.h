@@ -226,21 +226,37 @@ public:
     // slots is created once per match and only ever counted up, which is what
     // makes "what has this soldier done today" a question with an answer.
     //
-    // Human or not is a property of the slot rather than of the unit standing
+    // Who holds it is a property of the slot rather than of the unit standing
     // in it, because it survives the wait between lives: a player who is dead
     // still holds their place, and the AI is not owed a soldier for it. That is
     // the same claim ClaimSlot used to record as a per-team count; it's here
     // now, where it can also carry a name and a score.
     struct Slot
     {
+        enum class Held
+        {
+            Ai,    // the AI is fielding this place
+            Human, // a player holds it, alive or waiting to respawn
+            // A player held it and has gone. Nobody stands here and nobody
+            // will: the side gets a fresh slot for the soldier it's owed (see
+            // ReleaseSlot), and this one stays behind as the record of what
+            // that player did. It has to stay, or the side's score would drop
+            // when somebody quit — the kills happened, and a scoreboard whose
+            // rows stop adding up to the total at the top is a scoreboard
+            // nobody can trust.
+            Left,
+        };
+
         int team;
         // What the slot is fielding. A human's class is fixed for the match by
         // the class they picked; an AI slot's is dealt off the team's rotation
         // and is re-dealt every time the slot refills, so a squad wiped out
         // comes back with a different makeup. Either way it's what the
         // scoreboard reads a row's name off, since nobody in this game has one.
+        // Null on a slot nothing has stood in yet — the five seconds between a
+        // side being owed a soldier and getting one.
         const ClassDef* cls;
-        bool human;
+        Held held;
         // The player sitting at *this* machine, so a scoreboard can mark their
         // row. False for every slot on a dedicated server, and set on a client
         // from the snapshot rather than worked out locally — which slot is
@@ -348,19 +364,29 @@ public:
     // the day some mode oversubscribes a team, an extra row on the scoreboard
     // is a better answer than a player with nowhere to stand.
     int ClaimSlot(int team);
-    // Hands a claimed slot back — a disconnect. It returns to the AI, and the
-    // side is owed a soldier for it on the same reinforcement clock a death
-    // starts: a leaver's slot refills the way a casualty's does, not instantly.
-    // What the leaver did while they held it stays on the board, because it
-    // happened.
+    // Hands a claimed slot back — a disconnect. The slot itself doesn't go
+    // back into service: it becomes the leaver's record (Held::Left) and keeps
+    // their kills and deaths for the rest of the match, because a side's score
+    // is the sum of its slots and quitting must not take points off the board.
+    // The soldier the side is owed goes to a *fresh* slot instead, on the same
+    // reinforcement clock a death starts — so a leaver's place refills the way
+    // a casualty's does, not instantly, and the AI that fills it starts from
+    // nothing rather than inheriting a stranger's tally.
+    //
+    // Slot indices are never reused or shifted for exactly this reason:
+    // everything that outlives a tick holds one (a unit, a shot in the air, a
+    // server session), and a roster that compacted itself would rename all of
+    // them mid-match.
     void ReleaseSlot(int slot);
     // Human claims currently held on `team`, the local player's included.
+    // Players who have left aren't holding anything, and aren't counted.
     int HumanSlots(int team) const;
     // The side `slot` is on, or -1 for a slot that doesn't exist. What a caller
     // holding a claim asks when it needs the team it ended up on.
     int SlotTeam(int slot) const;
     // Every place on both sides, in the order they were created: one team's
-    // worth, then the next's. This is the scoreboard — a presentation reads it
+    // worth, then the next's, then whatever a departure or an oversubscribed
+    // side has added since. This is the scoreboard — a presentation reads it
     // straight, and on a client it's the server's copy, delivered whole.
     const std::vector<Slot>& Roster() const { return m_roster; }
     int TeamCount() const { return static_cast<int>(m_teamSpawns.size()); }
@@ -516,10 +542,15 @@ private:
     // which controller drives it.
     int SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller);
     // The first slot on `team` the AI still holds and nobody is standing in, or
-    // -1 if the side has none: where a reinforcement goes, and what a joining
-    // player takes over. Preferring an empty slot to a filled one is what lets
-    // ClaimSlot hand a player a place without anyone having to rotate out.
+    // -1 if the side has none: what a joining player takes over. Preferring an
+    // empty slot to a filled one is what lets ClaimSlot hand a player a place
+    // without anyone having to rotate out. A departed player's slot is never
+    // offered — it isn't a place any more, it's a record.
     int FreeAiSlot(int team) const;
+    // Appends a fresh AI place on `team` and returns it. What a side gets when
+    // it's owed a soldier but has nowhere to put one, which today means exactly
+    // one thing: somebody left, and their slot stayed behind as their score.
+    int AddAiSlot(int team);
     // Whether anybody is currently standing in `slot`. A slot with no unit is a
     // side one soldier short: the AI's are refilled on the reinforcement clock,
     // a human's when their own respawn comes due.

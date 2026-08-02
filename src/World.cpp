@@ -225,7 +225,7 @@ void World::StartMatch(const ClassDef* localClass, int localTeam)
     m_localSlot = -1;
     for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
         for (int i = 0; i < kTeamSize; ++i)
-            m_roster.push_back({ team, nullptr, false, false, 0, 0 });
+            m_roster.push_back({ team, nullptr, Slot::Held::Ai, false, 0, 0 });
 
     m_localClass = localClass;
     m_localTeam = std::min(localTeam, static_cast<int>(m_teamSpawns.size()) - 1);
@@ -240,7 +240,7 @@ void World::StartMatch(const ClassDef* localClass, int localTeam)
     // places gets a soldier now: the sides come up to strength together at the
     // start of a match rather than trickling in off the reinforcement queue.
     for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
-        if (!m_roster[slot].human)
+        if (m_roster[slot].held == Slot::Held::Ai)
             SpawnAi(slot);
 }
 
@@ -300,8 +300,7 @@ int World::ClaimSlot(int team)
         // Nothing free on that side. Rather than turn the player away, the
         // roster grows by one — see the header for why this can't happen today
         // and why an extra row is the right answer when it does.
-        m_roster.push_back({ team, nullptr, false, false, 0, 0 });
-        slot = static_cast<int>(m_roster.size()) - 1;
+        slot = AddAiSlot(team);
     }
 
     // The AI hands the slot over now rather than on its next death: a living
@@ -312,7 +311,7 @@ int World::ClaimSlot(int team)
     std::erase_if(m_units, [slot](const Unit& u) { return u.slot == slot; });
     std::erase_if(m_reinforcements, [slot](const Reinforcement& r) { return r.slot == slot; });
 
-    m_roster[slot].human = true;
+    m_roster[slot].held = Slot::Held::Human;
     return slot;
 }
 
@@ -320,19 +319,31 @@ void World::ReleaseSlot(int slot)
 {
     if (slot < 0 || slot >= static_cast<int>(m_roster.size()))
         return;
-    m_roster[slot].human = false;
-    // The side is owed a soldier again, on the same clock a death starts: a
-    // leaver's slot refills the way a casualty's does, not instantly. What the
-    // leaver did with it stays on the row — the kills happened, and the AI
-    // that takes the place over adds to the same tally, exactly as the next AI
-    // does after one of them is killed.
-    m_reinforcements.push_back({ slot, kRespawnDelay });
+
+    // The leaver's slot stops being a place and becomes their record. It keeps
+    // their class, their kills and their deaths for the rest of the match, and
+    // nothing is ever put in it again — which is what makes quitting cost the
+    // side nothing on the board, and what keeps the rows adding up to the
+    // total above them.
+    m_roster[slot].held = Slot::Held::Left;
+    // The side is still owed a soldier, on the same clock a death starts. It
+    // goes to a slot of its own, so the AI that fills in starts from nothing
+    // instead of carrying on a stranger's tally. The team is read out before
+    // the roster grows, because growing it can move every element.
+    const int team = m_roster[slot].team;
+    m_reinforcements.push_back({ AddAiSlot(team), kRespawnDelay });
+}
+
+int World::AddAiSlot(int team)
+{
+    m_roster.push_back({ team, nullptr, Slot::Held::Ai, false, 0, 0 });
+    return static_cast<int>(m_roster.size()) - 1;
 }
 
 int World::HumanSlots(int team) const
 {
     return static_cast<int>(std::count_if(m_roster.begin(), m_roster.end(), [team](const Slot& s) {
-        return s.team == team && s.human;
+        return s.team == team && s.held == Slot::Held::Human;
     }));
 }
 
@@ -349,13 +360,16 @@ bool World::SlotFilled(int slot) const
 
 int World::FreeAiSlot(int team) const
 {
+    const auto ai = [&](int slot) {
+        return m_roster[slot].team == team && m_roster[slot].held == Slot::Held::Ai;
+    };
     // An empty one first, so a joining player takes a place nobody is standing
     // in before turning a living AI soldier out of theirs.
     for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
-        if (m_roster[slot].team == team && !m_roster[slot].human && !SlotFilled(slot))
+        if (ai(slot) && !SlotFilled(slot))
             return slot;
     for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
-        if (m_roster[slot].team == team && !m_roster[slot].human)
+        if (ai(slot))
             return slot;
     return -1;
 }
@@ -388,7 +402,10 @@ void World::SetCommand(int id, const Command& cmd)
 
 void World::SpawnAi(int slot)
 {
-    if (slot < 0 || slot >= static_cast<int>(m_roster.size()))
+    // Never into a place that isn't the AI's — a claimed one, or a departed
+    // player's record, which is not a place at all.
+    if (slot < 0 || slot >= static_cast<int>(m_roster.size()) ||
+        m_roster[slot].held != Slot::Held::Ai)
         return;
     const int team = m_roster[slot].team;
 
@@ -935,9 +952,10 @@ void World::UpdateReinforcements(float dt)
         // Checked rather than assumed, because the wait may have outlived the
         // thing it was waiting on: a player claimed the slot while the clock
         // ran, or a second wait against the same slot already filled it. Either
-        // way the promise is dropped, not honored twice.
-        if (due.timer <= 0.0f && SlotTeam(due.slot) >= 0 && !m_roster[due.slot].human &&
-            !SlotFilled(due.slot))
+        // way the promise is dropped, not honored twice. (SpawnAi checks the
+        // slot is still the AI's on its own; what can't be asked of it is
+        // whether somebody is already standing there.)
+        if (due.timer <= 0.0f && !SlotFilled(due.slot))
             SpawnAi(due.slot);
     }
 
@@ -1296,9 +1314,17 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
     {
         if (slot.you)
             m_localSlot = static_cast<int>(m_roster.size());
+        // A holder the wire can't name is treated as the AI's: a garbled byte
+        // should read as one more soldier on the field, not as a player who
+        // was never there.
+        const Slot::Held held = slot.held == static_cast<uint8_t>(Slot::Held::Human)
+                                    ? Slot::Held::Human
+                                : slot.held == static_cast<uint8_t>(Slot::Held::Left)
+                                    ? Slot::Held::Left
+                                    : Slot::Held::Ai;
         m_roster.push_back({ slot.team,
                              slot.classId < kClassCount ? &kClassDefs[slot.classId] : nullptr,
-                             slot.human, slot.you, slot.kills, slot.deaths });
+                             held, slot.you, slot.kills, slot.deaths });
     }
 
     // Rebuild the roster in the snapshot's image, carrying each surviving

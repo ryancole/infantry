@@ -1730,10 +1730,23 @@ void Game::RenderHud(Renderer& renderer)
     // than off the roster this client can see.
     if (m_showScores)
     {
+        // The simulation's three holders become the HUD's three, which is the
+        // whole of what that file needs to know about a slot: how loudly to
+        // draw it. A departed player's row comes over with the rest — their
+        // kills are still in their side's total, so leaving them out would
+        // leave a column that didn't add up.
+        const auto holder = [](World::Slot::Held held) {
+            switch (held)
+            {
+            case World::Slot::Held::Human: return Hud::Holder::Human;
+            case World::Slot::Held::Left:  return Hud::Holder::Left;
+            default:                       return Hud::Holder::Ai;
+            }
+        };
         m_scoreRows.clear();
         for (const World::Slot& slot : m_world.Roster())
-            m_scoreRows.push_back({ slot.team, slot.cls ? slot.cls->name : nullptr, slot.human,
-                                    slot.local, slot.kills, slot.deaths });
+            m_scoreRows.push_back({ slot.team, slot.cls ? slot.cls->name : nullptr,
+                                    holder(slot.held), slot.local, slot.kills, slot.deaths });
 
         // Your side's column first, the same way the corner panel puts your row
         // on top. Two columns for two sides; a third team would want a third

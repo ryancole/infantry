@@ -809,14 +809,24 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
-    const float s = h / kDesignHeight;
 
     // Split the roster into its two columns and put each in the order a
-    // scoreboard is read in: most kills first, then fewest deaths, and a human
-    // ahead of the AI on a dead heat. The last rule is the only one that isn't
-    // about performance — the people in the match are who a player is looking
-    // for, and burying them among four bots with the same line is how a board
-    // becomes something to search rather than something to read.
+    // scoreboard is read in: most kills first, then fewest deaths, and on a
+    // dead heat the people ahead of the bots and the present ahead of the
+    // departed. That last pair of rules is the only part that isn't about
+    // performance — the players in the match are who somebody opening this is
+    // looking for, and burying them among bots with identical lines is how a
+    // board becomes something to search rather than something to read. A leaver
+    // who topped the column still sits at the top of it, though: what they did
+    // is why the total says what it says.
+    const auto rank = [](const ScoreRow* row) {
+        switch (row->holder)
+        {
+        case Holder::Human: return 0;
+        case Holder::Ai:    return 1;
+        default:            return 2; // Left
+        }
+    };
     std::vector<const ScoreRow*> columns[2];
     for (int side = 0; side < 2; ++side)
     {
@@ -824,16 +834,29 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
             if (board.rows[i].team == board.teams[side])
                 columns[side].push_back(&board.rows[i]);
         std::stable_sort(columns[side].begin(), columns[side].end(),
-                         [](const ScoreRow* a, const ScoreRow* b) {
+                         [&](const ScoreRow* a, const ScoreRow* b) {
                              if (a->kills != b->kills)
                                  return a->kills > b->kills;
                              if (a->deaths != b->deaths)
                                  return a->deaths < b->deaths;
-                             return a->human && !b->human;
+                             return rank(a) < rank(b);
                          });
     }
 
     const size_t rowCount = std::max(columns[0].size(), columns[1].size());
+
+    // The board is authored at the same 1080 scale as the rest of the HUD, but
+    // it's the one panel whose height is decided by its contents: every player
+    // who leaves adds a row that stays for the match. So it shrinks to fit
+    // rather than running off the screen — everything in proportion, because a
+    // board that dropped rows to make room would be a board that stopped adding
+    // up, which is the one thing it can't do.
+    const float designH = kBoardPad * 2.0f + kBoardTitleSize + kBoardTitleGap + kBoardHeadSize +
+                          kBoardHeadGap + kBoardLabelSize +
+                          kBoardRowHeight * static_cast<float>(rowCount);
+    float s = h / kDesignHeight;
+    s = std::min(s, (h - kTopMargin * s * 2.0f) / designH);
+
     const float pad = kBoardPad * s;
     const float rowH = kBoardRowHeight * s;
     const float titleSize = kBoardTitleSize * s;
@@ -919,18 +942,31 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
             else if (i % 2 == 1)
                 AppendQuad(tris, colX - pad * 0.35f, rowY, columnW + pad * 0.7f, rowH, kBoardRowBg);
 
-            // A human's row is drawn in the side's color and an AI's in the
-            // muted grey the panel uses for anything spent: which of the ten
-            // are people is the first thing a player wants off this board, and
-            // it's worth more than a marker glyph next to a name.
-            const XMFLOAT4 nameColor = row.you ? kValueColor : (row.human ? color : kMutedColor);
+            // Three brightnesses, loudest first: a player present is drawn in
+            // their side's own color, the AI in the panel's muted grey, and a
+            // player who has left in the darker grey everything spent is drawn
+            // in — a magazine's fired rounds, a wiped-out side's icon. Their
+            // score stays on the board because it's part of the total above it,
+            // but they aren't in the fight any more and shouldn't read as
+            // though they are. Which of the ten are people is the first thing
+            // anybody wants off this board, and color carries it better than a
+            // marker glyph next to a name would.
+            const XMFLOAT4 present = row.you ? kValueColor : color;
+            const XMFLOAT4 nameColor = row.holder == Holder::Left  ? kSpentColor
+                                       : row.holder == Holder::Ai ? kMutedColor
+                                                                  : present;
+            // A place nothing has stood in yet: the five seconds between a side
+            // being owed a soldier and getting one. Said with a dash rather
+            // than a blank, so the row reads as empty rather than as broken.
             renderer.DrawScreenText(row.name ? row.name : "-", colX, textY, rowSize, nameColor);
 
+            const XMFLOAT4 numberColor = row.holder == Holder::Left ? kSpentColor
+                                         : row.holder == Holder::Human ? kValueColor
+                                                                       : kMutedColor;
             const auto number = [&](int value, float right) {
                 const std::string text = std::to_string(std::max(value, 0));
                 renderer.DrawScreenText(text, right - renderer.MeasureScreenText(text, rowSize),
-                                        textY, rowSize,
-                                        row.human || row.you ? kValueColor : kMutedColor);
+                                        textY, rowSize, numberColor);
             };
             number(row.kills, killsRight);
             number(row.deaths, deathsRight);

@@ -114,6 +114,16 @@ namespace Hud
     // only one that has to arrive from the simulation rather than from what's
     // on screen.
 
+    // Who a row belongs to. Mirrors World::Slot::Held rather than including it:
+    // this file has never heard of the simulation, and what it needs off that
+    // enum is three ways to draw a row, not a shared type.
+    enum class Holder
+    {
+        Ai,
+        Human,
+        Left, // a player who has gone; their score stays on the board
+    };
+
     // One row: a soldier's place on a side for the whole match, and what
     // they've made of it.
     struct ScoreRow
@@ -121,9 +131,10 @@ namespace Hud
         int team;
         // What has been standing in the slot. Nobody in this game has a name,
         // so the class is the name — and for an AI slot it's the honest one,
-        // since the class really is re-dealt every time the slot refills.
+        // since the class really is re-dealt every time the slot refills. Null
+        // for a place nothing has stood in yet.
         const char* name;
-        bool human;
+        Holder holder;
         bool you;
         int kills;
         int deaths;
@@ -131,9 +142,11 @@ namespace Hud
 
     struct Scoreboard
     {
-        // Every slot on the field, in whatever order they arrive. The panel
-        // splits them by side and sorts each column itself, because how a
-        // scoreboard is ordered is a fact about scoreboards.
+        // Every slot on the field, in whatever order they arrive — including
+        // the ones belonging to players who have left, which is what makes a
+        // column add up to the total over it. The panel splits them by side and
+        // sorts each column itself, because how a scoreboard is ordered is a
+        // fact about scoreboards.
         const ScoreRow* rows;
         size_t rowCount;
         // The two sides, in the order their columns are drawn: the player's

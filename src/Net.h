@@ -40,7 +40,7 @@ namespace Net
     // Join, and a mismatch is refused outright — two builds disagreeing about
     // what a byte means should fail at the door, not decode each other into
     // nonsense mid-match.
-    constexpr uint8_t kProtocolVersion = 4;
+    constexpr uint8_t kProtocolVersion = 5;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -285,16 +285,22 @@ namespace Net
     // One place on the roster as the wire sees it: who holds it and what
     // they've done with it. The client can't count any of this for itself — the
     // kills happen to soldiers it will never see through the fog — so the whole
-    // board comes down, unfiltered, every snapshot.
+    // board comes down, unfiltered, every snapshot. Departed players come down
+    // with it: their rows are what make the columns add up to the totals.
     struct SnapSlot
     {
         uint8_t team;
         uint8_t classId;
-        bool human;
-        bool you; // the receiving player's own row
+        uint8_t held; // World::Slot::Held, as its own value
+        bool you;     // the receiving player's own row
         uint16_t kills;
         uint16_t deaths;
     };
+
+    // Who a slot is held by, in one byte, low two bits. `you` rides in the same
+    // byte because it's the one thing about a slot that differs per recipient.
+    constexpr uint8_t kSlotHeldMask = 0x03;
+    constexpr uint8_t kSlotYou = 1 << 2;
 
     struct Snapshot
     {
@@ -362,9 +368,8 @@ namespace Net
             const World::Slot& slot = roster[i];
             w.U8(static_cast<uint8_t>(slot.team));
             w.U8(slot.cls ? static_cast<uint8_t>(slot.cls - kClassDefs) : 0xff);
-            uint8_t bits = 0;
-            if (slot.human) bits |= 1 << 0;
-            if (static_cast<int>(i) == ownSlot) bits |= 1 << 1;
+            uint8_t bits = static_cast<uint8_t>(slot.held) & kSlotHeldMask;
+            if (static_cast<int>(i) == ownSlot) bits |= kSlotYou;
             w.U8(bits);
             w.U16(static_cast<uint16_t>(std::clamp(slot.kills, 0, 65535)));
             w.U16(static_cast<uint16_t>(std::clamp(slot.deaths, 0, 65535)));
@@ -450,8 +455,8 @@ namespace Net
             slot.team = r.U8();
             slot.classId = r.U8();
             const uint8_t bits = r.U8();
-            slot.human = bits & (1 << 0);
-            slot.you = bits & (1 << 1);
+            slot.held = bits & kSlotHeldMask;
+            slot.you = (bits & kSlotYou) != 0;
             slot.kills = r.U16();
             slot.deaths = r.U16();
             snap.roster.push_back(slot);
