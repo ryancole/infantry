@@ -11,7 +11,9 @@ namespace
     // Rest-pose landmarks in the soldier's local space (facing +Z, feet at
     // y = 0). Segment frames sit at the center of the part group they carry,
     // which is also where that segment's ragdoll box goes.
-    constexpr float kLegLen = 0.43f; // hip to ankle
+    // The leg is two bones so it can bend: hip to knee, knee to ankle. The
+    // thigh is the longer of the two, as it is on a person.
+    constexpr float kThighLen = 0.23f, kShinLen = 0.20f;
     constexpr float kHipX = 0.10f, kHipY = 0.50f, kHipZ = 0.02f;
     constexpr float kShoulderX = 0.25f, kShoulderY = 0.88f, kShoulderZ = 0.02f;
     constexpr float kPelvisY = 0.55f;
@@ -28,8 +30,11 @@ namespace
 
     // Walk cycle: the legs stride along the facing axis, and the torso dips a
     // touch at full stride spread so the walk reads even from the isometric
-    // camera.
+    // camera. The knee folds only while a leg is swinging through — that's what
+    // lifts the boot clear of the ground instead of dragging it along — and is
+    // straight again by the time the foot plants.
     constexpr float kSwingAngle = 0.6f;
+    constexpr float kKneeBend = 0.75f;
     constexpr float kBobHeight = 0.03f;
 
     // Rotation taking +Y to `dir` (unit length). A segment's frame is oriented
@@ -93,8 +98,10 @@ const Soldier::Body Soldier::kBodies[Soldier::SegmentCount] = {
     /* Pelvis */ { { 0.32f, 0.20f, 0.24f }, 12.0f },
     /* Torso  */ { { 0.38f, 0.36f, 0.42f }, 30.0f },
     /* Head   */ { { 0.28f, 0.28f, 0.30f }, 7.0f },
-    /* LegL   */ { { 0.17f, 0.55f, 0.24f }, 11.0f },
-    /* LegR   */ { { 0.17f, 0.55f, 0.24f }, 11.0f },
+    /* ThighL */ { { 0.17f, 0.30f, 0.19f }, 7.0f },
+    /* ThighR */ { { 0.17f, 0.30f, 0.19f }, 7.0f },
+    /* ShinL  */ { { 0.15f, 0.28f, 0.24f }, 4.0f },
+    /* ShinR  */ { { 0.15f, 0.28f, 0.24f }, 4.0f },
     /* ArmL   */ { { 0.13f, 0.55f, 0.13f }, 4.0f },
     /* ArmR   */ { { 0.13f, 0.30f, 0.13f }, 3.0f },
 };
@@ -107,10 +114,17 @@ const Soldier::Joint Soldier::kJoints[Soldier::kJointCount] = {
       XMConvertToRadians(35.0f), XMConvertToRadians(30.0f) },
     { Torso, Head, { 0.0f, kNeckY - kTorsoY, kNeckZ - kTorsoZ },
       XMConvertToRadians(40.0f), XMConvertToRadians(45.0f) },
-    { Pelvis, LegL, { -kHipX, kHipY - kPelvisY, kHipZ },
+    { Pelvis, ThighL, { -kHipX, kHipY - kPelvisY, kHipZ },
       XMConvertToRadians(60.0f), XMConvertToRadians(25.0f) },
-    { Pelvis, LegR, { kHipX, kHipY - kPelvisY, kHipZ },
+    { Pelvis, ThighR, { kHipX, kHipY - kPelvisY, kHipZ },
       XMConvertToRadians(60.0f), XMConvertToRadians(25.0f) },
+    // A knee is a hinge, and a cone is the wrong shape for one — but a narrow
+    // cone with almost no twist keeps the shin tracking its thigh instead of
+    // splaying, which is the part you'd notice on a corpse.
+    { ThighL, ShinL, { 0.0f, -kThighLen * 0.5f, 0.0f },
+      XMConvertToRadians(25.0f), XMConvertToRadians(10.0f) },
+    { ThighR, ShinR, { 0.0f, -kThighLen * 0.5f, 0.0f },
+      XMConvertToRadians(25.0f), XMConvertToRadians(10.0f) },
     { Torso, ArmL, { -kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
       XMConvertToRadians(80.0f), XMConvertToRadians(60.0f) },
     { Torso, ArmR, { kShoulderX, kShoulderY - kTorsoY, kShoulderZ - kTorsoZ },
@@ -119,7 +133,6 @@ const Soldier::Joint Soldier::kJoints[Soldier::kJointCount] = {
 
 void Soldier::Pose(XMMATRIX out[SegmentCount], float walkPhase, float moveBlend)
 {
-    const float swing = std::sin(walkPhase) * kSwingAngle * moveBlend;
     const float bob = kBobHeight * moveBlend * std::cos(walkPhase * 2.0f);
 
     out[Pelvis] = XMMatrixTranslation(0.0f, kPelvisY + bob, 0.0f);
@@ -129,12 +142,29 @@ void Soldier::Pose(XMMATRIX out[SegmentCount], float walkPhase, float moveBlend)
     for (int i = 0; i < 2; ++i)
     {
         const float side = (i == 0) ? -1.0f : 1.0f;
-        // The leg pivots about its hip. Its frame's +Y runs up the bone, so it
-        // sits half a leg below the joint and rotates around it; the boot,
-        // authored at the bottom of that frame, follows the stride with it.
-        out[LegL + i] = XMMatrixTranslation(0.0f, -kLegLen * 0.5f, 0.0f) *
-                        XMMatrixRotationX(-swing * side) *
-                        XMMatrixTranslation(side * kHipX, kHipY, kHipZ);
+        // The two legs run half a cycle apart. Reading the stride off a phase
+        // per leg rather than off one shared `swing` is what lets the knee ask
+        // where in its own stride the leg is, which is the whole trick below.
+        const float legPhase = walkPhase + (side < 0.0f ? XM_PI : 0.0f);
+        const float stride = std::sin(legPhase) * kSwingAngle * moveBlend;
+        // The foot is travelling forward over the half of the cycle where the
+        // stride is growing, and that's the half the knee folds through, peaking
+        // as the leg passes under the hip. Through the other half the foot is
+        // planted and the leg is straight, so the bend clamps off at zero.
+        const float bend = kKneeBend * moveBlend * std::max(0.0f, std::cos(legPhase));
+
+        // The thigh pivots about its hip. Its frame's +Y runs up the bone, so
+        // it sits half a thigh below the joint and rotates around it.
+        out[ThighL + i] = XMMatrixTranslation(0.0f, -kThighLen * 0.5f, 0.0f) *
+                          XMMatrixRotationX(-stride) *
+                          XMMatrixTranslation(side * kHipX, kHipY, kHipZ);
+        // And the shin hangs off the thigh the same way, folding backward about
+        // the knee — half a shin below a joint that is itself half a thigh below
+        // the thigh's own frame. The boot rides the bottom of the shin, so it
+        // now lifts and swings instead of scuffing along under a stiff leg.
+        out[ShinL + i] = XMMatrixTranslation(0.0f, -kShinLen * 0.5f, 0.0f) *
+                         XMMatrixRotationX(bend) *
+                         XMMatrixTranslation(0.0f, -kThighLen * 0.5f, 0.0f) * out[ThighL + i];
         out[ArmL + i] = ArmFrame(side, bob);
     }
 }
@@ -160,13 +190,22 @@ void Soldier::Draw(Renderer& renderer, const XMMATRIX world[SegmentCount], const
         renderer.DrawShape(shape, local * world[seg], col);
     };
 
-    for (int i = 0; i < 2; ++i) // legs: suit cylinder down the bone, boot at the ankle
+    for (int i = 0; i < 2; ++i) // legs: suit cylinder down each bone, boot at the ankle
     {
-        const Segment leg = static_cast<Segment>(LegL + i);
-        part(leg, Shape::CylinderLow, XMMatrixScaling(0.13f, kLegLen, 0.13f), suit);
-        part(leg, Shape::Box,
+        const Segment thigh = static_cast<Segment>(ThighL + i);
+        const Segment shin = static_cast<Segment>(ShinL + i);
+        part(thigh, Shape::CylinderLow, XMMatrixScaling(0.14f, kThighLen, 0.14f), suit);
+        // The knee pad caps the joint from the thigh, the way the pauldrons cap
+        // the shoulders. A sphere sitting on the pivot itself covers the gap the
+        // bend opens up behind the leg from any angle it's seen at.
+        part(thigh, Shape::SphereLow,
+             XMMatrixScaling(0.15f, 0.15f, 0.15f) *
+                 XMMatrixTranslation(0.0f, -kThighLen * 0.5f, 0.01f),
+             plateDark);
+        part(shin, Shape::CylinderLow, XMMatrixScaling(0.12f, kShinLen, 0.12f), suit);
+        part(shin, Shape::Box,
              XMMatrixScaling(0.15f, 0.10f, 0.24f) *
-                 XMMatrixTranslation(0.0f, -kLegLen * 0.5f - 0.02f, 0.05f),
+                 XMMatrixTranslation(0.0f, -kShinLen * 0.5f - 0.02f, 0.05f),
              plateDark);
     }
 

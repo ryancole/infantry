@@ -18,8 +18,10 @@ namespace Soldier
         Pelvis,
         Torso,
         Head,
-        LegL,
-        LegR,
+        ThighL,
+        ThighR,
+        ShinL,
+        ShinR,
         ArmL,
         ArmR,
         SegmentCount,
@@ -53,7 +55,8 @@ namespace Soldier
 
     // Fills `out` with the segment frames in the soldier's local space (facing
     // +Z, feet at y = 0) for a point in the walk cycle. `walkPhase` swings the
-    // legs and `moveBlend` (0..1) eases the whole motion in and out.
+    // legs — thighs from the hip, shins flexing at the knee behind them — and
+    // `moveBlend` (0..1) eases the whole motion in and out.
     void Pose(DirectX::XMMATRIX out[SegmentCount], float walkPhase, float moveBlend);
 
     // Places a soldier's local space into the world at `pos`, facing `aimDir`.
