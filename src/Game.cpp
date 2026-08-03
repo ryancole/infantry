@@ -919,28 +919,27 @@ Command Game::ReadCommand(const Input& input, const IsoCamera& camera, const Vec
 
     Command cmd;
 
-    // --- Movement: WASD relative to the screen, resolved to world space here
-    // because the screen is this side's business ---
-    const Vector3 upG = camera.ScreenUpOnGround();
-    const Vector3 rightG = camera.ScreenRightOnGround();
-
-    float moveUp = 0.0f, moveRight = 0.0f;
-    if (m_binds.Down(input, Act::MoveForward)) moveUp += 1.0f;
-    if (m_binds.Down(input, Act::MoveBack)) moveUp -= 1.0f;
-    if (m_binds.Down(input, Act::MoveRight)) moveRight += 1.0f;
-    if (m_binds.Down(input, Act::MoveLeft)) moveRight -= 1.0f;
-    moveUp += input.pad.thumbSticks.leftY;
-    moveRight += input.pad.thumbSticks.leftX;
-
-    Vector3 move = upG * moveUp + rightG * moveRight;
-    if (move.LengthSquared() > 1e-10f)
-    {
-        move.Normalize();
-        cmd.move = move;
-    }
+    // --- Movement: forward and back along the soldier rather than along the
+    // screen. W walks the way the body is pointed, which is the way the cursor
+    // is dragging it round, and S backs out along the same line; A and D step
+    // across it. Which way that is on the tick it lands is the simulation's to
+    // say — the facing is turning under the keys — so the keys leave here as
+    // the two body axes and nothing about the screen goes with them. The
+    // stick's Y and X are the same two axes, which is what the stick was
+    // always shaped like ---
+    float forward = 0.0f, strafe = 0.0f;
+    if (m_binds.Down(input, Act::MoveForward)) forward += 1.0f;
+    if (m_binds.Down(input, Act::MoveBack)) forward -= 1.0f;
+    if (m_binds.Down(input, Act::MoveRight)) strafe += 1.0f;
+    if (m_binds.Down(input, Act::MoveLeft)) strafe -= 1.0f;
+    forward += input.pad.thumbSticks.leftY;
+    strafe += input.pad.thumbSticks.leftX;
+    cmd.move = Vector2(strafe, forward);
 
     // --- Aim: mouse cursor projected onto the ground plane, or the right
     // stick as a screen-relative direction when deflected ---
+    const Vector3 upG = camera.ScreenUpOnGround();
+    const Vector3 rightG = camera.ScreenRightOnGround();
     Vector3 aim = camera.ScreenToGround(input.mouseX, input.mouseY) - pos;
     const Vector2 stick(input.pad.thumbSticks.rightX, input.pad.thumbSticks.rightY);
     if (stick.LengthSquared() > 0.1f)

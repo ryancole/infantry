@@ -40,7 +40,12 @@ namespace Net
     // Join, and a mismatch is refused outright — two builds disagreeing about
     // what a byte means should fail at the door, not decode each other into
     // nonsense mid-match.
-    constexpr uint8_t kProtocolVersion = 5;
+    // 6: a command's walk is two body axes where it was a world direction.
+    // Same two floats on the wire, which is exactly why this had to move —
+    // shape here means what the bytes mean, and a build that missed the change
+    // would decode a heading as a sidestep and walk off at right angles rather
+    // than fail at anything.
+    constexpr uint8_t kProtocolVersion = 6;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -199,7 +204,9 @@ namespace Net
         {
             const Command& cmd = entries[i].cmd;
             w.U32(entries[i].seq);
-            w.Vec2XZ(cmd.move);
+            // Two body axes, not a world direction — see Command.
+            w.F32(cmd.move.x);
+            w.F32(cmd.move.y);
             w.Vec2XZ(cmd.aim);
             w.F32(cmd.aimDist);
             uint8_t bits = 0;
@@ -220,7 +227,8 @@ namespace Net
         {
             CmdEntry entry;
             entry.seq = r.U32();
-            entry.cmd.move = r.Vec2XZ();
+            entry.cmd.move.x = r.F32();
+            entry.cmd.move.y = r.F32();
             entry.cmd.aim = r.Vec2XZ();
             entry.cmd.aimDist = r.F32();
             const uint8_t bits = r.U8();
