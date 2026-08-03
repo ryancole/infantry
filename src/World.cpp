@@ -72,6 +72,15 @@ namespace
     constexpr float kSteadyMoveScale = 0.4f;  // fraction of class move speed
     constexpr float kSteadyTurnScale = 0.25f; // fraction of kTurnRate
 
+    // Sideways is a sidestep and not a run: a soldier crossing their own front
+    // is carrying a gun that stays pointed the whole way, and that costs
+    // ground. It's what makes going round somebody a real decision rather than
+    // the free answer to everything — circling is still the move, it just
+    // hands the man in the middle the time to come about. The scale is
+    // interpolated across the heading rather than switched at the diagonal, so
+    // there's no ridge in the middle of the joystick where the speed jumps.
+    constexpr float kStrafeMoveScale = 0.65f; // fraction of class move speed
+
     // Launch velocity from the killing blow: a shove along it plus some lift,
     // so a body falls away from what killed it instead of dropping in place. A
     // blast throws harder, scaled by how much of it the victim caught.
@@ -609,7 +618,7 @@ void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
     // themselves round onto a new heading is doing the work of starting, even
     // though their speed never changed, and it should cost what starting costs ---
     const MoveDef& gait = unit.cls->move;
-    const float speed = gait.speed * (cmd.steady ? kSteadyMoveScale : 1.0f);
+    float speed = gait.speed * (cmd.steady ? kSteadyMoveScale : 1.0f);
 
     // The two axes the command walks on are the soldier's own, so the heading
     // is read off the facing rather than sent with the keys: forward is
@@ -619,12 +628,20 @@ void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
     // keeps a diagonal from outrunning a straight line, and keeps a client
     // that sends a longer vector than it has any business sending from
     // outrunning everyone.
-    const Vector3& facing = unit.aimDir;
-    const Vector3 across(facing.z, 0.0f, -facing.x);
-    Vector3 wanted = facing * cmd.move.y + across * cmd.move.x;
-    const bool pushing = wanted.LengthSquared() > 1e-10f;
+    Vector2 local = cmd.move;
+    const bool pushing = local.LengthSquared() > 1e-10f;
+    Vector3 wanted = Vector3::Zero;
     if (pushing)
-        wanted.Normalize();
+    {
+        local.Normalize();
+        // How much of the walk is along the front, on a unit vector, is just
+        // the size of that component; the sideways cost is charged in
+        // proportion to how little of it there is.
+        speed *= kStrafeMoveScale + (1.0f - kStrafeMoveScale) * std::abs(local.y);
+        const Vector3& facing = unit.aimDir;
+        const Vector3 across(facing.z, 0.0f, -facing.x);
+        wanted = facing * local.y + across * local.x;
+    }
     const float response = pushing ? gait.accel : gait.stop;
     unit.moveVel += (wanted * speed - unit.moveVel) * (1.0f - std::exp(-response * dt));
     if (unit.moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
