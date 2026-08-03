@@ -261,7 +261,7 @@ void Game::LoadContent(Renderer& renderer)
 
     m_sound.Init(); // loads the wave bank and starts the ambience
 
-    const LevelData level = LevelData::Load("assets/levels/hardcore.json");
+    const LevelData level = LevelData::Load("assets/levels/hardcorps2t.json");
     m_team = std::min(m_team, static_cast<int>(level.spawns.size()) - 1);
 
     // The level splits down the same seam everything else does: the World
@@ -269,19 +269,29 @@ void Game::LoadContent(Renderer& renderer)
     // and what's left here is what the level looks like.
     m_world.Init(level);
 
-    // Static floor grid.
-    const float arenaHalf = m_world.ArenaHalf();
-    const int half = static_cast<int>(arenaHalf);
-    for (int i = -half; i <= half; ++i)
+    // Static floor grid. Each axis is ruled to its own half-extent, since the
+    // arena is a rectangle: a square grid on a long map would either stop short
+    // of the ends or hang off the sides.
+    const Vector2 arenaHalf = m_world.ArenaHalf();
+    const int halfX = static_cast<int>(arenaHalf.x);
+    const int halfZ = static_cast<int>(arenaHalf.y);
+    for (int i = -halfX; i <= halfX; ++i)
     {
-        const bool border = (i == -half || i == half);
+        const bool border = (i == -halfX || i == halfX);
         const bool major = (i % 8) == 0;
         const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
         const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -arenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, arenaHalf }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ -arenaHalf, 0.0f, f }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ arenaHalf, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -arenaHalf.y }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, arenaHalf.y }, col });
+    }
+    for (int i = -halfZ; i <= halfZ; ++i)
+    {
+        const bool border = (i == -halfZ || i == halfZ);
+        const bool major = (i % 8) == 0;
+        const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
+        const float f = static_cast<float>(i);
+        m_gridVerts.push_back({ XMFLOAT3{ -arenaHalf.x, 0.0f, f }, col });
+        m_gridVerts.push_back({ XMFLOAT3{ arenaHalf.x, 0.0f, f }, col });
     }
 
     // The drawn half of each level object. Each distinct model is loaded
@@ -1146,7 +1156,7 @@ void Game::SpawnBlood(const Vector3& pos, const Vector3& dir, float damage, bool
 void Game::SpawnSplat(const Vector3& pos)
 {
     // Drops that carry over the arena wall have nothing to land on.
-    if (std::abs(pos.x) > m_world.ArenaHalf() || std::abs(pos.z) > m_world.ArenaHalf())
+    if (std::abs(pos.x) > m_world.ArenaHalf().x || std::abs(pos.z) > m_world.ArenaHalf().y)
         return;
 
     if (m_splatVerts.size() >= kMaxSplats * kSplatVerts)
@@ -1284,7 +1294,8 @@ void Game::AppendFog(std::vector<Vertex>& out) const
     if (poly.size() < 2)
         return;
 
-    const float farDist = m_world.ArenaHalf() * kFogFar;
+    // Far enough to leave the arena from anywhere in it, whichever way it runs.
+    const float farDist = std::max(m_world.ArenaHalf().x, m_world.ArenaHalf().y) * kFogFar;
     const auto extrude = [&](const Vector2& v) -> Vector2 {
         const Vector2 d = v - viewer;
         const float len = d.Length();

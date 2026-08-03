@@ -32,6 +32,7 @@
 // be a brain that had started doing the body's job.
 namespace Brain
 {
+    using DirectX::SimpleMath::Vector2;
     using DirectX::SimpleMath::Vector3;
 
     enum class Kind
@@ -63,7 +64,7 @@ namespace Brain
         Vector3 pos;
         Vector3 aimDir; // where they're pointed right now
         const std::vector<Contact>* enemies;
-        float arenaHalf; // how far out there is anywhere to walk to
+        Vector2 arenaHalf; // how far out there is anywhere to walk to, on x and z
         bool canFire;    // loaded and off the cadence: a brain may want to act on being empty
         // The ground this soldier's side is trying to reach — the enemy's
         // spawn. Not an order and not a route: it's the one fact that tells a

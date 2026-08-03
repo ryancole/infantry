@@ -59,9 +59,10 @@ int main(int argc, char** argv)
     }
 
     const World& world = server.Match();
-    std::printf("infantry_server: port %u, arena %.0f half-units, %d a side, tick %d Hz, "
+    std::printf("infantry_server: %s, port %u, arena %.0f x %.0f, %d a side, tick %d Hz, "
                 "match %.0f min\n",
-                server.Port(), world.ArenaHalf(), World::kTeamSize,
+                config.level.c_str(), server.Port(), world.ArenaHalf().x * 2.0f,
+                world.ArenaHalf().y * 2.0f, World::kTeamSize,
                 static_cast<int>(1.0f / World::kTickDt + 0.5f), World::kMatchLength / 60.0f);
 
     LARGE_INTEGER freq, prev;

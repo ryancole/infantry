@@ -167,7 +167,7 @@ void World::Init(const LevelData& level)
     // Arena floor. Projectiles are dynamic bodies under Jolt gravity; they
     // despawn on their first contact with anything solid.
     m_physics.AddStaticBox({ 0.0f, -0.5f, 0.0f },
-                           { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
+                           { m_arenaHalf.x * 2.0f, 1.0f, m_arenaHalf.y * 2.0f });
 
     // The simulation's half of each level object: collision box, and its
     // footprint in the occluder list if it blocks sight — which is a question
@@ -916,9 +916,10 @@ DirectX::SimpleMath::Vector3 World::EnemySpawn(int team) const
 
 void World::ResolveObstacles(Vector3& pos) const
 {
-    const float limit = m_arenaHalf - kPlayerHalf;
-    pos.x = std::clamp(pos.x, -limit, limit);
-    pos.z = std::clamp(pos.z, -limit, limit);
+    const float limitX = m_arenaHalf.x - kPlayerHalf;
+    const float limitZ = m_arenaHalf.y - kPlayerHalf;
+    pos.x = std::clamp(pos.x, -limitX, limitX);
+    pos.z = std::clamp(pos.z, -limitZ, limitZ);
 
     // Keep soldiers out of solid objects: push out along the axis of least
     // penetration. (Kinematic on purpose — movement should stay crisp, so
@@ -1141,8 +1142,8 @@ void World::UpdateProjectiles(float dt)
         shot.pos = pos; // the one place flight state leaves the physics world
         // Out of the arena: gone quietly, no impact and no detonation, even for
         // a live fuse. Skips the rest so a fused shot doesn't blow up out there.
-        if (pos.x < -m_arenaHalf || pos.x > m_arenaHalf ||
-            pos.z < -m_arenaHalf || pos.z > m_arenaHalf)
+        if (pos.x < -m_arenaHalf.x || pos.x > m_arenaHalf.x ||
+            pos.z < -m_arenaHalf.y || pos.z > m_arenaHalf.y)
         {
             shot.life = 0.0f;
             shot.prevPos = pos;

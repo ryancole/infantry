@@ -31,7 +31,21 @@ LevelData LevelData::Load(const std::string& path)
 
         LevelData level;
         level.name = j.value("name", std::string{});
-        level.arenaHalf = j.at("bounds").at("halfExtent").get<float>();
+        // One number is a square, a pair is a rectangle. The scalar form came
+        // first and every square level still uses it, so it stays spelled the
+        // way it was rather than becoming [n, n] everywhere.
+        const json& jhalf = j.at("bounds").at("halfExtent");
+        if (jhalf.is_array())
+        {
+            if (jhalf.size() != 2)
+                throw std::runtime_error(path + ": bounds.halfExtent takes one number or two");
+            level.arenaHalf = { jhalf[0].get<float>(), jhalf[1].get<float>() };
+        }
+        else
+        {
+            const float half = jhalf.get<float>();
+            level.arenaHalf = { half, half };
+        }
 
         for (const json& jo : j.value("objects", json::array()))
         {
@@ -55,7 +69,7 @@ LevelData LevelData::Load(const std::string& path)
         for (const json& js : j.value("spawns", json::array()))
             level.spawns.push_back({ js.at("team").get<int>(), ToFloat3(js.at("pos")) });
 
-        if (level.arenaHalf <= 0.0f)
+        if (level.arenaHalf.x <= 0.0f || level.arenaHalf.y <= 0.0f)
             throw std::runtime_error(path + ": bounds.halfExtent must be positive");
         if (level.spawns.empty())
             throw std::runtime_error(path + ": at least one spawn is required");
@@ -71,7 +85,7 @@ LevelData LevelData::Load(const std::string& path)
                                          std::to_string(level.spawns.size() - 1) +
                                          " with one spawn each (got team " +
                                          std::to_string(s.team) + ")");
-            if (std::abs(s.pos.x) > level.arenaHalf || std::abs(s.pos.z) > level.arenaHalf)
+            if (std::abs(s.pos.x) > level.arenaHalf.x || std::abs(s.pos.z) > level.arenaHalf.y)
                 throw std::runtime_error(path + ": team " + std::to_string(s.team) +
                                          " spawn is outside the arena bounds");
         }

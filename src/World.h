@@ -458,7 +458,9 @@ public:
     const std::vector<Projectile>& Projectiles() const { return m_projectiles; }
     const std::vector<Collider>& Colliders() const { return m_colliders; }
     const std::vector<Visibility::Rect>& Occluders() const { return m_occluders; }
-    float ArenaHalf() const { return m_arenaHalf; }
+    // Half-extents on x and z: the arena spans [-x, x] by [-z, z]. A pair
+    // rather than a number because levels stopped being square.
+    DirectX::SimpleMath::Vector2 ArenaHalf() const { return m_arenaHalf; }
 
     // The physics world, handed out mutable for exactly one customer: corpses.
     // A ragdoll is decoration — it decides nothing — so it belongs to the
@@ -609,7 +611,7 @@ private:
     // done with it. Built by StartMatch, only ever added to (see ClaimSlot),
     // and on a client replaced wholesale by each snapshot.
     std::vector<Slot> m_roster;
-    float m_arenaHalf = 32.0f;
+    DirectX::SimpleMath::Vector2 m_arenaHalf = { 32.0f, 32.0f };
     // Team spawn points from the level, indexed by team id.
     std::vector<Vector3> m_teamSpawns;
     // Where each side has got to in the class table. Per team rather than

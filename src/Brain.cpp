@@ -88,15 +88,16 @@ namespace
         const float dist = toTarget.Length();
         if (dist < 1.0f || mem.repickTimer <= 0.0f)
         {
-            const float margin = senses.arenaHalf - 2.0f;
+            const float marginX = senses.arenaHalf.x - 2.0f;
+            const float marginZ = senses.arenaHalf.y - 2.0f;
             const float progress = (senses.objective - senses.pos).Length();
             // A handful of tries, then whatever came up: a soldier standing on
             // the objective has nowhere closer to be, and the walk is the point
             // rather than the arrival.
             for (int tries = 0; tries < 8; ++tries)
             {
-                mem.wanderTarget = { Rand(rng, -margin, margin), 0.0f,
-                                     Rand(rng, -margin, margin) };
+                mem.wanderTarget = { Rand(rng, -marginX, marginX), 0.0f,
+                                     Rand(rng, -marginZ, marginZ) };
                 if ((senses.objective - mem.wanderTarget).Length() < progress)
                     break;
             }
