@@ -17,20 +17,30 @@
 // arrived over a socket. The AI's Brain::Intent is this same idea for minds;
 // a command is it for hands.
 //
-// Directions arrive in world space, already resolved: which way the camera
-// faces is a fact about this machine's screen, and the simulation has no
-// business knowing there is a screen. Nothing here is in units per second
-// either — a command says what's wanted, and what that costs is the class
-// table's side of the conversation.
+// The aim arrives in world space, already resolved: which way the camera faces
+// is a fact about this machine's screen, and the simulation has no business
+// knowing there is a screen. The walk doesn't arrive resolved, for the
+// opposite reason: it isn't screen-relative at all. Forward is wherever the
+// soldier is currently pointed, and where that is on any given tick is the
+// simulation's own business — the body swings toward the cursor at a turn rate
+// only it knows. So the walk crosses as the two body axes and gets resolved
+// down there against the facing of the moment. Nothing here is in units per
+// second either — a command says what's wanted, and what that costs is the
+// class table's side of the conversation.
 //
 // A tick number joins these fields when the fixed tick lands: "what you did"
 // is only half a sentence until the simulation can say when.
 struct Command
 {
+    using Vector2 = DirectX::SimpleMath::Vector2;
     using Vector3 = DirectX::SimpleMath::Vector3;
 
-    Vector3 move; // where to walk, unit length, or zero to stand still
-    Vector3 aim;  // where to come around to point, unit length, or zero to leave it
+    // Where to walk, in the soldier's axes and not the world's: y runs along
+    // the facing — forward, or negative to back up — and x runs across it, a
+    // strafe to the right. Zero stands still. Length beyond one is the
+    // simulation's to trim, so nobody walks faster by asking louder.
+    Vector2 move;
+    Vector3 aim; // where to come around to point, unit length, or zero to leave it
     // Distance to the aimed-at ground point, so a lobbed shot can fall on it
     // rather than at max range. Huge means there is no point, only a direction
     // — the stick aims that way, and it reads as "past everything".

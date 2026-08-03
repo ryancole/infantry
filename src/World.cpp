@@ -589,6 +589,18 @@ void World::TickClocks(Unit& unit, float dt)
 
 void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
 {
+    // --- Aim, before the walk and not after it, because the walk is measured
+    // from the facing this leaves behind. The command is where the driver
+    // wants to be pointed, not where they are pointed — the body has to come
+    // around to it. Everything that reads the aim, including the shots and the
+    // aim ring, follows the facing rather than the wish, so what's drawn is
+    // what will fire ---
+    if (cmd.aim.LengthSquared() > 1e-8f)
+    {
+        const float turnRate = kTurnRate * (cmd.steady ? kSteadyTurnScale : 1.0f);
+        unit.aimDir = TurnToward(unit.aimDir, cmd.aim, turnRate * dt);
+    }
+
     // --- Movement. The command asks for a velocity; the body eases onto it.
     // Framed as a decay toward the wanted velocity rather than a step of
     // acceleration so the feel holds at any frame rate. Which rate it decays
@@ -598,9 +610,23 @@ void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
     // though their speed never changed, and it should cost what starting costs ---
     const MoveDef& gait = unit.cls->move;
     const float speed = gait.speed * (cmd.steady ? kSteadyMoveScale : 1.0f);
-    const bool pushing = cmd.move.LengthSquared() > 1e-10f;
+
+    // The two axes the command walks on are the soldier's own, so the heading
+    // is read off the facing rather than sent with the keys: forward is
+    // wherever they are pointed — which is to say, wherever the cursor has
+    // pulled them round to — and right is across it, the ground plane's other
+    // axis. Normalizing here rather than trusting the length that arrived
+    // keeps a diagonal from outrunning a straight line, and keeps a client
+    // that sends a longer vector than it has any business sending from
+    // outrunning everyone.
+    const Vector3& facing = unit.aimDir;
+    const Vector3 across(facing.z, 0.0f, -facing.x);
+    Vector3 wanted = facing * cmd.move.y + across * cmd.move.x;
+    const bool pushing = wanted.LengthSquared() > 1e-10f;
+    if (pushing)
+        wanted.Normalize();
     const float response = pushing ? gait.accel : gait.stop;
-    unit.moveVel += (cmd.move * speed - unit.moveVel) * (1.0f - std::exp(-response * dt));
+    unit.moveVel += (wanted * speed - unit.moveVel) * (1.0f - std::exp(-response * dt));
     if (unit.moveVel.LengthSquared() < kMoveStopSpeed * kMoveStopSpeed)
         unit.moveVel = Vector3::Zero;
     unit.pos += unit.moveVel * dt;
@@ -615,16 +641,6 @@ void World::MoveCommand(Unit& unit, const Command& cmd, float dt) const
     unit.walkPhase += travelSpeed * kStrideRate * dt;
     unit.moveBlend = std::clamp(unit.moveBlend + (moving ? kMoveBlendRate : -kMoveBlendRate) * dt,
                                 0.0f, 1.0f);
-
-    // --- Aim. The command is where the driver wants to be pointed, not where
-    // they are pointed — the body has to come around to it. Everything that
-    // reads the aim, including the shots and the aim ring, follows the facing
-    // rather than the wish, so what's drawn is what will fire ---
-    if (cmd.aim.LengthSquared() > 1e-8f)
-    {
-        const float turnRate = kTurnRate * (cmd.steady ? kSteadyTurnScale : 1.0f);
-        unit.aimDir = TurnToward(unit.aimDir, cmd.aim, turnRate * dt);
-    }
 }
 
 void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)

@@ -27,10 +27,13 @@ namespace
     };
 
     constexpr ActionInfo kActions[Bindings::kActionCount] = {
+        // The TOML keys are the ones already sitting in players' files and
+        // stay put; the words changed when the walk did — forward is along
+        // the soldier now, and the sideways pair is a strafe across it.
         { "move_forward", "MOVE FORWARD", Key('W') },
         { "move_back",    "MOVE BACK",    Key('S') },
-        { "move_left",    "MOVE LEFT",    Key('A') },
-        { "move_right",   "MOVE RIGHT",   Key('D') },
+        { "move_left",    "STRAFE LEFT",  Key('A') },
+        { "move_right",   "STRAFE RIGHT", Key('D') },
         { "fire",         "FIRE",         Mouse(0) },
         { "reload",       "RELOAD",       Key('R') },
         { "grenade",      "GRENADE",      Key('F') },
