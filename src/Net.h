@@ -40,7 +40,12 @@ namespace Net
     // Join, and a mismatch is refused outright — two builds disagreeing about
     // what a byte means should fail at the door, not decode each other into
     // nonsense mid-match.
-    constexpr uint8_t kProtocolVersion = 5;
+    // 6: a command's walk is two body axes where it was a world direction.
+    // Same two floats on the wire, which is exactly why this had to move —
+    // shape here means what the bytes mean, and a build that missed the change
+    // would decode a heading as a sidestep and walk off at right angles rather
+    // than fail at anything.
+    constexpr uint8_t kProtocolVersion = 6;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
