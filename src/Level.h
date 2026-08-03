@@ -23,6 +23,17 @@ struct LevelData
         // (centered on x/z, rising from pos.y). Authored at scale 1; the
         // game multiplies it by `scale` so it tracks the model.
         std::optional<DirectX::XMFLOAT3> collider;
+        // Whether this collider also blocks line of sight. Unset — the usual
+        // case — means it's decided by height: anything standing at eye level
+        // hides what's behind it, and anything under it can be seen over.
+        //
+        // It's an override rather than a rule because height is the wrong
+        // question for thin things. A tree trunk is chest high and stops a
+        // round that happens to hit it, but nobody hides behind one: treating
+        // every trunk in a jungle as a sight-blocker would fill the fog with
+        // flickering slivers, and cost the visibility sweep — which is
+        // quadratic in occluders — far more than the trees are worth.
+        std::optional<bool> blocksSight;
     };
 
     struct Spawn

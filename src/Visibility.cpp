@@ -56,21 +56,26 @@ namespace Visibility
             AppendRectSegments(segments, r);
         AppendRectSegments(segments, { -arenaHalf, -arenaHalf, arenaHalf, arenaHalf });
 
-        // Three rays per unique endpoint: dead-on plus a nudge to either side,
-        // so corners produce both the near hit (on the edge) and the far hit
-        // (past the corner).
+        // Three rays per corner: dead-on plus a nudge to either side, so corners
+        // produce both the near hit (on the edge) and the far hit (past the
+        // corner). Cast off the rectangles rather than off the segments —
+        // every corner belongs to two edges, and casting per edge endpoint
+        // doubled the sweep for a second set of identical answers.
         std::vector<float> angles;
-        angles.reserve(segments.size() * 6);
-        for (const Segment& s : segments)
-        {
-            for (const XMFLOAT2& e : { s.a, s.b })
+        angles.reserve((occluders.size() + 1) * 12);
+        const auto corners = [&](const Rect& r) {
+            for (const XMFLOAT2& e : { XMFLOAT2{ r.minX, r.minZ }, XMFLOAT2{ r.maxX, r.minZ },
+                                       XMFLOAT2{ r.maxX, r.maxZ }, XMFLOAT2{ r.minX, r.maxZ } })
             {
                 const float a = std::atan2(e.y - viewer.y, e.x - viewer.x);
                 angles.push_back(a - kAngleEpsilon);
                 angles.push_back(a);
                 angles.push_back(a + kAngleEpsilon);
             }
-        }
+        };
+        for (const Rect& r : occluders)
+            corners(r);
+        corners({ -arenaHalf, -arenaHalf, arenaHalf, arenaHalf });
         std::sort(angles.begin(), angles.end());
 
         std::vector<XMFLOAT2> poly;

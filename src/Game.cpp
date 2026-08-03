@@ -69,10 +69,15 @@ namespace
 
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
-    constexpr XMFLOAT4 kGridMinor = { 0.10f, 0.13f, 0.17f, 1.0f };
-    constexpr XMFLOAT4 kGridMajor = { 0.17f, 0.22f, 0.29f, 1.0f };
-    constexpr XMFLOAT4 kBorder = { 0.55f, 0.25f, 0.20f, 1.0f };
-    constexpr XMFLOAT4 kObstacleColor = { 0.35f, 0.40f, 0.50f, 1.0f };
+    // The ground: jungle floor rather than the blue-grey the blockout arena
+    // wore. The grid still says how far away things are, it just does it in
+    // the colors of the place it's drawn on.
+    constexpr XMFLOAT4 kGridMinor = { 0.09f, 0.15f, 0.10f, 1.0f };
+    constexpr XMFLOAT4 kGridMajor = { 0.14f, 0.24f, 0.15f, 1.0f };
+    constexpr XMFLOAT4 kBorder = { 0.45f, 0.30f, 0.16f, 1.0f };
+    // Colliders with no model to draw them — the trench lines around the
+    // bases, today — are dug earth.
+    constexpr XMFLOAT4 kObstacleColor = { 0.40f, 0.33f, 0.22f, 1.0f };
     constexpr XMFLOAT4 kProjectileColor = { 1.00f, 0.80f, 0.20f, 1.0f };
     // A live grenade reads as a blinking casing rather than a tracer, so it
     // can't be mistaken for a bullet while it bounces.
@@ -256,7 +261,7 @@ void Game::LoadContent(Renderer& renderer)
 
     m_sound.Init(); // loads the wave bank and starts the ambience
 
-    const LevelData level = LevelData::Load("assets/levels/arena01.json");
+    const LevelData level = LevelData::Load("assets/levels/hardcore.json");
     m_team = std::min(m_team, static_cast<int>(level.spawns.size()) - 1);
 
     // The level splits down the same seam everything else does: the World

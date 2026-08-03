@@ -41,7 +41,12 @@ LevelData LevelData::Load(const std::string& path)
             obj.scale = jo.value("scale", 1.0f);
             obj.yaw = jo.value("yaw", 0.0f);
             if (jo.contains("collider"))
-                obj.collider = ToFloat3(jo.at("collider").at("size"));
+            {
+                const json& jc = jo.at("collider");
+                obj.collider = ToFloat3(jc.at("size"));
+                if (jc.contains("blocksSight"))
+                    obj.blocksSight = jc.at("blocksSight").get<bool>();
+            }
             if (obj.model.empty() && !obj.collider)
                 throw std::runtime_error(path + ": object needs a model, a collider, or both");
             level.objects.push_back(std::move(obj));

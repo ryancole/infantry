@@ -574,6 +574,11 @@ private:
     // opposing side is hurt, and only where the blast has line of sight, so
     // cover still protects.
     void ApplyBlast(const Vector3& center, float radius, float damage, int owner);
+    // Where `team`'s soldiers are trying to get to when they have nothing in
+    // sight: the nearest other team's spawn. What a brain is handed as its
+    // objective, and the only thing that makes a wander a push rather than a
+    // random walk.
+    Vector3 EnemySpawn(int team) const;
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     float Rand(float lo, float hi);

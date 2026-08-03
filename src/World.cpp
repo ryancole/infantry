@@ -170,7 +170,8 @@ void World::Init(const LevelData& level)
                            { m_arenaHalf * 2.0f, 1.0f, m_arenaHalf * 2.0f });
 
     // The simulation's half of each level object: collision box, and its
-    // footprint in the occluder list if it stands tall enough to block sight.
+    // footprint in the occluder list if it blocks sight — which is a question
+    // of height unless the level has an opinion of its own (LevelData::Object).
     for (const LevelData::Object& obj : level.objects)
     {
         if (!obj.collider)
@@ -181,7 +182,9 @@ void World::Init(const LevelData& level)
         m_colliders.push_back({ center, size, obj.model.empty() });
         m_physics.AddStaticBox(center, size);
 
-        if (center.y + size.y * 0.5f >= kEyeHeight && center.y - size.y * 0.5f <= kEyeHeight)
+        const bool spansEye =
+            center.y + size.y * 0.5f >= kEyeHeight && center.y - size.y * 0.5f <= kEyeHeight;
+        if (obj.blocksSight.value_or(spansEye))
             m_occluders.push_back({ center.x - size.x * 0.5f, center.z - size.z * 0.5f,
                                     center.x + size.x * 0.5f, center.z + size.z * 0.5f });
     }
@@ -886,6 +889,31 @@ void World::Emit(const Event& ev)
         m_out->push_back(ev);
 }
 
+DirectX::SimpleMath::Vector3 World::EnemySpawn(int team) const
+{
+    // The ground the other side comes from, which for a two-team match is the
+    // only other spawn on the level. Measured from this team's own spawn rather
+    // than from whoever is asking, so it's a fact about the side and not
+    // something that shifts under a soldier as they walk.
+    const Vector3 from = m_teamSpawns[team];
+    const Vector3* best = nullptr;
+    float nearest = 0.0f;
+    for (int i = 0; i < static_cast<int>(m_teamSpawns.size()); ++i)
+    {
+        if (i == team)
+            continue;
+        const float d = (m_teamSpawns[i] - from).LengthSquared();
+        if (!best || d < nearest)
+        {
+            best = &m_teamSpawns[i];
+            nearest = d;
+        }
+    }
+    // A level with one team has no enemy ground; the middle is as good an
+    // answer as there is, and nothing is fighting on it anyway.
+    return best ? *best : Vector3::Zero;
+}
+
 void World::ResolveObstacles(Vector3& pos) const
 {
     const float limit = m_arenaHalf - kPlayerHalf;
@@ -983,7 +1011,8 @@ void World::UpdateUnits(float dt)
         const WeaponDef& weapon = unit.cls->primary;
         const bool canFire =
             unit.fireCooldown <= 0.0f && unit.reloadTimer <= 0.0f && unit.ammo > 0;
-        const Brain::Senses senses = { unit.pos, unit.aimDir, &m_contacts, m_arenaHalf, canFire };
+        const Brain::Senses senses = { unit.pos,    unit.aimDir, &m_contacts,
+                                       m_arenaHalf, canFire,     EnemySpawn(unit.team) };
         const Brain::Intent intent =
             Brain::Think(unit.cls->brain, unit.mind, senses, dt, m_rng);
 

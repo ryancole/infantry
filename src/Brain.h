@@ -65,6 +65,14 @@ namespace Brain
         const std::vector<Contact>* enemies;
         float arenaHalf; // how far out there is anywhere to walk to
         bool canFire;    // loaded and off the cadence: a brain may want to act on being empty
+        // The ground this soldier's side is trying to reach — the enemy's
+        // spawn. Not an order and not a route: it's the one fact that tells a
+        // soldier with nothing in sight which way the fight is, and without it
+        // a wander is a random walk. On an open arena a random walk finds the
+        // other squad in seconds; put something in the middle that has to be
+        // gone around and it doesn't find them at all, because nothing about
+        // walking nowhere in particular ever crosses the map.
+        Vector3 objective;
     };
 
     // What the soldier wants. Directions are unit vectors or zero; nothing here
