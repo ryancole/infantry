@@ -23,6 +23,17 @@ struct LevelData
         // (centered on x/z, rising from pos.y). Authored at scale 1; the
         // game multiplies it by `scale` so it tracks the model.
         std::optional<DirectX::XMFLOAT3> collider;
+        // Whether this collider also blocks line of sight. Unset — the usual
+        // case — means it's decided by height: anything standing at eye level
+        // hides what's behind it, and anything under it can be seen over.
+        //
+        // It's an override rather than a rule because height is the wrong
+        // question for thin things. A tree trunk is chest high and stops a
+        // round that happens to hit it, but nobody hides behind one: treating
+        // every trunk in a jungle as a sight-blocker would fill the fog with
+        // flickering slivers, and cost the visibility sweep — which is
+        // quadratic in occluders — far more than the trees are worth.
+        std::optional<bool> blocksSight;
     };
 
     struct Spawn
@@ -32,7 +43,12 @@ struct LevelData
     };
 
     std::string name;
-    float arenaHalf = 32.0f; // arena spans [-arenaHalf, arenaHalf] on x and z
+    // Arena half-extents: it spans [-x, x] and [-z, z] about the origin. Two
+    // numbers rather than one because a map is not obliged to be square — a
+    // fight between two bases with something in the middle to go around wants
+    // to be long in the direction the bases face and no deeper than the going
+    // around is worth. `"halfExtent": 32` still means a 64-unit square.
+    DirectX::XMFLOAT2 arenaHalf = { 32.0f, 32.0f };
     std::vector<Object> objects;
     // One spawn per team. Load enforces team ids 0..N-1 with no gaps or
     // duplicates and sorts by team, so spawns.size() is the level's team count

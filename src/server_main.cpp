@@ -29,6 +29,11 @@ int main(int argc, char** argv)
     // Unattended is the default: a server's natural lifespan is "until told".
     const float runSeconds = argc > 1 ? static_cast<float>(std::atof(argv[1])) : 0.0f;
 
+    // Optional level path, since there is more than one of them now. A client
+    // still draws whatever its own copy loads, so this is for smoke tests and
+    // for a host who knows what their players are running.
+    const char* levelPath = argc > 2 ? argv[2] : nullptr;
+
     // A dedicated server is the public shape of the same class the client
     // embeds: the well-known port, every interface, listed on the LAN, and
     // narrating what happens to it.
@@ -37,6 +42,8 @@ int main(int argc, char** argv)
     config.port = Net::kPort;
     config.discoverable = true;
     config.log = true;
+    if (levelPath)
+        config.level = levelPath;
     try
     {
         if (!server.Start(config))
@@ -52,9 +59,10 @@ int main(int argc, char** argv)
     }
 
     const World& world = server.Match();
-    std::printf("infantry_server: port %u, arena %.0f half-units, %d a side, tick %d Hz, "
+    std::printf("infantry_server: %s, port %u, arena %.0f x %.0f, %d a side, tick %d Hz, "
                 "match %.0f min\n",
-                server.Port(), world.ArenaHalf(), World::kTeamSize,
+                config.level.c_str(), server.Port(), world.ArenaHalf().x * 2.0f,
+                world.ArenaHalf().y * 2.0f, World::kTeamSize,
                 static_cast<int>(1.0f / World::kTickDt + 0.5f), World::kMatchLength / 60.0f);
 
     LARGE_INTEGER freq, prev;

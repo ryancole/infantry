@@ -18,11 +18,12 @@ namespace Visibility
     // Rays are cast at every occluder corner (plus the arena corners), so
     // consecutive points always span a straight run of the same edge — the
     // region between viewer and the polygon is exactly what can be seen.
-    // Everything is clipped to the arena square, which doubles as the far
-    // boundary: outside the arena nothing is ever visible.
+    // Everything is clipped to the arena, which doubles as the far boundary:
+    // outside it nothing is ever visible. `arenaHalf` is the half-extent on x
+    // and z — the arena is a rectangle, not necessarily a square.
     std::vector<DirectX::XMFLOAT2> ComputePolygon(const DirectX::XMFLOAT2& viewer,
                                                   const std::vector<Rect>& occluders,
-                                                  float arenaHalf);
+                                                  const DirectX::XMFLOAT2& arenaHalf);
 
     // True if the open segment viewer->point crosses no occluder. Used to
     // cull entities (projectiles, later enemies) the player cannot see.

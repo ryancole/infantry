@@ -71,17 +71,36 @@ namespace
             return intent;
         }
 
-        // Nothing to shoot at: pick somewhere and walk there, then pick
-        // somewhere else. The repick timer runs whether or not the walk is
-        // finished, so a soldier stuck against a corner gives up on it instead
-        // of leaning on the wall for the rest of the round.
+        // Nothing to shoot at: move up. Somewhere is picked at random the way
+        // it always was, but only somewhere that stands closer to the enemy's
+        // ground than this soldier does now — so a walk with nothing to walk
+        // toward still spends itself crossing the map, and a squad that can't
+        // see anybody drifts forward instead of milling about its own half.
+        //
+        // Deliberately not a route: any point that makes progress will do, so
+        // the flanks get taken as readily as the middle and a mountain in the
+        // way is gone around by soldiers who have never heard of it. What it
+        // costs is that a soldier pressed flat against something can pick a
+        // point on the far side of it — which the repick timer below answers,
+        // the same way it always answered a soldier leaning on a corner.
         mem.repickTimer -= dt;
         const Vector3 toTarget = mem.wanderTarget - senses.pos;
         const float dist = toTarget.Length();
         if (dist < 1.0f || mem.repickTimer <= 0.0f)
         {
-            const float margin = senses.arenaHalf - 2.0f;
-            mem.wanderTarget = { Rand(rng, -margin, margin), 0.0f, Rand(rng, -margin, margin) };
+            const float marginX = senses.arenaHalf.x - 2.0f;
+            const float marginZ = senses.arenaHalf.y - 2.0f;
+            const float progress = (senses.objective - senses.pos).Length();
+            // A handful of tries, then whatever came up: a soldier standing on
+            // the objective has nowhere closer to be, and the walk is the point
+            // rather than the arrival.
+            for (int tries = 0; tries < 8; ++tries)
+            {
+                mem.wanderTarget = { Rand(rng, -marginX, marginX), 0.0f,
+                                     Rand(rng, -marginZ, marginZ) };
+                if ((senses.objective - mem.wanderTarget).Length() < progress)
+                    break;
+            }
             mem.repickTimer = Rand(rng, 4.0f, 8.0f);
             return intent; // stands still for the frame it's deciding
         }

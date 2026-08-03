@@ -46,7 +46,10 @@ public:
         // server's only window on the match it's running; a client has no
         // console to narrate to.
         bool log = false;
-        std::string level = "assets/levels/arena01.json";
+        // Has to match what the client draws: a level is loaded twice, once
+        // for the collision that decides the match and once for the scenery,
+        // and nothing negotiates which one at the door yet.
+        std::string level = "assets/levels/hardcorps2t.json";
     };
 
     Server();
