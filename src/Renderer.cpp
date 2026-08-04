@@ -16,7 +16,14 @@ using namespace DirectX;
 namespace
 {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-    constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
+    // Depth with a stencil byte beside it: the fog of war marks the ground its
+    // side can see there (Renderer::MarkSeen). 24 bits of depth rather than 32
+    // costs nothing here — the camera is orthographic, so depth is linear and
+    // an arena's worth of it is precise to well under a millimeter.
+    constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    // The value MarkSeen stamps and DrawTrianglesUnseen tests against. Set on
+    // the command list once a frame; nothing else in the scene uses stencil.
+    constexpr UINT kStencilSeen = 1;
 
     // Post-process tuning. The extract threshold is high enough that only
     // genuinely bright pixels (projectiles, aim line, vivid class colors)
@@ -150,6 +157,8 @@ void Renderer::Shutdown()
     m_lineEffect.reset();
     m_alphaEffect.reset();
     m_alphaLineEffect.reset();
+    m_seenEffect.reset();
+    m_unseenEffect.reset();
     m_modelEffect.reset();
     m_texModelEffect.reset();
     m_screenTriEffect.reset();
@@ -247,6 +256,39 @@ void Renderer::CreateEffects()
         CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
     m_alphaLineEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
                                                       alphaLineDesc);
+
+    // The fog's mask pass: alpha states for the depth handling, a write mask
+    // of nothing so it paints no pixels, and a stencil op that stamps the
+    // reference value wherever it draws.
+    D3D12_BLEND_DESC noColor = CommonStates::Opaque;
+    noColor.RenderTarget[0].RenderTargetWriteMask = 0;
+
+    D3D12_DEPTH_STENCIL_DESC markStencil = CommonStates::DepthRead;
+    markStencil.StencilEnable = TRUE;
+    markStencil.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    markStencil.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    markStencil.FrontFace = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                              D3D12_STENCIL_OP_REPLACE, D3D12_COMPARISON_FUNC_ALWAYS };
+    markStencil.BackFace = markStencil.FrontFace;
+
+    const EffectPipelineStateDescription seenDesc(
+        &Vertex::InputLayout, noColor, markStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_seenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                 seenDesc);
+
+    // And the pass that reads it: the same blend the other overlays use, drawn
+    // only where the mark isn't.
+    D3D12_DEPTH_STENCIL_DESC unseenStencil = markStencil;
+    unseenStencil.FrontFace = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_NOT_EQUAL };
+    unseenStencil.BackFace = unseenStencil.FrontFace;
+
+    const EffectPipelineStateDescription unseenDesc(
+        &Vertex::InputLayout, CommonStates::AlphaBlend, unseenStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_unseenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                   unseenDesc);
 
     const EffectPipelineStateDescription modelDesc(
         &VertexPositionNormalTexture::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
@@ -603,9 +645,13 @@ void Renderer::BeginFrame(const float clearColor[4])
 
     m_cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
     m_cmdList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    m_cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    m_cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+                                     1.0f, 0, 0, nullptr);
     m_cmdList->RSSetViewports(1, &m_viewport);
     m_cmdList->RSSetScissorRects(1, &m_scissor);
+    // The fog's two passes stamp and test this; every other pass ignores the
+    // stencil entirely, so it's set once here and never touched again.
+    m_cmdList->OMSetStencilRef(kStencilSeen);
 
     ID3D12DescriptorHeap* heaps[] = { m_srvPile->Heap(), m_states->Heap() };
     m_cmdList->SetDescriptorHeaps(static_cast<UINT>(std::size(heaps)), heaps);
@@ -665,6 +711,16 @@ void Renderer::DrawTrianglesAlpha(const Vertex* verts, uint32_t count, const XMM
 void Renderer::DrawLinesAlpha(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
     DrawBatch(verts, count, world, m_alphaLineEffect.get(), D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+}
+
+void Renderer::MarkSeen(const Vertex* verts, uint32_t count, const XMMATRIX& world)
+{
+    DrawBatch(verts, count, world, m_seenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void Renderer::DrawTrianglesUnseen(const Vertex* verts, uint32_t count, const XMMATRIX& world)
+{
+    DrawBatch(verts, count, world, m_unseenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& world,

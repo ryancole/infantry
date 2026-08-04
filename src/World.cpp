@@ -19,12 +19,6 @@ namespace
     // player into the arena doesn't also fire their first shot.
     constexpr float kFireGrace = 0.3f;
 
-    // How far an NPC can make anyone out at all — a fact about eyesight, not a
-    // decision, which is why it's here and the range a brain chooses to fight
-    // at is in Brain.cpp. Generous on purpose: it has to sit above whatever the
-    // hungriest brain wants, or that brain quietly gets capped by a number it
-    // can't see and nothing anywhere says so.
-    constexpr float kNpcSightRange = 30.0f;
     // Random spread per shot, which keeps NPCs beatable up close and long-range
     // sniper duels survivable. A property of the whole AI rather than of any
     // one mind, so the body applies it.
@@ -377,6 +371,13 @@ int World::Standing(int team) const
     return static_cast<int>(std::count_if(m_units.begin(), m_units.end(), [team](const Unit& u) {
         return u.team == team && u.hp > 0.0f;
     }));
+}
+
+void World::TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except) const
+{
+    for (const Unit& u : m_units)
+        if (u.team == team && u.hp > 0.0f && u.id != except)
+            out.push_back({ u.pos.x, u.pos.z });
 }
 
 void World::RemoveUnit(int id)
@@ -1033,7 +1034,7 @@ void World::UpdateUnits(float dt)
         const Vector2 unitXZ = { unit.pos.x, unit.pos.z };
         const auto sight = [&](const Vector3& pos) {
             const float d = Vector2(pos.x - unit.pos.x, pos.z - unit.pos.z).Length();
-            if (d < 1e-3f || d > kNpcSightRange)
+            if (d < 1e-3f || d > kSightRange)
                 return;
             if (Visibility::IsPointVisible(unitXZ, { pos.x, pos.z }, m_occluders))
                 m_contacts.push_back({ pos, d });

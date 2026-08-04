@@ -17,6 +17,12 @@ namespace
     // edge that ends at the corner and whatever lies beyond it.
     constexpr float kAngleEpsilon = 1e-4f;
 
+    // Rays spent on the far edge of sight, where the range cuts it rather than
+    // a wall. A hundred and twenty-eight leaves the arc's widest bow under a
+    // hundredth of a unit at the ranges this game sees — a fraction of a pixel
+    // — and costs a fraction of the rays the corners already ask for.
+    constexpr int kArcRays = 128;
+
     // Distance along the ray (origin p, unit direction d) to the segment, or
     // infinity if they miss.
     float RayHit(const XMFLOAT2& p, const XMFLOAT2& d, const Segment& s)
@@ -41,7 +47,7 @@ namespace Visibility
 {
     std::vector<XMFLOAT2> ComputePolygon(const XMFLOAT2& viewer,
                                          const std::vector<Rect>& occluders,
-                                         const XMFLOAT2& arenaHalf)
+                                         const XMFLOAT2& arenaHalf, float range)
     {
         const Rect bounds = { -arenaHalf.x, -arenaHalf.y, arenaHalf.x, arenaHalf.y };
 
@@ -51,7 +57,13 @@ namespace Visibility
         // every corner belongs to two edges, and casting per edge endpoint
         // doubled the sweep for a second set of identical answers.
         std::vector<float> angles;
-        angles.reserve((occluders.size() + 1) * 12);
+        angles.reserve((occluders.size() + 1) * 12 + kArcRays);
+        // The ring the range makes, cast whether or not anything is out there:
+        // in the open the corner rays are far apart or absent, and the far edge
+        // of sight has to be round on its own account. Fine enough that the
+        // chords between them read as an arc at any zoom the camera offers.
+        for (int i = 0; i < kArcRays; ++i)
+            angles.push_back(-3.14159265f + 6.28318531f * (static_cast<float>(i) / kArcRays));
         const auto corners = [&](const Rect& r) {
             for (const XMFLOAT2& e : { XMFLOAT2{ r.minX, r.minZ }, XMFLOAT2{ r.maxX, r.minZ },
                                        XMFLOAT2{ r.maxX, r.maxZ }, XMFLOAT2{ r.minX, r.maxZ } })
@@ -152,6 +164,9 @@ namespace Visibility
                 nearest = std::min(nearest, RayHit(viewer, dir, s));
             if (!std::isfinite(nearest)) // viewer outside the arena; skip
                 continue;
+            // Tested against the walls first and cut to the range after: what
+            // the eye reaches is whichever comes sooner.
+            nearest = std::min(nearest, range);
             poly.push_back({ viewer.x + dir.x * nearest, viewer.y + dir.y * nearest });
         }
         return poly;
@@ -191,5 +206,19 @@ namespace Visibility
                 return false;
         }
         return true;
+    }
+
+    bool IsPointVisibleAny(const std::vector<XMFLOAT2>& eyes, const XMFLOAT2& point,
+                           const std::vector<Rect>& occluders, float range)
+    {
+        const float rangeSq = range * range;
+        for (const XMFLOAT2& eye : eyes)
+        {
+            const float dx = point.x - eye.x;
+            const float dz = point.y - eye.y;
+            if (dx * dx + dz * dz <= rangeSq && IsPointVisible(eye, point, occluders))
+                return true;
+        }
+        return false;
     }
 }

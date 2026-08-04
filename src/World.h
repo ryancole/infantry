@@ -208,6 +208,25 @@ public:
     // those so far; when a server decides team sizes, this is what it sets.
     static constexpr int kTeamSize = 5;
 
+    // How far a soldier can make anything out at all: the radius of the fog of
+    // war, and the same number whether a person or a brain is behind the eyes —
+    // which is the point of it being one constant. Sight is this and a clear
+    // line both; a wall inside the radius still stops it dead.
+    //
+    // Thirty is chosen against three things. It is comfortably past the
+    // deadliest shot in the game — the sniper's bolt drops into the ground
+    // around thirty-six units out, and a class called LONG RANGE that cannot
+    // see what it is shooting at would be a bad joke — and past what any brain
+    // wants to fight at, so an NPC is never quietly capped by an eyesight
+    // number nothing reports. It is under earshot (Sound::kRange, forty-five),
+    // so the map you hear is always wider than the map you see, and gunfire
+    // out of the dark is a thing that happens to you. And it is wider than the
+    // screen at the zoom the camera opens on, so the fog is a fact about walls
+    // and distance rather than a circle painted around the player: you meet
+    // its edge by zooming out or by looking down a corridor, not by standing
+    // still.
+    static constexpr float kSightRange = 30.0f;
+
     // How long a match lasts, and what the whole thing is for: at the end of
     // it the side that has killed more has won. Fifteen minutes is long
     // enough that one good push doesn't decide it and short enough that a
@@ -393,6 +412,19 @@ public:
     // filtered roster only holds what this client is allowed to see and the
     // corner panel is a scoreboard, not a wallhack.
     int Standing(int team) const;
+
+    // Where a side is looking from: the ground position of every living
+    // soldier on `team`, appended to `out`. A side sees with all of its eyes at
+    // once — what one soldier has line of sight to, the whole side has — so
+    // this list, rather than one point, is what the fog of war and the
+    // snapshot's filter are both built from, and building it here is what
+    // keeps them building it the same way.
+    //
+    // `except` leaves one soldier out by unit id, for the caller that has a
+    // better answer for that one than the roster does: a viewer's own eye is
+    // their predicted position on a client and their last standing place while
+    // they're dead, and it goes in the list ahead of this call.
+    void TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except = -1) const;
 
     // --- The match: a clock, a score, and the one thing they decide.
     //

@@ -21,12 +21,29 @@ namespace Visibility
     // Everything is clipped to the arena, which doubles as the far boundary:
     // outside it nothing is ever visible. `arenaHalf` is the half-extent on x
     // and z — the arena is a rectangle, not necessarily a square.
+    //
+    // `range` is how far the eye reaches: no ray is allowed past it, so open
+    // ground ends in an arc rather than at a wall. The arc is why the sweep
+    // casts a ring of evenly spaced rays as well as the ones the corners ask
+    // for — without them a polygon in the open would be whatever few-sided
+    // shape the corners happened to make of a circle.
     std::vector<DirectX::XMFLOAT2> ComputePolygon(const DirectX::XMFLOAT2& viewer,
                                                   const std::vector<Rect>& occluders,
-                                                  const DirectX::XMFLOAT2& arenaHalf);
+                                                  const DirectX::XMFLOAT2& arenaHalf,
+                                                  float range);
 
     // True if the open segment viewer->point crosses no occluder. Used to
     // cull entities (projectiles, later enemies) the player cannot see.
     bool IsPointVisible(const DirectX::XMFLOAT2& viewer, const DirectX::XMFLOAT2& point,
                         const std::vector<Rect>& occluders);
+
+    // The same test from several eyes at once, each of them reaching `range`:
+    // true if any has both the distance and a clear line. What a side sees is
+    // what its soldiers see between them, so one eye out of five is the whole
+    // answer and the rest of the list goes untested. The distance is checked
+    // first, which is also what makes a list of eyes cheap — most of them are
+    // nowhere near the point being asked about.
+    bool IsPointVisibleAny(const std::vector<DirectX::XMFLOAT2>& eyes,
+                           const DirectX::XMFLOAT2& point, const std::vector<Rect>& occluders,
+                           float range);
 }

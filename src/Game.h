@@ -238,7 +238,14 @@ private:
     // Positional one-shot SFX: panned and attenuated relative to the player.
     void PlaySoundAt(const std::string& name, const Vector3& pos, float pitch = 0.0f);
     float Rand(float lo, float hi);
-    void AppendFog(std::vector<Vertex>& out) const;
+    // Rebuilds m_teamEyes for the frame about to be drawn.
+    void UpdateTeamEyes();
+    // One eye's share of the fog: the ground it can see, as a fan of triangles
+    // back to it. Marked rather than painted — see Renderer::MarkSeen.
+    void AppendSight(const DirectX::XMFLOAT2& eye, std::vector<Vertex>& out) const;
+    // The dark sheet that follows the marks, covering everything nobody on the
+    // player's side can see.
+    void AppendFogSheet(std::vector<Vertex>& out) const;
     void RenderHud(Renderer& renderer);
 
     // The whole match, behind its seam — always a replica the server's
@@ -336,6 +343,15 @@ private:
     // the body instead of snapping to nowhere when the unit comes off the
     // roster.
     Vector3 m_eyePos;
+    // Everywhere the player's side is looking from this frame: their own eye
+    // above, then every living squadmate. Sight is shared across a side — what
+    // one of them can see, all of them can — so this list is what the fog is
+    // cut with and what every "can I see that" in Render asks, and it's the
+    // same list the server filtered the snapshot through before sending it
+    // (World::TeamEyes, Net::WriteSnapshotVisible). Rebuilt once a frame
+    // rather than per test, since the polygon sweep is the expensive part and
+    // it runs once per eye.
+    std::vector<DirectX::XMFLOAT2> m_teamEyes;
     // Which way is right on screen, in world space, taken off the camera during
     // Update because Render isn't handed one. It's what stands a health bar
     // square to the view. Read a frame later than it's written, which costs

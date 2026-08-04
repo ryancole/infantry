@@ -1280,48 +1280,69 @@ void Game::RemoveCorpse(size_t index)
     m_corpses.erase(m_corpses.begin() + index);
 }
 
-// Builds the fog overlay: the visibility polygon splits the world into
-// angular wedges around the player, and for each boundary run between
-// consecutive polygon points the far side gets a dark quad (boundary edge
-// extruded radially outward). Wedges partition the plane by angle, so the
-// semi-transparent quads never overlap and nothing double-darkens.
-void Game::AppendFog(std::vector<Vertex>& out) const
+// Who the player's side is seeing through, for the frame about to be drawn:
+// their own eye — the drawn one, so the fog answers the keys on the frame the
+// body does, and the spot they fell on once they're dead — and every living
+// squadmate. That the same list is built on the server (World::TeamEyes, from
+// the same World) is what keeps a spotted enemy from arriving in the snapshot
+// only to be culled back out here.
+void Game::UpdateTeamEyes()
 {
-    const Vector2 viewer = { m_eyePos.x, m_eyePos.z };
+    m_teamEyes.clear();
+    m_teamEyes.push_back({ m_eyePos.x, m_eyePos.z });
+    m_world.TeamEyes(m_team, m_teamEyes, m_myUnitId);
+}
+
+// One eye's share of the fog mask. The visibility polygon around it is
+// star-shaped by construction — consecutive points always span a straight run
+// of one edge, or one chord of the arc where the range ran out before a wall
+// did — so a fan of triangles back to the eye is exactly the ground that eye
+// can see, and the mask is the union of those fans over the squad.
+//
+// Which is why the fog is a mask now rather than dark quads laid over the
+// gaps: darkness doesn't union. Drawn per soldier it would double up wherever
+// two of them see the same ground, and it would cover ground one of them sees
+// perfectly well.
+void Game::AppendSight(const XMFLOAT2& eye, std::vector<Vertex>& out) const
+{
     const std::vector<XMFLOAT2> poly =
-        Visibility::ComputePolygon(viewer, m_world.Occluders(), m_world.ArenaHalf());
-    if (poly.size() < 2)
+        Visibility::ComputePolygon(eye, m_world.Occluders(), m_world.ArenaHalf(),
+                                   World::kSightRange);
+    if (poly.size() < 3)
         return;
 
-    // Far enough to leave the arena from anywhere in it, whichever way it runs.
-    const float farDist = std::max(m_world.ArenaHalf().x, m_world.ArenaHalf().y) * kFogFar;
-    const auto extrude = [&](const Vector2& v) -> Vector2 {
-        const Vector2 d = v - viewer;
-        const float len = d.Length();
-        if (len < 1e-5f)
-            return v;
-        return viewer + d * (farDist / len);
-    };
-
+    const Vertex center = { XMFLOAT3{ eye.x, kFogHeight, eye.y }, kFogColor };
     for (size_t i = 0; i < poly.size(); ++i)
     {
-        const Vector2 a = poly[i];
-        const Vector2 b = poly[(i + 1) % poly.size()];
-        const Vector2 af = extrude(a);
-        const Vector2 bf = extrude(b);
-        const Vertex quad[4] = {
-            { XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor },
-            { XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor },
-            { XMFLOAT3{ bf.x, kFogHeight, bf.y }, kFogColor },
-            { XMFLOAT3{ af.x, kFogHeight, af.y }, kFogColor },
-        };
-        out.push_back(quad[0]);
-        out.push_back(quad[1]);
-        out.push_back(quad[2]);
-        out.push_back(quad[0]);
-        out.push_back(quad[2]);
-        out.push_back(quad[3]);
+        const XMFLOAT2& a = poly[i];
+        const XMFLOAT2& b = poly[(i + 1) % poly.size()];
+        out.push_back(center);
+        out.push_back({ XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor });
+        out.push_back({ XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor });
     }
+}
+
+// And the darkness itself: one sheet over the player, wide enough to leave the
+// arena in any direction, so the ground nobody on their side can see — the
+// far side of every wall, and the void past the map's edge — runs off all four
+// edges of the screen.
+void Game::AppendFogSheet(std::vector<Vertex>& out) const
+{
+    const float reach = std::max(m_world.ArenaHalf().x, m_world.ArenaHalf().y) * kFogFar;
+    const float x0 = m_eyePos.x - reach, x1 = m_eyePos.x + reach;
+    const float z0 = m_eyePos.z - reach, z1 = m_eyePos.z + reach;
+    const Vertex quad[4] = {
+        { XMFLOAT3{ x0, kFogHeight, z0 }, kFogColor },
+        { XMFLOAT3{ x1, kFogHeight, z0 }, kFogColor },
+        { XMFLOAT3{ x1, kFogHeight, z1 }, kFogColor },
+        { XMFLOAT3{ x0, kFogHeight, z1 }, kFogColor },
+    };
+    out.push_back(quad[0]);
+    out.push_back(quad[1]);
+    out.push_back(quad[2]);
+    out.push_back(quad[0]);
+    out.push_back(quad[2]);
+    out.push_back(quad[3]);
 }
 
 void Game::Render(Renderer& renderer)
@@ -1395,14 +1416,18 @@ void Game::Render(Renderer& renderer)
                                    XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
                                kObstacleColor);
 
-    // The soldiers, off the World's roster. Anyone the player can't see stays
-    // hidden — an enemy behind a wall disappears until it re-emerges. The
-    // local unit skips both tests: the camera follows them, so they're always
-    // on screen, and they are the eye the fog is drawn for. While the player
-    // is dead there's no local unit to draw — what's standing at m_eyePos is
-    // their corpse, and the view stays on it.
+    // The soldiers, off the World's roster. An enemy nobody on the player's
+    // side can see stays hidden — behind a wall, or simply out past what any
+    // of them can make out, they disappear until somebody on the squad gets
+    // eyes on them again. The player's own side skips the test: where
+    // your squad is standing is not something the fog was ever keeping from
+    // you, and a soldier who vanished on turning a corner would be one nobody
+    // could fight alongside. The local unit skips the frustum test too — the
+    // camera follows them, so they're always on screen. While the player is
+    // dead there's no local unit to draw: what's standing at m_eyePos is their
+    // corpse, and the view stays on it.
+    UpdateTeamEyes();
     m_scratch.clear();
-    const XMFLOAT2 eye = { m_eyePos.x, m_eyePos.z };
     // The moment between two ticks that this frame is a picture of. Every
     // soldier is drawn at the blend of where the last tick left them and
     // where this one put them; a display running faster than the simulation
@@ -1432,7 +1457,9 @@ void Game::Render(Renderer& renderer)
             if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
                                           kSoldierBoundsRadius))
                 continue;
-            if (!Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
+            if (unit.team != m_team &&
+                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
+                                               World::kSightRange))
                 continue;
         }
         DrawSoldier(renderer, pos, blendDir(src.prevAimDir, src.aimDir, a),
@@ -1450,7 +1477,8 @@ void Game::Render(Renderer& renderer)
             m_world.Phys().GetTransform(corpse.parts[Soldier::Pelvis]);
         if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
             continue;
-        if (!Visibility::IsPointVisible(eye, { pelvis.pos.x, pelvis.pos.z }, m_world.Occluders()))
+        if (!Visibility::IsPointVisibleAny(m_teamEyes, { pelvis.pos.x, pelvis.pos.z },
+                                           m_world.Occluders(), World::kSightRange))
             continue;
 
         // Sinking is a drawing trick, not a physical one: the bodies stay put
@@ -1472,7 +1500,8 @@ void Game::Render(Renderer& renderer)
     for (const World::Projectile& shot : m_world.Projectiles())
     {
         const Vector3& pos = shot.pos;
-        if (Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
+        if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
+                                          World::kSightRange))
         {
             // Per-shot radius, not the class's: a thrown grenade is a fatter
             // projectile than most primaries fire.
@@ -1488,7 +1517,8 @@ void Game::Render(Renderer& renderer)
     // projectiles: a burst behind a wall stays hidden.
     for (const Particle& p : m_particles)
     {
-        if (!Visibility::IsPointVisible(eye, { p.pos.x, p.pos.z }, m_world.Occluders()))
+        if (!Visibility::IsPointVisibleAny(m_teamEyes, { p.pos.x, p.pos.z }, m_world.Occluders(),
+                                           World::kSightRange))
             continue;
         const float s = p.size * (p.life / p.maxLife);
         AppendCube(m_scratch, p.pos, { s, s, s }, p.color);
@@ -1512,11 +1542,21 @@ void Game::Render(Renderer& renderer)
                                 identity);
 
     // Fog of war goes on after all opaque geometry so it blends over the
-    // floor while walls (which wrote depth) still punch through it.
+    // floor while walls (which wrote depth) still punch through it. Every eye
+    // on the player's side marks what it can see first — a pass each, since a
+    // squad's worth of fans over a real map's occluders can outgrow the batch,
+    // and the mark cares about neither order nor overlap — and then one dark
+    // sheet lands on everything left unmarked.
+    for (const XMFLOAT2& eye : m_teamEyes)
+    {
+        m_fogVerts.clear();
+        AppendSight(eye, m_fogVerts);
+        renderer.MarkSeen(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()), identity);
+    }
     m_fogVerts.clear();
-    AppendFog(m_fogVerts);
-    renderer.DrawTrianglesAlpha(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
-                                identity);
+    AppendFogSheet(m_fogVerts);
+    renderer.DrawTrianglesUnseen(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
+                                 identity);
 
     // What the player's ability lets them see that nobody else does — for the
     // medic, squadmate health over the heads of the wounded. Which soldiers are
@@ -1617,9 +1657,9 @@ void Game::Render(Renderer& renderer)
         Ability::AppendIndicator(u.cls->ability, u.ability, lpos, m_scratch);
 
         // Friend or foe, for everyone but the player: a ring under the soldiers
-        // on their own side. Same visibility rule the bodies themselves get —
-        // a marker that showed through a wall would be a squadmate radar, which
-        // is a different feature and one the fog of war exists to deny.
+        // on their own side. Same visibility rule the bodies themselves get,
+        // which is now no rule at all — a squad knows where it is, so the ring
+        // goes under every squadmate the frustum can reach, wall or no wall.
         const XMFLOAT4& teamTint = TeamColor(m_team);
         const XMFLOAT4 ringColor = { teamTint.x, teamTint.y, teamTint.z, kFriendlyRingAlpha };
         for (const Unit& other : m_world.Units())
@@ -1629,8 +1669,6 @@ void Game::Render(Renderer& renderer)
             const Vector3 pos = Vector3::Lerp(other.prevPos, other.pos, alpha);
             if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
                                           kSoldierBoundsRadius))
-                continue;
-            if (!Visibility::IsPointVisible(eye, { pos.x, pos.z }, m_world.Occluders()))
                 continue;
             AppendCircle(m_scratch, { pos.x, kAimRingHeight, pos.z }, kFriendlyRingRadius,
                          ringColor);
