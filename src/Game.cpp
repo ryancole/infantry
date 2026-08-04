@@ -97,6 +97,15 @@ namespace
     // The grenade's ring is orange, so it never reads as part of the primary's
     // yellow aim line.
     constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
+    // The dead ground in front of a weapon with a minimum range — the sniper's
+    // and nobody else's. Drawn in the spent grey rather than the aim's yellow
+    // because it means the same thing that color already means everywhere else
+    // on this indicator: pointing here does nothing. The ring is the honest
+    // shape of the rule (it's a radius, not a point on the line) and the shaft
+    // inside it is greyed to say which end of the line the ring is talking
+    // about; where they cross is the near edge of the class's reach.
+    constexpr XMFLOAT4 kDeadRangeColor = { 0.62f, 0.64f, 0.68f, 0.30f };
+    constexpr XMFLOAT4 kDeadRangeDimColor = { 0.62f, 0.64f, 0.68f, 0.14f };
     constexpr float kAimRingHeight = 0.05f;    // above the fog quads, so it isn't dimmed
     constexpr float kGrenadeMarkRadius = 0.5f; // first-bounce marker, not the blast size
     // The swing: a pale arc swept at the blade's real reach, fading out over an
@@ -1735,11 +1744,25 @@ void Game::Render(Renderer& renderer)
 
         m_world.PredictShotStop(u.cls->primary, lpos, laim, m_aimDist, &m_aimArc);
 
+        // The near edge of what this weapon can do, for the one class that has
+        // one. Everything inside it is ground the primary is useless on, so
+        // that stretch of the line is drawn as dead rather than as aim — the
+        // player should be able to see, without reading anything, that the
+        // first stride in front of them isn't theirs. At 0 the test is never
+        // true and nothing about the indicator changes, which is every class
+        // but the sniper.
+        const float minRange = u.cls->primary.minRange;
+        const auto inDeadGround = [&](const Vector3& p) {
+            const float dx = p.x - lpos.x, dz = p.z - lpos.z;
+            return dx * dx + dz * dz < minRange * minRange;
+        };
+
         m_scratch.clear();
         for (size_t i = 1; i < m_aimArc.size(); ++i)
         {
-            m_scratch.push_back({ m_aimArc[i - 1], aimDim });
-            m_scratch.push_back({ m_aimArc[i], aimDim });
+            const XMFLOAT4& shaft = inDeadGround(m_aimArc[i]) ? kDeadRangeDimColor : aimDim;
+            m_scratch.push_back({ m_aimArc[i - 1], shaft });
+            m_scratch.push_back({ m_aimArc[i], shaft });
         }
 
         // End-of-flight tick, perpendicular to the aim direction, at the
@@ -1748,6 +1771,16 @@ void Game::Render(Renderer& renderer)
         const float px = -laim.z * 0.45f, pz = laim.x * 0.45f;
         m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, aimColor });
         m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, aimColor });
+
+        // ...and the near end as a ring on the ground around the soldier,
+        // because that is the shape the rule actually has: a body anywhere
+        // inside it is one this weapon passes through, whichever way the gun is
+        // pointed. It sits under the soldier at the height every other ground
+        // ring uses, and it never greys out with the reload — the dead ground
+        // is a fact about the weapon rather than about its state.
+        if (minRange > 0.0f)
+            AppendCircle(m_scratch, { lpos.x, kAimRingHeight, lpos.z }, minRange,
+                         kDeadRangeColor);
 
         if (u.cls->primary.lobVelocity > 0.0f)
             AppendCircle(m_scratch, end, 0.4f, aimColor);
