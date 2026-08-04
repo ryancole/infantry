@@ -14,6 +14,18 @@ namespace Visibility
         float minX, minZ, maxX, maxZ;
     };
 
+    // One place a side is looking from, and how far it reaches. The range
+    // travels with the position because it belongs to the soldier standing
+    // there rather than to the game: a squad is a list of unlike eyes now,
+    // not one radius applied to several points (see ClassDef::sight). Pairing
+    // them here is what stops the two from being passed separately and drifting
+    // — a sniper's eye can't be handed to the fog with a marine's reach.
+    struct Eye
+    {
+        DirectX::XMFLOAT2 pos;
+        float range;
+    };
+
     // The visibility polygon around `viewer`, as points sorted by angle.
     // Rays are cast at every occluder corner (plus the arena corners), so
     // consecutive points always span a straight run of the same edge — the
@@ -37,13 +49,14 @@ namespace Visibility
     bool IsPointVisible(const DirectX::XMFLOAT2& viewer, const DirectX::XMFLOAT2& point,
                         const std::vector<Rect>& occluders);
 
-    // The same test from several eyes at once, each of them reaching `range`:
-    // true if any has both the distance and a clear line. What a side sees is
+    // The same test from several eyes at once, each reaching its own distance:
+    // true if any has both the range and a clear line. What a side sees is
     // what its soldiers see between them, so one eye out of five is the whole
     // answer and the rest of the list goes untested. The distance is checked
     // first, which is also what makes a list of eyes cheap — most of them are
-    // nowhere near the point being asked about.
-    bool IsPointVisibleAny(const std::vector<DirectX::XMFLOAT2>& eyes,
-                           const DirectX::XMFLOAT2& point, const std::vector<Rect>& occluders,
-                           float range);
+    // nowhere near the point being asked about, and now that the ranges differ
+    // it's the near, short-sighted ones that get rejected on arithmetic while
+    // the sniper's line is the one actually traced.
+    bool IsPointVisibleAny(const std::vector<Eye>& eyes, const DirectX::XMFLOAT2& point,
+                           const std::vector<Rect>& occluders);
 }

@@ -208,24 +208,12 @@ public:
     // those so far; when a server decides team sizes, this is what it sets.
     static constexpr int kTeamSize = 5;
 
-    // How far a soldier can make anything out at all: the radius of the fog of
-    // war, and the same number whether a person or a brain is behind the eyes —
-    // which is the point of it being one constant. Sight is this and a clear
-    // line both; a wall inside the radius still stops it dead.
-    //
-    // Thirty is chosen against three things. It is comfortably past the
-    // deadliest shot in the game — the sniper's bolt drops into the ground
-    // around thirty-six units out, and a class called LONG RANGE that cannot
-    // see what it is shooting at would be a bad joke — and past what any brain
-    // wants to fight at, so an NPC is never quietly capped by an eyesight
-    // number nothing reports. It is under earshot (Sound::kRange, forty-five),
-    // so the map you hear is always wider than the map you see, and gunfire
-    // out of the dark is a thing that happens to you. And it is wider than the
-    // screen at the zoom the camera opens on, so the fog is a fact about walls
-    // and distance rather than a circle painted around the player: you meet
-    // its edge by zooming out or by looking down a corridor, not by standing
-    // still.
-    static constexpr float kSightRange = 30.0f;
+    // How far a soldier can see is no longer the World's to say: it is
+    // ClassDef::sight, read off whoever is standing there, and the reasoning
+    // that used to live here lives next to that column. What stayed behind is
+    // the shape of the thing — sight is a range and a clear line both, a side
+    // sees with all of its eyes at once, and every place that asks now asks
+    // per soldier. TeamEyes below is where that answer gets assembled.
 
     // How long a match lasts, and what the whole thing is for: at the end of
     // it the side that has killed more has won. Fifteen minutes is long
@@ -413,18 +401,25 @@ public:
     // corner panel is a scoreboard, not a wallhack.
     int Standing(int team) const;
 
-    // Where a side is looking from: the ground position of every living
-    // soldier on `team`, appended to `out`. A side sees with all of its eyes at
+    // Where a side is looking from, and how far: every living soldier on
+    // `team` as an eye, appended to `out`. A side sees with all of its eyes at
     // once — what one soldier has line of sight to, the whole side has — so
     // this list, rather than one point, is what the fog of war and the
     // snapshot's filter are both built from, and building it here is what
     // keeps them building it the same way.
     //
+    // Each eye carries its own reach, off the class standing behind it, so a
+    // squad with a sniper in it genuinely knows more than the same squad
+    // without one. That is also why the range can't be a parameter of the
+    // asking any more: there is no one number a caller could pass that would
+    // be true of the whole list.
+    //
     // `except` leaves one soldier out by unit id, for the caller that has a
     // better answer for that one than the roster does: a viewer's own eye is
     // their predicted position on a client and their last standing place while
-    // they're dead, and it goes in the list ahead of this call.
-    void TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except = -1) const;
+    // they're dead, and it goes in the list ahead of this call — with their own
+    // class's reach on it, which is the one eye the roster can't supply.
+    void TeamEyes(int team, std::vector<Visibility::Eye>& out, int except = -1) const;
 
     // --- The match: a clock, a score, and the one thing they decide.
     //

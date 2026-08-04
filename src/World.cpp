@@ -373,11 +373,11 @@ int World::Standing(int team) const
     }));
 }
 
-void World::TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except) const
+void World::TeamEyes(int team, std::vector<Visibility::Eye>& out, int except) const
 {
     for (const Unit& u : m_units)
         if (u.team == team && u.hp > 0.0f && u.id != except)
-            out.push_back({ u.pos.x, u.pos.z });
+            out.push_back({ { u.pos.x, u.pos.z }, u.cls->sight });
 }
 
 void World::RemoveUnit(int id)
@@ -1016,14 +1016,20 @@ void World::UpdateUnits(float dt)
         // enough to make yet.
         TickClocks(unit, dt);
 
-        // Who this soldier can see. Everyone hostile, at whatever range, with
-        // the same sight test the player's fog of war uses so nobody shoots
-        // through a wall the player can't see through either — and no further
-        // opinion than that. How close is close enough to fight is a matter of
-        // temperament, so it belongs to the brain; how far a soldier can pick
-        // anyone out at all is a fact about the world, so it's here. The local
-        // player is just one more hostile on the roster — and while they're
-        // dead they aren't on it, so nothing aims at where they were.
+        // Who this soldier can see. Everyone hostile out to what this class's
+        // eyes are worth, with the same sight test the player's fog of war
+        // uses so nobody shoots through a wall the player can't see through
+        // either — and no further opinion than that. How close is close enough
+        // to fight is a matter of temperament, so it belongs to the brain; how
+        // far a soldier can pick anyone out at all is a fact about the soldier,
+        // so it's read off the class here. The local player is just one more
+        // hostile on the roster — and while they're dead they aren't on it, so
+        // nothing aims at where they were.
+        //
+        // Nothing downstream has to care that the number moved. Every class
+        // still sees past Brain::kEngageRange, so a brain is bounded by its own
+        // temperament rather than by its eyes, and the sniper's extra reach
+        // shows up as contacts it can report rather than as shots it takes.
         //
         // It runs a sight test per candidate, which makes this quadratic in the
         // number of soldiers on the field; at two squads of five that's a
@@ -1034,7 +1040,7 @@ void World::UpdateUnits(float dt)
         const Vector2 unitXZ = { unit.pos.x, unit.pos.z };
         const auto sight = [&](const Vector3& pos) {
             const float d = Vector2(pos.x - unit.pos.x, pos.z - unit.pos.z).Length();
-            if (d < 1e-3f || d > kSightRange)
+            if (d < 1e-3f || d > unit.cls->sight)
                 return;
             if (Visibility::IsPointVisible(unitXZ, { pos.x, pos.z }, m_occluders))
                 m_contacts.push_back({ pos, d });

@@ -50,10 +50,16 @@ namespace Net
     // moved: an older client would take the squadmate its server just sent
     // from behind a wall and cull it back out with its own one-eyed test, so
     // the two builds would draw different fields off identical packets.
-    // 8: sight has a range (World::kSightRange). A client from 7 draws its fog
-    // to the horizon, so the ground an enemy has just vanished from would still
-    // be lit on its screen — the same disagreement, in the other direction.
-    constexpr uint8_t kProtocolVersion = 8;
+    // 8: sight has a range. A client from 7 draws its fog to the horizon, so
+    // the ground an enemy has just vanished from would still be lit on its
+    // screen — the same disagreement, in the other direction.
+    // 9: that range is per class (ClassDef::sight) rather than one number for
+    // everyone. Same bytes for the third time; what moved is how far each eye
+    // in the list reaches. A client from 8 would light a sniper's ground to
+    // thirty and cull at thirty the enemies its server sent it from
+    // thirty-eight — drawing an emptier field than the one it is being told
+    // about, and quietly making the class's whole point invisible.
+    constexpr uint8_t kProtocolVersion = 9;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -342,8 +348,8 @@ namespace Net
     };
 
     // One client's snapshot: the fight as seen by `ownTeam`, through `eyes` —
-    // the viewer's own, and one per living soldier on their side, each of them
-    // reaching World::kSightRange. This is the fog of war made real — a soldier
+    // the viewer's own, and one per living soldier on their side, each reaching
+    // as far as the class behind it sees. This is the fog of war made real — a soldier
     // nobody on the receiving side can see isn't dimmed or skipped by their
     // renderer, they're absent from the bytes, so no amount of client
     // cleverness can find an enemy behind a wall or out in the dark. The test
@@ -364,7 +370,7 @@ namespace Net
     // between recipients, and the reason it's a parameter rather than something
     // the World could be asked.
     inline void WriteSnapshotVisible(Writer& w, const World& world, uint32_t tick,
-                                     const std::vector<DirectX::XMFLOAT2>& eyes, int ownId,
+                                     const std::vector<Visibility::Eye>& eyes, int ownId,
                                      int ownTeam, int ownSlot)
     {
         w.U8(static_cast<uint8_t>(MsgType::Snapshot));
@@ -399,8 +405,7 @@ namespace Net
         }
 
         const auto visible = [&](float x, float z) {
-            return Visibility::IsPointVisibleAny(eyes, { x, z }, world.Occluders(),
-                                                 World::kSightRange);
+            return Visibility::IsPointVisibleAny(eyes, { x, z }, world.Occluders());
         };
         const auto sendUnit = [&](const Unit& u) {
             return u.id == ownId || u.team == ownTeam || visible(u.pos.x, u.pos.z);

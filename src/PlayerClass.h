@@ -126,6 +126,29 @@ struct ClassDef
     // side it's supposed to be marking.
     DirectX::XMFLOAT4 color;
     MoveDef move;
+    // How far this soldier can make anything out at all: the radius of their
+    // share of the fog of war, and the same number whether a person or a brain
+    // is behind the eyes. Sight is this and a clear line both — a wall inside
+    // the radius still stops it dead — and a side sees with all of its eyes at
+    // once, so this is one soldier's contribution to what the squad knows
+    // rather than a limit on what reaches the player.
+    //
+    // It is a class stat rather than the one constant it used to be because
+    // the zone this map comes from says it should be: hardcorps2t's own class
+    // list gives the sniper "enhanced viewing distance and LOS" and says
+    // nothing of the kind about anybody else. That sentence is the whole of
+    // what's sourced here; the spread below is ours.
+    //
+    // Three things bound this column wherever it goes, and they're worth
+    // checking against any new row. Every value stays under earshot
+    // (Sound::kRange, forty-five), so the map you hear is always wider than
+    // the map you see and gunfire out of the dark stays a thing that happens
+    // to you. Every value stays clear of Brain::kEngageRange (twenty-two), or
+    // an NPC would be quietly capped by an eyesight number nothing reports.
+    // And every value stays wider than the screen at the zoom the camera opens
+    // on (twenty-six units across the viewport), so the fog remains a fact
+    // about walls and distance rather than a circle painted around the player.
+    float sight;
     WeaponDef primary;
     Ability::Def ability;
     // How this class fights when the computer is playing it. All four name the
@@ -179,17 +202,34 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // move with them and the rates do not; bringing the rates along is what
     // holds the coast where it is.
     //
+    // Sight is the newest column and the one that most changes what a class
+    // is, because it decides how much of the map a soldier brings back to the
+    // squad. The sniper's thirty-eight is the only number in it with a source:
+    // the zone's class list gives that class "enhanced viewing distance and
+    // LOS", and thirty-eight is what that has to mean on this ground — the
+    // bolt drops into the dirt around thirty-six units out, so for the first
+    // time LONG RANGE can see the whole of what it shoots at rather than
+    // firing into fog it has to be told about. The marine keeps the thirty
+    // everything else was tuned against and stays the class the others are
+    // read against here too. The medic and the grenadier give four units of it
+    // up, for opposite reasons that come to the same price: the medic is fast
+    // and has to close on the soldier it treats anyway, and the grenadier
+    // throws over cover at ground it was never going to see for itself. Both
+    // want somebody out in front of them, which is what a shorter eye is for —
+    // it makes being spotted for something a class needs rather than something
+    // it enjoys, and it gives the sniper a job on a quiet flank.
+    //
     // Two of the colors moved when the armor became the team's. The sniper's
     // blue and the grenadier's orange were the marks that sat nearest the sides
     // they'd now have to be read against — a blue helmet on a blue soldier says
     // nothing at all. Violet and amber are as far from each other as those were,
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
-    // name         blurb              color                          | speed accel  stop | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
+    // name         blurb              color                          | speed accel  stop | sight | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine

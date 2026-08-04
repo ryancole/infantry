@@ -51,9 +51,17 @@ namespace
             best = std::max(best, def.primary.projectileSpeed);
         return best;
     }
+    constexpr float MaxSight()
+    {
+        float best = 0.0f;
+        for (const ClassDef& def : kClassDefs)
+            best = std::max(best, def.sight);
+        return best;
+    }
     constexpr float kMaxFireRate = MaxSustainedFireRate();
     constexpr float kMaxMoveSpeed = MaxMoveSpeed();
     constexpr float kMaxProjectileSpeed = MaxProjectileSpeed();
+    constexpr float kMaxSight = MaxSight();
 
 }
 
@@ -178,18 +186,27 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
             const char* label;
             float fraction;
         };
-        const Bar bars[3] = {
+        // LOS last, and deliberately next to RNG: the two are the class's two
+        // halves of the same question, and the pair is only interesting when
+        // they disagree. A short bar under a long one is a class that shoots
+        // further than it can see and needs telling where to aim; the sniper is
+        // the one card where both run long, which is what the class is for.
+        const Bar bars[4] = {
             { "SPD", def.move.speed / kMaxMoveSpeed },
             { "ROF", SustainedFireRate(def.primary) / kMaxFireRate },
             { "RNG", def.primary.projectileSpeed / kMaxProjectileSpeed },
+            { "LOS", def.sight / kMaxSight },
         };
         const float rowH = r.h * 0.10f;
         const float labelSize = rowH * 0.55f;
         const float barX = r.x + pad + labelSize * 3.2f;
         const float barW = r.x + r.w - pad - barX;
-        for (int b = 0; b < 3; ++b)
+        for (int b = 0; b < 4; ++b)
         {
-            const float rowY = r.y + r.h * 0.56f + b * rowH * 1.35f;
+            // Four rows where there were three, tightened to fit rather than
+            // spilling past the card: the block still starts under the ability
+            // line and now ends just short of the bottom edge.
+            const float rowY = r.y + r.h * 0.55f + b * rowH * 1.15f;
             renderer.DrawScreenText(bars[b].label, r.x + pad, rowY, labelSize, kHintColor);
             AppendQuad(m_tris, barX, rowY, barW, labelSize, kZBar, kBarBg);
             AppendQuad(m_tris, barX, rowY, barW * std::clamp(bars[b].fraction, 0.0f, 1.0f),
