@@ -36,14 +36,24 @@ namespace
 
 BindMenu::Rect BindMenu::RowRect(size_t index, float width, float height)
 {
+    // The list has to fit between the title and the hint line at the bottom,
+    // and how many rows there are is decided by the action list rather than by
+    // this screen. So the step is the authored one until that stops fitting and
+    // whatever does fit after that: an action added to Bindings is meant to
+    // cost a line here, not to push the last two rows through the hint.
+    constexpr float kTop = 0.16f;
+    constexpr float kBottom = 0.88f;
+    constexpr float kGap = 0.030f; // before the command rows; see below
+
+    const float step =
+        std::min(0.047f, (kBottom - kTop - kGap) / static_cast<float>(kRowCount)) * height;
     const float rowW = width * 0.46f;
-    const float rowH = height * 0.042f;
-    const float step = height * 0.047f;
+    const float rowH = step * 0.89f;
     // The two command rows sit under a gap: they act on the list rather than
     // being part of it, and running them straight on makes RESET TO DEFAULTS
     // look like one more thing that can be bound.
-    const float gap = index >= Bindings::kActionCount ? height * 0.030f : 0.0f;
-    return { (width - rowW) * 0.5f, height * 0.16f + index * step + gap, rowW, rowH };
+    const float gap = index >= Bindings::kActionCount ? height * kGap : 0.0f;
+    return { (width - rowW) * 0.5f, height * kTop + index * step + gap, rowW, rowH };
 }
 
 bool BindMenu::Update(const Input& input, Bindings& binds, uint32_t width, uint32_t height)

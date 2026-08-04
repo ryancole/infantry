@@ -2,6 +2,7 @@
 
 #include "PlayerClass.h"
 #include "Renderer.h"
+#include "Visibility.h"
 
 #include <DirectXMath.h>
 #include <cstddef>
@@ -162,6 +163,114 @@ namespace Hud
     };
 
     void RenderScoreboard(Renderer& renderer, const Scoreboard& board);
+
+    // --- The radar, in the bottom-left corner: the whole arena, small.
+    //
+    // The camera shows about twenty-six units of a map that is nearly two
+    // hundred across, so most of a match happens off screen. The corner panel
+    // says how many of the enemy are still standing and the fog says whether
+    // any of them can be seen; what neither says is *where* — and on this
+    // ground "which way across" is the question the whole map is built around.
+    // That is the one thing the radar adds, and it's why it draws the terrain
+    // as well as the bodies: a field of dots with no shape behind it would say
+    // where everyone is without saying what they're behind.
+    //
+    // It is aligned to the *camera*, not to the arena. That is the one thing
+    // about this panel that isn't a matter of taste. The view is isometric and
+    // its yaw starts at 45°, which means world +x travels left and down the
+    // screen rather than right — so a radar laid out on the arena's own axes
+    // doesn't merely sit at an angle to what the player sees, it puts their
+    // base on the wrong side of the panel. Left and right disagreeing is the
+    // one error a radar cannot survive; being turned 45° from the map's axes
+    // is a cost worth paying to fix it, and the map is a shape the player
+    // learns off this panel anyway rather than one they brought with them.
+    //
+    // So the arena arrives as a diamond, and the panel is the box that holds
+    // it — which is also why the box is near enough square while the map it
+    // draws is a long letterbox.
+    //
+    // The blips arrive already filtered. What may be drawn is a question about
+    // the fog, and the fog is the game's business: this file is handed a list
+    // and draws all of it.
+
+    // One soldier on the panel, at a spot on the ground. Positions are world
+    // coordinates — x and z, the arena's own axes — because where the panel
+    // puts them is a layout decision and layout decisions belong down here.
+    struct Blip
+    {
+        float x, z;
+        // The same two colors the body is wearing in the arena: the side's
+        // armor, and the class mark riding on top of it. Handed over rather
+        // than looked up, for the reason every other color here is — the radar
+        // and the field have to agree about who is who, and a second opinion
+        // is a second thing to keep in step.
+        DirectX::XMFLOAT4 team;
+        DirectX::XMFLOAT4 cls;
+        // The player's own soldier, drawn with a heading out of it. A dot for
+        // the player would only repeat what the camera already centers on;
+        // which way they're pointed is the part the arena doesn't say at a
+        // glance, and it's what makes the other blips' bearings mean something.
+        bool you;
+        float aimX, aimZ; // unit facing, read only when `you`
+    };
+
+    struct Radar
+    {
+        // Half-extents on x and z: the arena spans [-x, x] by [-z, z]. The
+        // panel is sized from these once they've been turned to face the
+        // camera, and one scale serves both axes — a map squashed to fill a
+        // fixed box would put every bearing on it slightly wrong.
+        DirectX::XMFLOAT2 arenaHalf;
+        // Which way is right on screen, as a direction on the ground: the
+        // arena's x and z components of the camera's own right vector. This is
+        // what turns the map to face the player, and taking it rather than a
+        // yaw is deliberate — the camera already hands this vector out for
+        // standing health bars square to the view, so the panel and the arena
+        // are turned by the same number and cannot drift apart. Screen up is
+        // derived from it rather than passed: on the ground plane the two are
+        // always a quarter turn apart, and a caller that could set them
+        // separately is a caller that could set them inconsistently.
+        DirectX::XMFLOAT2 screenRight;
+        // The sight-blockers, as the footprints the fog is cut against. Taken
+        // as Visibility::Rect rather than mirrored into a local type the way
+        // Holder mirrors World::Slot::Held: that enum is the simulation's, and
+        // this is a rectangle. Borrowed for the call, so 125 of them cost
+        // nothing to hand over. Axis-aligned in the arena, and so aligned to
+        // nothing once they've been turned to face the camera — each is drawn
+        // as a quad of four corners rather than as a rectangle.
+        const Visibility::Rect* walls;
+        size_t wallCount;
+        const Blip* blips;
+        size_t blipCount;
+        // How much of the arena the box holds. 1 is the whole of it, fitted;
+        // above that the map is drawn larger than the box and the box becomes a
+        // window onto it, which is what stops a letterbox map from leaving the
+        // corners of a square panel empty. The panel itself never changes size —
+        // zooming changes what is in the box, not how much screen the box is
+        // worth.
+        float zoom;
+        // Where the window looks when there is more map than box: the player's
+        // own soldier, or the spot they died on while they wait. Clamped to the
+        // arena in here rather than by the caller, because how much of the map
+        // the box currently holds is a fact about the layout and the layout is
+        // decided down here — a window that ran off the edge would scroll the
+        // ground away from under a soldier standing still.
+        float focusX, focusZ;
+        // The controls that move the zoom, as the same key caps the loadout
+        // draws, sat over the panel. A zoom nobody knows about is a zoom that
+        // stays where it started, and this is the only readout on screen whose
+        // controls are neither under a finger already nor on the row beneath
+        // the loadout — so it says so itself, next to the thing they act on,
+        // which is the only place the answer is any use.
+        //
+        // They arrive as caps rather than as two key names for the same reason
+        // State::hints does: what a control is spelled is the player's
+        // business, and this file has no way to look it up.
+        const Hint* hints;
+        size_t hintCount;
+    };
+
+    void RenderRadar(Renderer& renderer, const Radar& radar);
 
     // Green -> amber -> red for a 0..1 share of health, thresholds a hit or two
     // apart at typical damage. Exposed because the panel is no longer the only

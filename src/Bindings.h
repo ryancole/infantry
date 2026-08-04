@@ -50,6 +50,13 @@ public:
         // — TAB is only where it starts out, and the HUD has to be able to say
         // where the player moved it to.
         Scoreboard,
+        // The radar's own zoom, in and out. Held rather than tapped — the zoom
+        // is continuous and a player nudging it wants to watch it arrive, not
+        // count presses. They sit with the camera at the rear because that is
+        // what they are: neither reaches the simulation, and a server never
+        // hears that somebody looked closer at their own corner of the screen.
+        RadarIn,
+        RadarOut,
         OrbitCamera,
         Count
     };

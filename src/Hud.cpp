@@ -79,6 +79,29 @@ namespace
     // competing with which side you're on.
     constexpr XMFLOAT4 kBoardYouBg = { 1.00f, 1.00f, 1.00f, 0.10f };
 
+    // The radar, bottom left. The box the arena is fitted inside rather than
+    // the size it comes out: the map decides the panel's shape, and these two
+    // numbers only say how much of the screen it may take. Near enough square
+    // because the map arrives turned to face the camera and a long letterbox
+    // laid on a diagonal needs the same room either way — see Hud.h. Big
+    // enough that hardcorps2t's 197 units land at better than a pixel each,
+    // which is what makes a trench mouth a shape rather than a smudge.
+    constexpr float kRadarMaxWidth = 264.0f;
+    constexpr float kRadarMaxHeight = 264.0f;
+    // A soldier is 0.8 units across and would be a single pixel drawn to
+    // scale, so the blips are exaggerated to about six units wide. That's the
+    // trade every radar makes: positions stay true, sizes stop being. Ten of
+    // them on a panel this size is a readable scatter rather than a clump.
+    constexpr float kBlipRadius = 5.0f;
+    constexpr float kBlipCore = 2.4f; // the class mark inside it
+    constexpr float kBlipArrow = 10.0f; // how far the player's heading reaches
+    constexpr XMFLOAT4 kRadarField = { 0.00f, 0.00f, 0.00f, 0.30f };
+    // The rock the middle is navigated around, in the slate the arena floor is
+    // already drawn in. Dark enough to stay underneath the blips — terrain on
+    // this panel is context, and the moment it competes with a body it has
+    // stopped being context.
+    constexpr XMFLOAT4 kRadarWall = { 0.42f, 0.47f, 0.56f, 0.55f };
+
     constexpr float kHintSize = 13.0f;
     constexpr float kHintGap = 15.0f; // hint row -> panel
     constexpr float kHintKeyPad = 7.0f;
@@ -166,6 +189,100 @@ namespace
         out.push_back({ XMFLOAT3{ x0, y0, 0.0f }, c });
         out.push_back({ XMFLOAT3{ x1, y1, 0.0f }, c });
         out.push_back({ XMFLOAT3{ x2, y2, 0.0f }, c });
+    }
+
+    // The most points a shape handed to AppendClipped may have. The largest
+    // today is a blip's disc at kDiscSegments; the room past it is what four
+    // clipping edges can add.
+    constexpr size_t kClipMaxPoints = 32;
+    constexpr int kDiscSegments = 20;
+
+    // A convex polygon trimmed to a rectangle and fanned into triangles.
+    //
+    // Only the radar needs this, and only since the box stopped holding the
+    // whole arena: zoomed in, the map is bigger than the panel it's drawn in
+    // and everything on it — ground, rock, bodies — runs off the edge. The
+    // alternative was a scissor rect, which would mean the renderer's screen
+    // pass keeping one per batch; this keeps the panel's geometry the panel's
+    // business, which is how the rest of this file already works.
+    //
+    // Sutherland-Hodgman, four half-planes, no allocation: a convex polygon
+    // clipped to a rectangle stays convex and gains at most one point per edge,
+    // so the working buffers are fixed and a fan from the first point is a
+    // correct triangulation of the result. A shape entirely outside vanishes
+    // partway through and returns nothing, which is the cheap path for a body
+    // standing off the edge of what the box currently holds.
+    void AppendClipped(std::vector<Vertex>& out, const XMFLOAT2* pts, size_t count, float minX,
+                       float minY, float maxX, float maxY, const XMFLOAT4& color)
+    {
+        if (count < 3 || count > kClipMaxPoints)
+            return;
+
+        XMFLOAT2 buf[2][kClipMaxPoints + 4];
+        size_t n = count;
+        for (size_t i = 0; i < count; ++i)
+            buf[0][i] = pts[i];
+
+        int cur = 0;
+        for (int edge = 0; edge < 4; ++edge)
+        {
+            const XMFLOAT2* in = buf[cur];
+            XMFLOAT2* dst = buf[1 - cur];
+            const auto inside = [&](const XMFLOAT2& p) {
+                switch (edge)
+                {
+                case 0:  return p.x >= minX;
+                case 1:  return p.x <= maxX;
+                case 2:  return p.y >= minY;
+                default: return p.y <= maxY;
+                }
+            };
+            // Only ever called for a pair straddling the edge, so the axis the
+            // fraction is taken along is guaranteed to span it.
+            const auto meet = [&](const XMFLOAT2& a, const XMFLOAT2& b) {
+                float t = 0.0f;
+                switch (edge)
+                {
+                case 0:  t = (minX - a.x) / (b.x - a.x); break;
+                case 1:  t = (maxX - a.x) / (b.x - a.x); break;
+                case 2:  t = (minY - a.y) / (b.y - a.y); break;
+                default: t = (maxY - a.y) / (b.y - a.y); break;
+                }
+                return XMFLOAT2{ a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
+            };
+
+            size_t m = 0;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const XMFLOAT2& a = in[i];
+                const XMFLOAT2& b = in[(i + 1) % n];
+                const bool aIn = inside(a), bIn = inside(b);
+                if (aIn)
+                    dst[m++] = a;
+                if (aIn != bIn)
+                    dst[m++] = meet(a, b);
+            }
+            n = m;
+            cur = 1 - cur;
+            if (n < 3)
+                return;
+        }
+
+        for (size_t i = 1; i + 1 < n; ++i)
+            AppendTriangle(out, buf[cur][0].x, buf[cur][0].y, buf[cur][i].x, buf[cur][i].y,
+                           buf[cur][i + 1].x, buf[cur][i + 1].y, color);
+    }
+
+    void AppendClippedDisc(std::vector<Vertex>& out, float cx, float cy, float radius, float minX,
+                           float minY, float maxX, float maxY, const XMFLOAT4& color)
+    {
+        XMFLOAT2 pts[kDiscSegments];
+        for (int i = 0; i < kDiscSegments; ++i)
+        {
+            const float a = XM_2PI * static_cast<float>(i) / kDiscSegments;
+            pts[i] = { cx + std::cos(a) * radius, cy + std::sin(a) * radius };
+        }
+        AppendClipped(out, pts, kDiscSegments, minX, minY, maxX, maxY, color);
     }
 
     // A quad that isn't axis-aligned: centered on (x, y) at one end, running
@@ -380,6 +497,62 @@ namespace
     // is here so the layout has a fixed amount of stack to work in, not because
     // the number means anything.
     constexpr size_t kMaxHints = 10;
+
+    // --- Key caps ---
+    //
+    // A row of "this control does this": a rounded cap with whatever the player
+    // has the control bound to, then what it does, muted, and on to the next.
+    //
+    // Two readouts draw one now — the loadout's row under the cluster, and the
+    // radar's pair over the corner — so the rule for laying one out lives here
+    // and each caller says only where its row starts. Splitting the measure
+    // from the draw is what lets a caller center its row (the loadout) or
+    // butt it up against the edge of its own panel (the radar) without either
+    // of them knowing how a cap is built.
+    //
+    // The cap is at least as wide as it is tall, so a one-character key stays a
+    // square rather than becoming a slot.
+    float CapWidth(Renderer& renderer, const char* key, float size, float s)
+    {
+        const float capH = size + kHintKeyPad * s * 2.0f;
+        return std::max(renderer.MeasureScreenText(key, size) + kHintKeyPad * s * 2.0f, capH);
+    }
+
+    float HintsWidth(Renderer& renderer, const Hud::Hint* hints, size_t count, float s)
+    {
+        if (count == 0)
+            return 0.0f;
+        const float size = kHintSize * s;
+        float width = kHintSpacing * s * static_cast<float>(count - 1);
+        for (size_t i = 0; i < count; ++i)
+            width += CapWidth(renderer, hints[i].key, size, s) + kHintTextGap * s +
+                     renderer.MeasureScreenText(hints[i].label, size);
+        return width;
+    }
+
+    // Draws the row with its top-left at (x, y); the height is CapHeight below.
+    void DrawHints(Renderer& renderer, std::vector<Vertex>& tris, const Hud::Hint* hints,
+                   size_t count, float x, float y, float s, float fade)
+    {
+        const float size = kHintSize * s;
+        const float capH = size + kHintKeyPad * s * 2.0f;
+        for (size_t i = 0; i < count; ++i)
+        {
+            const float capW = CapWidth(renderer, hints[i].key, size, s);
+            AppendRoundRect(tris, x, y, capW, capH, capH * 0.28f, Fade(kTrack, fade));
+            renderer.DrawScreenText(
+                hints[i].key,
+                x + (capW - renderer.MeasureScreenText(hints[i].key, size)) * 0.5f,
+                y + kHintKeyPad * s, size, Fade(kValueColor, fade));
+
+            x += capW + kHintTextGap * s;
+            renderer.DrawScreenText(hints[i].label, x, y + (capH - size) * 0.5f, size,
+                                    Fade(kMutedColor, fade));
+            x += renderer.MeasureScreenText(hints[i].label, size) + kHintSpacing * s;
+        }
+    }
+
+    float CapHeight(float s) { return kHintSize * s + kHintKeyPad * s * 2.0f; }
 
     // A countdown as minutes and seconds. Rounded up, so it reaches 0:01 for
     // the last second and only says 0:00 when the match really is over.
@@ -638,41 +811,10 @@ void Hud::Render(Renderer& renderer, const State& st)
     // only how to lay a row of caps out, and stops at kMaxHints of them so a
     // caller can't quietly widen the row past the screen.
 
-    const float hintSize = kHintSize * s;
-    const float capH = hintSize + kHintKeyPad * s * 2.0f;
-    const float hintY = panelY - kHintGap * s - capH;
-
     const size_t hintCount = std::min(st.hintCount, kMaxHints);
-    float hintsW = 0.0f;
-    float capWidths[kMaxHints] = {};
-    for (size_t i = 0; i < hintCount; ++i)
-    {
-        capWidths[i] = std::max(renderer.MeasureScreenText(st.hints[i].key, hintSize) +
-                                    kHintKeyPad * s * 2.0f,
-                                capH);
-        hintsW += capWidths[i] + kHintTextGap * s +
-                  renderer.MeasureScreenText(st.hints[i].label, hintSize);
-    }
-    if (hintCount > 0)
-        hintsW += kHintSpacing * s * (hintCount - 1);
-
-    float hintX = std::floor((w - hintsW) * 0.5f);
-    for (size_t i = 0; i < hintCount; ++i)
-    {
-        const Hint& hint = st.hints[i];
-        AppendRoundRect(tris, hintX, hintY, capWidths[i], capH, capH * 0.28f,
-                        Fade(kTrack, fade));
-        renderer.DrawScreenText(hint.key,
-                                hintX + (capWidths[i] -
-                                         renderer.MeasureScreenText(hint.key, hintSize)) *
-                                            0.5f,
-                                hintY + kHintKeyPad * s, hintSize, Fade(kValueColor, fade));
-
-        hintX += capWidths[i] + kHintTextGap * s;
-        renderer.DrawScreenText(hint.label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
-                                Fade(kMutedColor, fade));
-        hintX += renderer.MeasureScreenText(hint.label, hintSize) + kHintSpacing * s;
-    }
+    const float hintsW = HintsWidth(renderer, st.hints, hintCount, s);
+    DrawHints(renderer, tris, st.hints, hintCount, std::floor((w - hintsW) * 0.5f),
+              panelY - kHintGap * s - CapHeight(s), s, fade);
 
     // --- Roster ---
     //
@@ -972,6 +1114,207 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
             number(row.deaths, deathsRight);
         }
     }
+
+    renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
+}
+
+void Hud::RenderRadar(Renderer& renderer, const Radar& radar)
+{
+    const float h = static_cast<float>(renderer.Height());
+    const float s = h / kDesignHeight;
+    const float pad = kPanelPad * s;
+
+    const float halfX = std::max(radar.arenaHalf.x, 0.001f);
+    const float halfZ = std::max(radar.arenaHalf.y, 0.001f);
+
+    // The turn that makes the panel agree with the screen. `right` is the
+    // ground direction that runs rightward across the view; up is the same
+    // vector a quarter turn on, negated on the way out because screen y runs
+    // down. Normalized rather than trusted — an unset camera would otherwise
+    // collapse the whole map to a point.
+    float rx = radar.screenRight.x, rz = radar.screenRight.y;
+    const float rlen = std::sqrt(rx * rx + rz * rz);
+    if (rlen > 1e-4f)
+    {
+        rx /= rlen;
+        rz /= rlen;
+    }
+    else
+    {
+        rx = 1.0f;
+        rz = 0.0f;
+    }
+    const auto toU = [&](float x, float z) { return x * rx + z * rz; };
+    const auto toV = [&](float x, float z) { return x * rz - z * rx; };
+
+    // How much room the turned arena needs. The corners are the extremes of
+    // both axes, and the arena is centered on the origin, so each half-extent
+    // is just the two contributions added with their signs thrown away.
+    const float halfU = std::fabs(rx) * halfX + std::fabs(rz) * halfZ;
+    const float halfV = std::fabs(rz) * halfX + std::fabs(rx) * halfZ;
+
+    // The box: one scale for both axes, picked so the whole arena fits inside
+    // it and touches one edge. The panel shrinks to the map rather than the map
+    // stretching to the panel — which is what keeps a bearing read off this
+    // thing the same bearing the player would walk — and having been sized
+    // once it never moves again. Zoom changes what the box holds, not what the
+    // box costs: a readout that grew and shrank in the corner of the screen
+    // would be a readout the eye had to find each time.
+    const float fit = std::min(kRadarMaxWidth * s / (halfU * 2.0f),
+                               kRadarMaxHeight * s / (halfV * 2.0f));
+    const float fieldW = halfU * 2.0f * fit;
+    const float fieldH = halfV * 2.0f * fit;
+
+    const float panelW = fieldW + pad * 2.0f;
+    const float panelH = fieldH + pad * 2.0f;
+    const float panelX = std::floor(kSideMargin * s);
+    const float panelY = std::floor(h - kBottomMargin * s - panelH);
+    const float fieldX = panelX + pad;
+    const float fieldY = panelY + pad;
+    const float fieldRight = fieldX + fieldW;
+    const float fieldBottom = fieldY + fieldH;
+
+    const float scale = fit * std::max(radar.zoom, 1.0f);
+
+    // Where the window looks. Half the box, measured in the arena's own units,
+    // is how much map is on show either side of the middle; the focus is pushed
+    // in from the edges by exactly that, so the ground never scrolls off and
+    // leaves the panel half empty. An axis with more box than map stays
+    // centered, which is what makes zoom 1 the picture it always was.
+    const float viewU = fieldW * 0.5f / scale;
+    const float viewV = fieldH * 0.5f / scale;
+    const auto middle = [](float want, float half, float limit) {
+        return half >= limit ? 0.0f : std::clamp(want, -limit + half, limit - half);
+    };
+    const float centerU = middle(toU(radar.focusX, radar.focusZ), viewU, halfU);
+    const float centerV = middle(toV(radar.focusX, radar.focusZ), viewV, halfV);
+
+    // A spot on the ground to a spot on the panel: turned to face the camera,
+    // then scaled and slid so the window's middle lands in the box's middle.
+    const auto map = [&](float x, float z) {
+        return XMFLOAT2{ fieldX + fieldW * 0.5f + (toU(x, z) - centerU) * scale,
+                         fieldY + fieldH * 0.5f + (toV(x, z) - centerV) * scale };
+    };
+    static std::vector<Vertex> tris;
+    tris.clear();
+
+    // Everything inside the box goes through here. Zoomed in there is more map
+    // than panel, so a shape that used to be guaranteed to land inside its own
+    // frame no longer is — ground, rock and bodies alike run off the edge, and
+    // the edge is the only thing that says where the readout stops.
+    const auto clipped = [&](const XMFLOAT2* pts, size_t n, const XMFLOAT4& color) {
+        AppendClipped(tris, pts, n, fieldX, fieldY, fieldRight, fieldBottom, color);
+    };
+
+    AppendRoundRect(tris, panelX, panelY, panelW, panelH, kPanelCorner * s, kPanelBg);
+
+    // The ground itself, darker than the panel around it. On a map turned to
+    // face the camera this is doing real work rather than tidying an edge: the
+    // arena is a diamond, so at low zoom there would otherwise be nothing to
+    // say which of the box is ground and which is margin. At high zoom the
+    // diamond covers the box entirely, which is the whole point of being able
+    // to zoom at all.
+    const XMFLOAT2 corners[4] = { map(-halfX, -halfZ), map(halfX, -halfZ), map(halfX, halfZ),
+                                  map(-halfX, halfZ) };
+    clipped(corners, 4, kRadarField);
+
+    // Terrain next, so nothing about the map can end up drawn over a soldier.
+    // A rock thinner than a pixel is still worth a pixel: the outcrops are read
+    // as a belt rather than one at a time, and a belt with gaps punched in it
+    // by rounding is a different belt. Widening happens in the arena's units,
+    // before the turn, because after it there's no axis left to widen along —
+    // and it costs less the further in the player zooms, which is correct: the
+    // rock is only being fattened to survive the drawing.
+    const float minWorld = scale > 0.0f ? 1.0f / scale : 0.0f;
+    for (size_t i = 0; i < radar.wallCount; ++i)
+    {
+        const Visibility::Rect& r = radar.walls[i];
+        const float padX = std::max(minWorld - (r.maxX - r.minX), 0.0f) * 0.5f;
+        const float padZ = std::max(minWorld - (r.maxZ - r.minZ), 0.0f) * 0.5f;
+        const float x0 = r.minX - padX, x1 = r.maxX + padX;
+        const float z0 = r.minZ - padZ, z1 = r.maxZ + padZ;
+        const XMFLOAT2 quad[4] = { map(x0, z0), map(x1, z0), map(x1, z1), map(x0, z1) };
+        clipped(quad, 4, kRadarWall);
+    }
+
+    // A hairline along the arena's edge, over the terrain that runs up against
+    // it. The edge is a wall a soldier can be pinned against, so it's worth
+    // drawing as a line rather than left as wherever the dark fill stops.
+    // Zoomed in it's mostly off the box, and what's left of it is the part
+    // worth having: the reminder that this side of you is the end of the map.
+    const float rule = std::max(1.0f * s, 1.0f);
+    for (int i = 0; i < 4; ++i)
+    {
+        const XMFLOAT2& a = corners[i];
+        const XMFLOAT2& b = corners[(i + 1) % 4];
+        const float dx = b.x - a.x, dy = b.y - a.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len <= 1e-4f)
+            continue;
+        const float px = -dy / len * rule * 0.5f, py = dx / len * rule * 0.5f;
+        const XMFLOAT2 edge[4] = { { a.x - px, a.y - py },
+                                   { b.x - px, b.y - py },
+                                   { b.x + px, b.y + py },
+                                   { a.x + px, a.y + py } };
+        clipped(edge, 4, kDivider);
+    }
+
+    const float blipR = kBlipRadius * s;
+    const float coreR = kBlipCore * s;
+
+    for (size_t i = 0; i < radar.blipCount; ++i)
+    {
+        const Blip& blip = radar.blips[i];
+        const XMFLOAT2 at = map(blip.x, blip.z);
+        const float cx = at.x;
+        const float cy = at.y;
+
+        // Two colors, in the order the body wears them: the side underneath,
+        // because which side a soldier is on is the only thing that decides
+        // whether to shoot, and the class mark on top of it. Lifted toward
+        // white on the way in for the same reason the roster's icons are —
+        // armor is chosen to hold up at arena distance, and this is a ten-pixel
+        // dot on a near-black panel.
+        AppendClippedDisc(tris, cx, cy, blipR, fieldX, fieldY, fieldRight, fieldBottom,
+                          Lift(blip.team, kSideLift));
+        AppendClippedDisc(tris, cx, cy, coreR, fieldX, fieldY, fieldRight, fieldBottom,
+                          Lift(blip.cls, kSideLift));
+
+        if (!blip.you)
+            continue;
+
+        // You: the same two colors and a shape nobody else has. An arrowhead
+        // off the front of the dot, in the class color that's already at its
+        // middle, pointed where the soldier is pointed. The facing goes through
+        // the same turn the position did — a heading drawn on the arena's axes
+        // over a map drawn on the camera's would point somewhere the soldier
+        // isn't looking, which is the whole fault this panel was turned to fix.
+        // Normalized after that rather than before, since an aim direction
+        // arriving as zero would otherwise put a degenerate triangle on screen.
+        const float au = toU(blip.aimX, blip.aimZ), av = toV(blip.aimX, blip.aimZ);
+        const float len = std::sqrt(au * au + av * av);
+        if (len <= 1e-4f)
+            continue;
+        const float dx = au / len, dz = av / len;
+        const float px = -dz, pz = dx;
+        const float base = blipR * 0.55f;
+        const float wing = blipR * 0.95f;
+        const float reach = kBlipArrow * s;
+        const XMFLOAT2 head[3] = { { cx + dx * reach, cy + dz * reach },
+                                   { cx + dx * base + px * wing, cy + dz * base + pz * wing },
+                                   { cx + dx * base - px * wing, cy + dz * base - pz * wing } };
+        clipped(head, 3, Lift(blip.cls, kSideLift));
+    }
+
+    // The zoom keys, on the same caps the loadout's row uses, sat over the
+    // panel's top edge and left-aligned with it — near enough the thing they
+    // act on to be read as belonging to it, and out of the box rather than
+    // over the ground, which at this size is the difference between a label
+    // and an obstruction. OUT before IN, because that is the order the keys sit
+    // in on the board and reading them the other way round would make the row
+    // an instruction to be memorized rather than a picture of the two keys.
+    DrawHints(renderer, tris, radar.hints, radar.hintCount, panelX,
+              panelY - kHintGap * s - CapHeight(s), s, 1.0f);
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
 }
