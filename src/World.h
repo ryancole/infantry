@@ -315,6 +315,16 @@ public:
         // outside the simulation reads this rather than the physics world.
         Vector3 pos;
         Vector3 prevPos; // last tick's position, for swept hit tests
+        // Where it was fired from, and the dead ground in front of that point:
+        // a body closer to `origin` than `minRange` is one this round passes
+        // straight through (WeaponDef::minRange). The pair rides on the shot
+        // rather than being looked up off the shooter's class because the round
+        // outlives the soldier — and outlives the class they were, since F11
+        // can trade one for another while the bolt is still in the air.
+        // minRange of 0 is every weapon but the sniper's, and costs the sweep
+        // a compare.
+        Vector3 origin;
+        float minRange;
         // Who fired it, and so who is credited if it kills: the shooter's slot
         // rather than their unit, because a round outlives the soldier who
         // sent it and a grenade can outlive them by seconds. `team` is that

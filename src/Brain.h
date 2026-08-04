@@ -66,6 +66,14 @@ namespace Brain
         const std::vector<Contact>* enemies;
         Vector2 arenaHalf; // how far out there is anywhere to walk to, on x and z
         bool canFire;    // loaded and off the cadence: a brain may want to act on being empty
+        // How close is too close for whatever this soldier is holding: inside
+        // this, their primary does nothing at all (WeaponDef::minRange). 0 for
+        // every weapon but the sniper's. It arrives as a bare number for the
+        // same reason `canFire` does — a brain has no business reading a class
+        // table, but a soldier does know the gun in their hands has a near edge
+        // to it, and one that kept walking into it would be playing worse than
+        // the rule deserves.
+        float minRange;
         // The ground this soldier's side is trying to reach — the enemy's
         // spawn. Not an order and not a route: it's the one fact that tells a
         // soldier with nothing in sight which way the fight is, and without it

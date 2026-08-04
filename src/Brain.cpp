@@ -61,12 +61,29 @@ namespace
                 mem.strafeTimer = Rand(rng, 1.0f, 2.5f);
             }
 
+            // Somebody inside the near edge of the weapon: back straight off
+            // them and hold fire until they're out of it. Rounds spent in
+            // there do nothing whatever, so this isn't a preference the way
+            // the circling range is — it's the difference between a rifleman
+            // fighting and one going through the motions of fighting.
+            //
+            // It backs off rather than strafing because the dead ground is a
+            // radius: circling at a distance that doesn't work only keeps the
+            // soldier in it. Facing stays on the enemy through the retreat, so
+            // it's a soldier walking backwards with the gun up rather than one
+            // turning its back, and the moment the gap opens it fires from
+            // where it stands.
+            const bool tooClose = enemy->dist < senses.minRange;
+
             intent.facing = toEnemy;
-            intent.move = enemy->dist > kPreferredRange
-                              ? toEnemy
-                              : Vector3(-toEnemy.z, 0.0f, toEnemy.x) * mem.strafeSign;
+            if (tooClose)
+                intent.move = -toEnemy;
+            else if (enemy->dist > kPreferredRange)
+                intent.move = toEnemy;
+            else
+                intent.move = Vector3(-toEnemy.z, 0.0f, toEnemy.x) * mem.strafeSign;
             intent.speedScale = kCombatSpeed;
-            intent.fire = true;
+            intent.fire = !tooClose;
             intent.fireDist = enemy->dist;
             return intent;
         }

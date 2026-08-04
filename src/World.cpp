@@ -894,11 +894,16 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
     // level at full speed, so max range comes from gravity.
     const Vector3 vel =
         dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
+    // The dead ground is measured from the soldier, not from the muzzle the
+    // round actually leaves: minimum range is the distance between two bodies,
+    // which is the thing the player is looking at, and charging them the
+    // muzzle offset as well would make the rule a fraction shorter than the
+    // one the aim line draws.
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
                                                         weapon.projectileMass, weapon.bounce),
-                              weapon.projectileLife, pos, pos, owner, SlotTeam(owner),
-                              weapon.damage, weapon.projectileRadius, weapon.blastRadius,
-                              weapon.bounce > 0.0f, weapon.explodes });
+                              weapon.projectileLife, pos, pos, from, weapon.minRange, owner,
+                              SlotTeam(owner), weapon.damage, weapon.projectileRadius,
+                              weapon.blastRadius, weapon.bounce > 0.0f, weapon.explodes });
 
     Event ev;
     ev.type = Event::Type::Fire;
@@ -1082,8 +1087,10 @@ void World::UpdateUnits(float dt)
         const WeaponDef& weapon = unit.cls->primary;
         const bool canFire =
             unit.fireCooldown <= 0.0f && unit.reloadTimer <= 0.0f && unit.ammo > 0;
-        const Brain::Senses senses = { unit.pos,    unit.aimDir, &m_contacts,
-                                       m_arenaHalf, canFire,     EnemySpawn(unit.team) };
+        const Brain::Senses senses = { unit.pos,        unit.aimDir,
+                                       &m_contacts,     m_arenaHalf,
+                                       canFire,         weapon.minRange,
+                                       EnemySpawn(unit.team) };
         const Brain::Intent intent =
             Brain::Think(unit.cls->brain, unit.mind, senses, dt, m_rng);
 
@@ -1249,6 +1256,25 @@ void World::UpdateProjectiles(float dt)
         {
             if (shot.life <= 0.0f || unit.hp <= 0.0f || unit.team == shot.team)
                 continue;
+            // Inside the weapon's dead ground: not a miss and not a graze, the
+            // round is simply not armed yet, so it goes through this soldier
+            // and stays live for whoever is standing behind them. Which is why
+            // the check sits here and not around the whole sweep — a sniper
+            // firing over the head of somebody in their face still kills the
+            // man at thirty units.
+            //
+            // Measured on the ground plane from where the shot was fired to
+            // where the body is now, rather than along the flight: the round
+            // travels its dead ground in a fifteenth of a second, and a rule a
+            // player is meant to read off the gap between two soldiers should
+            // be the gap between two soldiers.
+            if (shot.minRange > 0.0f)
+            {
+                const float dx = unit.pos.x - shot.origin.x;
+                const float dz = unit.pos.z - shot.origin.z;
+                if (dx * dx + dz * dz < shot.minRange * shot.minRange)
+                    continue;
+            }
             const XMFLOAT3 center = { unit.pos.x, kPlayerHalf, unit.pos.z };
             if (!SegmentHitsBox(shot.prevPos, pos, center, bodyHalf, shot.radius))
                 continue;

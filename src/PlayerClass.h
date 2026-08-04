@@ -48,6 +48,14 @@ struct WeaponDef
     float projectileMass;
     float lobVelocity;       // upward muzzle speed; > 0 arcs the shot under gravity
     float projectileLife;    // seconds before despawn; with bounce > 0, the fuse
+    // The near end of a weapon's reach, the way projectileLife is the far one.
+    // A soldier standing closer to the muzzle than this cannot be hit by the
+    // round at all: it passes clean through them and carries on to whatever is
+    // behind, because it isn't armed yet. Measured from the shooter to the
+    // body, not along the round's flight, so it's the distance between two
+    // soldiers — the thing a player can actually judge — rather than a number
+    // about a bullet. 0 = no dead ground, which is every weapon here but one.
+    float minRange;
     float damage;            // health removed by a direct hit
     float blastRadius;       // > 0: splash damage out to here, falling off to nothing
     // Restitution, i.e. the fraction of impact speed a bounce keeps. Above 0
@@ -250,17 +258,46 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // it makes being spotted for something a class needs rather than something
     // it enjoys, and it gives the sniper a job on a quiet flank.
     //
+    // Minimum range is the sniper's alone, and it is the first stat in the
+    // table that takes something away rather than handing it out. Six units of
+    // ground in front of the muzzle where the rifle does nothing at all: a
+    // soldier standing inside it is passed straight through, and the bolt goes
+    // on to whatever is behind them. Nothing about the shot changes — it isn't
+    // weakened, it isn't stopped, it simply isn't armed yet — so a sniper with
+    // someone in their face is a sniper holding a stick, and the answer has to
+    // be the blade, the grenade, or the walk backwards.
+    //
+    // It's here because a class called LONG RANGE should be answerable up
+    // close, and until now it wasn't: the same 85 that ends a soldier at thirty
+    // units ended them at two, so the counterplay to the longest reach in the
+    // game was to walk into it, and the sniper was rewarded for being found.
+    // Every other cost the class pays is a wait — the slowest legs, the longest
+    // reload — and a wait is something a good player spends well. Dead ground
+    // is not: no amount of skill fires a round that hasn't armed, so this is
+    // the one place the class is simply beaten, which is what a class this
+    // deadly at range needs somewhere on it.
+    //
+    // Six is measured against the things a soldier meets rather than picked off
+    // a scale. It is well past the blade (1.6) so the fallback is a real
+    // weapon rather than a technicality, wide enough that a trench (4.9 across)
+    // is dead ground end to end so getting into the sniper's own line is worth
+    // doing, and short of the medic's dressing (7) — the shortest reach in the
+    // game that isn't a swing — so the sniper's blind spot never becomes the
+    // widest thing on the field. Against Brain::kPreferredRange, the eleven
+    // units an NPC circles at, it leaves the AI fighting where it always did
+    // and treats being closer than that as the emergency it is.
+    //
     // Two of the colors moved when the armor became the team's. The sniper's
     // blue and the grenadier's orange were the marks that sat nearest the sides
     // they'd now have to be read against — a blue helmet on a blue soldier says
     // nothing at all. Violet and amber are as far from each other as those were,
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
-    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
+    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
@@ -303,8 +340,8 @@ inline constexpr float SustainedFireRate(const WeaponDef& w)
 // reload of its own — two seconds, both halves the same — but that's the
 // pacing of a thing you carry several of, and this one is issued by the life.
 inline constexpr WeaponDef kGrenade = {
-    // fire  mag early empty speed  radius mass   lob   fuse  dmg    blast bnce  boom
-       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 30.0f, 4.0f, 0.45f, true
+    // fire  mag early empty speed  radius mass   lob   fuse  min   dmg    blast bnce  boom
+       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 0.0f, 30.0f, 4.0f, 0.45f, true
 };
 
 // The blade every soldier carries, swung with the melee key. Standard issue

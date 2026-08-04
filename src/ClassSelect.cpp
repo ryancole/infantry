@@ -211,14 +211,27 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds, Mode mode)
         // one: its magazine is always empty by the time it's changed, and
         // printing a price it can't be charged would be a lie about the class
         // on the screen where the class is being chosen.
-        char loadout[48];
+        //
+        // A minimum range rides on the end of the same line, for the one class
+        // that has one. It's spelled out rather than barred for a reason of its
+        // own: the RNG bar underneath is a reading of muzzle speed, so a notch
+        // cut in its near end would be drawn against the wrong axis and would
+        // lie about how much of the class's reach was missing. And it can't be
+        // left off the card, because dead ground is exactly what this screen is
+        // for — the one thing that makes the sniper a different soldier to pick
+        // rather than a longer version of the marine.
+        char loadout[64];
+        int n;
         if (def.primary.magazine == 1)
-            std::snprintf(loadout, sizeof(loadout), "1 RD - %.1fS RELOAD",
-                          def.primary.reloadEmpty);
+            n = std::snprintf(loadout, sizeof(loadout), "1 RD - %.1fS RELOAD",
+                              def.primary.reloadEmpty);
         else
-            std::snprintf(loadout, sizeof(loadout), "%d RDS - %.1f/%.1fS RELOAD",
-                          def.primary.magazine, def.primary.reloadEarly,
-                          def.primary.reloadEmpty);
+            n = std::snprintf(loadout, sizeof(loadout), "%d RDS - %.1f/%.1fS RELOAD",
+                              def.primary.magazine, def.primary.reloadEarly,
+                              def.primary.reloadEmpty);
+        if (def.primary.minRange > 0.0f && n > 0 && n < static_cast<int>(sizeof(loadout)))
+            std::snprintf(loadout + n, sizeof(loadout) - n, " - %.0f MIN RANGE",
+                          def.primary.minRange);
         DrawCentered(renderer, loadout, r.x + r.w * 0.5f, r.y + r.h * 0.45f, r.w * 0.042f,
                      Dim(def.color, 0.85f));
 
