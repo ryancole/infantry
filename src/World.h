@@ -79,6 +79,12 @@ struct Unit
     float fireCooldown;
     int ammo;          // rounds left in the magazine
     float reloadTimer; // > 0 while reloading, and unable to shoot back
+    // How long the reload underway was going to take: whichever of the
+    // weapon's two numbers was charged when it started. Kept because the
+    // timer alone can't say how much of the wait is left as a fraction, and
+    // by the time anything reads it the magazine is already empty, so there's
+    // nothing left to work it back out from.
+    float reloadSpan;
     // The rest of the kit, issued to every controller alike: today's
     // brains never throw the grenade, swing the blade, or carry a class
     // with an ability, but that's a fact about the brains, not about what
@@ -545,8 +551,9 @@ private:
     // soldier, UpdateUnits for a mind-driven one — so nobody is ticked twice.
     void TickClocks(Unit& unit, float dt);
     // Starts `unit`'s reload: empties the rest of the magazine into the
-    // timer. A no-op if one is already running or the magazine is full, so
-    // the reload key can be leaned on harmlessly.
+    // timer, and charges the weapon's early or empty price depending on
+    // whether there was anything in it. A no-op if one is already running or
+    // the magazine is full, so the reload key can be leaned on harmlessly.
     void BeginReload(Unit& unit);
     // Spends one of `attacker`'s melee charges on a swing through the arc in
     // front of them and strikes the nearest enemy standing in it, if any. The

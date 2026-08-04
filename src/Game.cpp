@@ -1710,10 +1710,12 @@ void Game::RenderHud(Renderer& renderer)
     {
         hud.hp = u->hp;
         hud.ammo = u->ammo;
-        hud.reloadFraction =
-            u->reloadTimer > 0.0f && u->cls->primary.reloadTime > 0.0f
-                ? 1.0f - u->reloadTimer / u->cls->primary.reloadTime
-                : -1.0f;
+        // Against the wait that was actually charged, not the class's longest:
+        // a reload taken early finishes sooner, and a bar measured off the
+        // empty price would crawl to four fifths and then jump.
+        hud.reloadFraction = u->reloadTimer > 0.0f && u->reloadSpan > 0.0f
+                                 ? 1.0f - u->reloadTimer / u->reloadSpan
+                                 : -1.0f;
         hud.melee = u->meleeCharges;
         // The recovery runs after every swing, including the ones that leave
         // charges in hand, but a refill the player can swing straight through

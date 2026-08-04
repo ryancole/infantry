@@ -59,7 +59,12 @@ namespace Net
     // thirty and cull at thirty the enemies its server sent it from
     // thirty-eight — drawing an emptier field than the one it is being told
     // about, and quietly making the class's whole point invisible.
-    constexpr uint8_t kProtocolVersion = 9;
+    // 10: a reload has two prices, and the own-block carries which one is
+    // being paid (SnapOwn::reloadSpan) because the magazine is emptied at the
+    // start and nothing downstream could work it out otherwise. This one is
+    // real bytes rather than a change of meaning — a client from 9 would read
+    // the float as the grenade count and everything after it as rubbish.
+    constexpr uint8_t kProtocolVersion = 10;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -296,6 +301,7 @@ namespace Net
         float moveVelX = 0.0f, moveVelZ = 0.0f;
         int32_t ammo = 0;
         float reloadTimer = 0.0f;
+        float reloadSpan = 0.0f; // what the running reload was charged, for the bar
         uint8_t grenades = 0;
         uint8_t meleeCharges = 0;
         float meleeRecover = 0.0f;
@@ -462,6 +468,7 @@ namespace Net
         w.F32(own->moveVel.z);
         w.I32(own->ammo);
         w.F32(own->reloadTimer);
+        w.F32(own->reloadSpan);
         w.U8(static_cast<uint8_t>(own->grenades));
         w.U8(static_cast<uint8_t>(own->meleeCharges));
         w.F32(own->meleeRecover);
@@ -531,6 +538,7 @@ namespace Net
             snap.own.moveVelZ = r.F32();
             snap.own.ammo = r.I32();
             snap.own.reloadTimer = r.F32();
+            snap.own.reloadSpan = r.F32();
             snap.own.grenades = r.U8();
             snap.own.meleeCharges = r.U8();
             snap.own.meleeRecover = r.F32();
