@@ -1863,6 +1863,18 @@ void Game::RenderHud(Renderer& renderer)
     // blinking to the middle of the arena the moment they go down.
     radar.focusX = m_eyePos.x;
     radar.focusZ = m_eyePos.z;
+    // The zoom's own key caps, over the panel. They aren't on the loadout's
+    // hint row because that row is the kit — what this soldier is carrying and
+    // what spends it — and the radar's zoom is neither. Saying it next to the
+    // radar costs the same two caps and puts the answer where the question is
+    // asked. The labels are the directions rather than the word ZOOM: the
+    // panel they sit on is a map, so what else would they be zooming.
+    const Hud::Hint radarHints[] = {
+        { m_binds.Label(Act::RadarOut).c_str(), "OUT" },
+        { m_binds.Label(Act::RadarIn).c_str(), "IN" },
+    };
+    radar.hints = radarHints;
+    radar.hintCount = std::size(radarHints);
     Hud::RenderRadar(renderer, radar);
 
     // The scoreboard, while the key is down. Every place on the field, both

@@ -498,6 +498,62 @@ namespace
     // the number means anything.
     constexpr size_t kMaxHints = 10;
 
+    // --- Key caps ---
+    //
+    // A row of "this control does this": a rounded cap with whatever the player
+    // has the control bound to, then what it does, muted, and on to the next.
+    //
+    // Two readouts draw one now — the loadout's row under the cluster, and the
+    // radar's pair over the corner — so the rule for laying one out lives here
+    // and each caller says only where its row starts. Splitting the measure
+    // from the draw is what lets a caller center its row (the loadout) or
+    // butt it up against the edge of its own panel (the radar) without either
+    // of them knowing how a cap is built.
+    //
+    // The cap is at least as wide as it is tall, so a one-character key stays a
+    // square rather than becoming a slot.
+    float CapWidth(Renderer& renderer, const char* key, float size, float s)
+    {
+        const float capH = size + kHintKeyPad * s * 2.0f;
+        return std::max(renderer.MeasureScreenText(key, size) + kHintKeyPad * s * 2.0f, capH);
+    }
+
+    float HintsWidth(Renderer& renderer, const Hud::Hint* hints, size_t count, float s)
+    {
+        if (count == 0)
+            return 0.0f;
+        const float size = kHintSize * s;
+        float width = kHintSpacing * s * static_cast<float>(count - 1);
+        for (size_t i = 0; i < count; ++i)
+            width += CapWidth(renderer, hints[i].key, size, s) + kHintTextGap * s +
+                     renderer.MeasureScreenText(hints[i].label, size);
+        return width;
+    }
+
+    // Draws the row with its top-left at (x, y); the height is CapHeight below.
+    void DrawHints(Renderer& renderer, std::vector<Vertex>& tris, const Hud::Hint* hints,
+                   size_t count, float x, float y, float s, float fade)
+    {
+        const float size = kHintSize * s;
+        const float capH = size + kHintKeyPad * s * 2.0f;
+        for (size_t i = 0; i < count; ++i)
+        {
+            const float capW = CapWidth(renderer, hints[i].key, size, s);
+            AppendRoundRect(tris, x, y, capW, capH, capH * 0.28f, Fade(kTrack, fade));
+            renderer.DrawScreenText(
+                hints[i].key,
+                x + (capW - renderer.MeasureScreenText(hints[i].key, size)) * 0.5f,
+                y + kHintKeyPad * s, size, Fade(kValueColor, fade));
+
+            x += capW + kHintTextGap * s;
+            renderer.DrawScreenText(hints[i].label, x, y + (capH - size) * 0.5f, size,
+                                    Fade(kMutedColor, fade));
+            x += renderer.MeasureScreenText(hints[i].label, size) + kHintSpacing * s;
+        }
+    }
+
+    float CapHeight(float s) { return kHintSize * s + kHintKeyPad * s * 2.0f; }
+
     // A countdown as minutes and seconds. Rounded up, so it reaches 0:01 for
     // the last second and only says 0:00 when the match really is over.
     std::string ClockText(float seconds)
@@ -755,41 +811,10 @@ void Hud::Render(Renderer& renderer, const State& st)
     // only how to lay a row of caps out, and stops at kMaxHints of them so a
     // caller can't quietly widen the row past the screen.
 
-    const float hintSize = kHintSize * s;
-    const float capH = hintSize + kHintKeyPad * s * 2.0f;
-    const float hintY = panelY - kHintGap * s - capH;
-
     const size_t hintCount = std::min(st.hintCount, kMaxHints);
-    float hintsW = 0.0f;
-    float capWidths[kMaxHints] = {};
-    for (size_t i = 0; i < hintCount; ++i)
-    {
-        capWidths[i] = std::max(renderer.MeasureScreenText(st.hints[i].key, hintSize) +
-                                    kHintKeyPad * s * 2.0f,
-                                capH);
-        hintsW += capWidths[i] + kHintTextGap * s +
-                  renderer.MeasureScreenText(st.hints[i].label, hintSize);
-    }
-    if (hintCount > 0)
-        hintsW += kHintSpacing * s * (hintCount - 1);
-
-    float hintX = std::floor((w - hintsW) * 0.5f);
-    for (size_t i = 0; i < hintCount; ++i)
-    {
-        const Hint& hint = st.hints[i];
-        AppendRoundRect(tris, hintX, hintY, capWidths[i], capH, capH * 0.28f,
-                        Fade(kTrack, fade));
-        renderer.DrawScreenText(hint.key,
-                                hintX + (capWidths[i] -
-                                         renderer.MeasureScreenText(hint.key, hintSize)) *
-                                            0.5f,
-                                hintY + kHintKeyPad * s, hintSize, Fade(kValueColor, fade));
-
-        hintX += capWidths[i] + kHintTextGap * s;
-        renderer.DrawScreenText(hint.label, hintX, hintY + (capH - hintSize) * 0.5f, hintSize,
-                                Fade(kMutedColor, fade));
-        hintX += renderer.MeasureScreenText(hint.label, hintSize) + kHintSpacing * s;
-    }
+    const float hintsW = HintsWidth(renderer, st.hints, hintCount, s);
+    DrawHints(renderer, tris, st.hints, hintCount, std::floor((w - hintsW) * 0.5f),
+              panelY - kHintGap * s - CapHeight(s), s, fade);
 
     // --- Roster ---
     //
@@ -1280,6 +1305,16 @@ void Hud::RenderRadar(Renderer& renderer, const Radar& radar)
                                    { cx + dx * base - px * wing, cy + dz * base - pz * wing } };
         clipped(head, 3, Lift(blip.cls, kSideLift));
     }
+
+    // The zoom keys, on the same caps the loadout's row uses, sat over the
+    // panel's top edge and left-aligned with it — near enough the thing they
+    // act on to be read as belonging to it, and out of the box rather than
+    // over the ground, which at this size is the difference between a label
+    // and an obstruction. OUT before IN, because that is the order the keys sit
+    // in on the board and reading them the other way round would make the row
+    // an instruction to be memorized rather than a picture of the two keys.
+    DrawHints(renderer, tris, radar.hints, radar.hintCount, panelX,
+              panelY - kHintGap * s - CapHeight(s), s, 1.0f);
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
 }

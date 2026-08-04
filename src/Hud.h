@@ -256,6 +256,18 @@ namespace Hud
         // decided down here — a window that ran off the edge would scroll the
         // ground away from under a soldier standing still.
         float focusX, focusZ;
+        // The controls that move the zoom, as the same key caps the loadout
+        // draws, sat over the panel. A zoom nobody knows about is a zoom that
+        // stays where it started, and this is the only readout on screen whose
+        // controls are neither under a finger already nor on the row beneath
+        // the loadout — so it says so itself, next to the thing they act on,
+        // which is the only place the answer is any use.
+        //
+        // They arrive as caps rather than as two key names for the same reason
+        // State::hints does: what a control is spelled is the player's
+        // business, and this file has no way to look it up.
+        const Hint* hints;
+        size_t hintCount;
     };
 
     void RenderRadar(Renderer& renderer, const Radar& radar);
