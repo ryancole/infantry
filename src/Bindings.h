@@ -50,6 +50,14 @@ public:
         // — TAB is only where it starts out, and the HUD has to be able to say
         // where the player moved it to.
         Scoreboard,
+        // Asking to be somebody else, which the game only lets a player ask at
+        // their own spawn or while they're waiting to come back. It's an action
+        // rather than a nailed-down key even though it opens a menu, because
+        // the menu is opened from inside the match with the hands that are
+        // playing it — F11 is where the zone this game comes from put it, and
+        // it's the one key here a player might want somewhere their thumb can
+        // reach.
+        ClassChange,
         // The radar's own zoom, in and out. Held rather than tapped — the zoom
         // is continuous and a player nudging it wants to watch it arrive, not
         // count presses. They sit with the camera at the rear because that is

@@ -332,6 +332,67 @@ void Server::Impl::Service(World& world)
                                     session->unitId);
                 }
             }
+            else if (session && type == Net::MsgType::ChangeClass && session->joined)
+            {
+                // Being somebody else, mid-match. Two places allow it and
+                // nowhere else does: standing on your own spawn, or waiting out
+                // a respawn with no soldier to be standing anywhere. Both are
+                // the same rule read twice — a class is what a player is
+                // committed to for a life, and this is the seam between lives.
+                // The check is made here rather than trusted from the client:
+                // the client asks the same question of the same ground before
+                // it sends, and a client that has been edited not to is exactly
+                // what this is for.
+                //
+                // Not once the whistle has gone. The arena is frozen for the
+                // length of the result and nothing else a player presses
+                // reaches it; the next match deals everyone a fresh soldier
+                // anyway, and it deals them the class they were last holding.
+                const uint8_t classId = r.U8() % kClassCount;
+                const Unit* me =
+                    session->unitId >= 0 ? world.UnitById(session->unitId) : nullptr;
+                const bool allowed =
+                    r.ok && !world.MatchOver() &&
+                    (session->unitId < 0 || (me && world.InSpawnArea(session->team, me->pos)));
+                if (allowed)
+                {
+                    session->classId = classId;
+                    Net::Writer w;
+                    Net::WriteClassChanged(w, classId);
+                    SendReliable(session->peer, w);
+                    // Alive, they trade the soldier they have for a fresh one
+                    // of the class they asked for, on the spot they're already
+                    // standing on: no corpse, no death, no kill for anybody,
+                    // and the slot's record follows them across because the
+                    // record was never the soldier's. It is a whole new life,
+                    // health and magazine and grenade included — which is the
+                    // half of this worth being deliberate about, since it means
+                    // a wounded player can walk home and come back whole. The
+                    // walk is the price, and on this map the walk is most of a
+                    // minute.
+                    //
+                    // Dead, there is nothing to trade: the wait runs on and the
+                    // soldier it owes them (Respawns, above) comes back as the
+                    // class they just picked, which is the same line of code it
+                    // always was reading a field that has changed under it.
+                    if (session->unitId >= 0)
+                    {
+                        world.RemoveUnit(session->unitId);
+                        session->unitId =
+                            world.SpawnRemote(kClassDefs[classId], session->slot);
+                        session->queue.clear();
+                        session->held = {};
+                        if (const Unit* fresh = world.UnitById(session->unitId))
+                            session->viewPos = { fresh->pos.x, fresh->pos.z };
+                        Net::Writer respawn;
+                        Net::WriteRespawned(respawn, session->unitId);
+                        SendReliable(session->peer, respawn);
+                    }
+                    if (config.log)
+                        std::printf("player on team %d is now %s\n", session->team,
+                                    kClassDefs[classId].name);
+                }
+            }
             else if (session && type == Net::MsgType::Cmd && session->joined)
             {
                 // The packet is the newest command plus its recent

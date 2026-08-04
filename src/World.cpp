@@ -363,6 +363,24 @@ int World::FreeAiSlot(int team) const
     return -1;
 }
 
+DirectX::SimpleMath::Vector3 World::TeamSpawn(int team) const
+{
+    return team >= 0 && team < static_cast<int>(m_teamSpawns.size()) ? m_teamSpawns[team]
+                                                                     : Vector3::Zero;
+}
+
+bool World::InSpawnArea(int team, const Vector3& pos) const
+{
+    if (team < 0 || team >= static_cast<int>(m_teamSpawns.size()))
+        return false;
+    // Flat: the spawn is a patch of ground, and how high above it something is
+    // has never meant anything in this game.
+    const Vector3 spawn = m_teamSpawns[team];
+    const float dx = pos.x - spawn.x;
+    const float dz = pos.z - spawn.z;
+    return dx * dx + dz * dz <= kSpawnArea * kSpawnArea;
+}
+
 int World::Standing(int team) const
 {
     if (!m_standingOverride.empty())

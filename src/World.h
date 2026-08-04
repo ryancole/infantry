@@ -206,6 +206,15 @@ public:
     // couple of hundred lives a side, which is enough that the score reads as
     // the whole match rather than as whoever won the last exchange.
     static constexpr float kRespawnDelay = 5.0f;
+    // How far from a side's spawn point still counts as standing at it. What
+    // it gates is the class change: a soldier is what a player is committed to
+    // for a life, and the ground where lives begin is the one place that
+    // commitment can be revised without dying first. So it has to be a place
+    // rather than a point — eight units is room to stand, four times the
+    // scatter a squad spawns across, and on hardcorps2t it fills the notch each
+    // base sits in without reaching past the rock around it. A player who wants
+    // a different soldier walks home for it, and the walk is the price.
+    static constexpr float kSpawnArea = 8.0f;
     // Soldiers a side puts on the field, the local player included. Five a side
     // is the smallest number that makes the arena read as a fight rather than a
     // duel: enough that a flank is covered by somebody, few enough that any one
@@ -400,6 +409,16 @@ public:
     // straight, and on a client it's the server's copy, delivered whole.
     const std::vector<Slot>& Roster() const { return m_roster; }
     int TeamCount() const { return static_cast<int>(m_teamSpawns.size()); }
+
+    // Where `team` comes onto the field, and whether a point is near enough to
+    // it to count as being there (kSpawnArea). Both ends ask: the server, to
+    // decide whether a player may swap their soldier for another class, and the
+    // client, to decide whether to offer it and where to draw the ring. The
+    // spawns come off the level, which both of them loaded, so the two are
+    // asking the same question of the same ground. Zero and false for a team
+    // the level doesn't have.
+    Vector3 TeamSpawn(int team) const;
+    bool InSpawnArea(int team, const Vector3& pos) const;
 
     // Living soldiers on `team`. Counted off the roster when the roster is
     // whole; on a replica it's the number the server sent, because a fog-

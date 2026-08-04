@@ -167,6 +167,14 @@ private:
     // sentence the simulation accepts. Everything screen-shaped dies here —
     // past this function nothing knows which way the player's monitor faces.
     Command ReadCommand(const Input& input, const IsoCamera& camera, const Vector3& pos) const;
+    // Whether the class change key would do anything if it were pressed right
+    // now: there is a match on, the whistle hasn't gone, and the player is
+    // either standing on their own spawn or waiting to come back from it. It's
+    // asked three times a frame — to arm the key, to put the cap on the HUD,
+    // and to say whether the ring on the ground is live — because those three
+    // must never disagree with each other, and none of them may disagree with
+    // the server, which asks the same question of the same spawns.
+    bool CanChangeClass() const;
     // The other seam, coming back up: everything the ticks just did, turned
     // into what it looks and sounds like — blood for a Hit, a ragdoll for a
     // Death, a thud for a Bounce, a rumble for the local soldier's pain. Runs
@@ -311,6 +319,13 @@ private:
     BindMenu m_bindMenu;
     AudioMenu m_audioMenu;
     ClassSelect m_classSelect;
+    // Whether the class cards are up over a match in progress. A flag rather
+    // than a Phase of its own, because it isn't one: the match goes on behind
+    // it — the arena is drawn, the wire is pumped, the squad keeps fighting —
+    // and the player is still exactly as dead or alive as they were. What it
+    // changes is that their hands are on a menu, so the command that goes out
+    // each tick is an empty one (see Update), and the cards are drawn last.
+    bool m_classChangeOpen = false;
     // The player's layout, read off disk at startup and written back whenever
     // they leave the settings screen. Defaults stand if there's no file yet.
     Bindings m_binds;
