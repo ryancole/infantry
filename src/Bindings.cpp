@@ -41,6 +41,12 @@ namespace
         { "ability",      "ABILITY",      Key('Q') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
         { "scoreboard",   "SCOREBOARD",   Key(VK_TAB) },
+        // F11, which is where Infantry put it and where anyone who played it
+        // will reach for it. Nothing else on this list is anywhere near the
+        // function row, which is the other half of why it's the right key: the
+        // class change is pressed between fights and must not be reachable by
+        // the hand that is fighting.
+        { "class_change", "CHANGE CLASS", Key(VK_F11) },
         // The bracket pair, because it's the one adjacent pair of keys left
         // that isn't under a hand playing the game: the radar is adjusted
         // between fights rather than during them, and putting its zoom

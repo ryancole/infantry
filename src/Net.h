@@ -64,7 +64,14 @@ namespace Net
     // start and nothing downstream could work it out otherwise. This one is
     // real bytes rather than a change of meaning — a client from 9 would read
     // the float as the grenade count and everything after it as rubbish.
-    constexpr uint8_t kProtocolVersion = 10;
+    // 11: a class is no longer settled at the door. ChangeClass goes up and
+    // ClassChanged comes back down, so a player standing on their own spawn —
+    // or waiting out a respawn — can put down one soldier and pick up another.
+    // Two new message types rather than a change to an old one, which is the
+    // kind of break an older client survives by ignoring bytes it can't read;
+    // the version still moves, because a client from 10 would sit there with a
+    // key that does nothing and no way to be told why.
+    constexpr uint8_t kProtocolVersion = 11;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -81,13 +88,22 @@ namespace Net
 
     enum class MsgType : uint8_t
     {
-        Join,      // c->s, reliable: protocol version + uint8 classId
-        Cmd,       // c->s, state: the player's recent Commands, newest last
-        Welcome,   // s->c, reliable: your unit id and team
-        Respawned, // s->c, reliable: your fresh unit's id
-        Snapshot,  // s->c, state: the visible world, this tick
-        Events,    // s->c, state: what the tick did
-        Reject,    // s->c, reliable: the door, closed, with a reason
+        Join,        // c->s, reliable: protocol version + uint8 classId
+        Cmd,         // c->s, state: the player's recent Commands, newest last
+        Welcome,     // s->c, reliable: your unit id and team
+        Respawned,   // s->c, reliable: your fresh unit's id
+        Snapshot,    // s->c, state: the visible world, this tick
+        Events,      // s->c, state: what the tick did
+        Reject,      // s->c, reliable: the door, closed, with a reason
+        ChangeClass, // c->s, reliable: uint8 classId — asking to be somebody else
+        // s->c, reliable: uint8 classId — and you are, from now on. A change
+        // that also puts a fresh soldier on the field is followed by a
+        // Respawned; one made by a player waiting to respawn is this alone, and
+        // the soldier they're owed arrives as the class they just picked. A
+        // refusal is silence: the client asks the same question of the same
+        // ground before it sends, so the only way to be told no is to have
+        // walked out of the spawn area in the time the packet took.
+        ClassChanged,
     };
 
     enum class RejectReason : uint8_t
@@ -643,5 +659,17 @@ namespace Net
     {
         w.U8(static_cast<uint8_t>(MsgType::Respawned));
         w.I32(unitId);
+    }
+
+    inline void WriteChangeClass(Writer& w, uint8_t classId)
+    {
+        w.U8(static_cast<uint8_t>(MsgType::ChangeClass));
+        w.U8(classId);
+    }
+
+    inline void WriteClassChanged(Writer& w, uint8_t classId)
+    {
+        w.U8(static_cast<uint8_t>(MsgType::ClassChanged));
+        w.U8(classId);
     }
 }

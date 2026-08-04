@@ -115,6 +115,16 @@ namespace
     // gets one: a soldier with nothing under them is someone to shoot.
     constexpr float kFriendlyRingAlpha = 0.45f;
     constexpr float kFriendlyRingRadius = 0.55f;
+    // Your own side's spawn, ringed on the ground it covers. The class change
+    // key works inside this circle and nowhere else on the field, so where
+    // "inside" is has to be a place the player can see rather than a radius
+    // they have to guess at — and the ring brightens when they're standing in
+    // it, which is the rule stated where they are instead of in a menu. Drawn
+    // in the team's own color, like the rings under squadmates, because it's
+    // the same claim about the same side.
+    constexpr float kSpawnRingAlpha = 0.16f;
+    constexpr float kSpawnRingAlphaLive = 0.55f;
+    constexpr int kSpawnRingSegments = 64; // eight units across wants more than a shot's ring
     // Wet and bright in the air, dark and matte once it has soaked into the
     // floor. The stain is translucent, so overlapping ones deepen where a fight
     // stayed in one place.
@@ -381,6 +391,7 @@ void Game::LeaveMatch()
     ClearBattlefield();
     m_world.Reset();
     m_class = nullptr;
+    m_classChangeOpen = false;
     m_respawnTimer = 0.0f;
     m_tickAccum = 0.0f;
     m_renderAlpha = 0.0f;
@@ -452,6 +463,24 @@ void Game::NetPump(float dt, IsoCamera& camera)
             m_camSnapPending = true;
             m_hasPredicted = false;
             m_pendingCmds.clear();
+            break;
+        }
+        // The class change, granted. It arrives on its own while the player is
+        // waiting to respawn — the soldier they're owed will be this class when
+        // it comes — and just ahead of a Respawned when they were standing on
+        // their spawn and have just traded one soldier for another.
+        //
+        // Taken from the server rather than assumed at the press, because
+        // everything on this side reads the class for a whole life: the HUD's
+        // magazine, the aim indicator's weapon, and how far this player's own
+        // eye sees, which is the one the fog is cut with. A client that changed
+        // it on the press and was refused would be drawing a different match to
+        // the one the server was sending it.
+        case Net::MsgType::ClassChanged:
+        {
+            const uint8_t classId = r.U8();
+            if (r.ok && classId < kClassCount)
+                m_class = &kClassDefs[classId];
             break;
         }
         case Net::MsgType::Snapshot:
@@ -719,11 +748,52 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // goes on without you; one hosted here ends, because you were the only
     // person in it. Either way the key means the same thing — leave — and
     // QUIT on the menu is what closes the game.
+    //
+    // Unless the class cards are up, in which case the key backs out of them:
+    // escape means "out of the thing in front of me", and what's in front of
+    // the player is a screen, not the match behind it.
     if (input.KeyPressed(VK_ESCAPE))
     {
-        LeaveMatch();
-        return;
+        if (m_classChangeOpen)
+            m_classChangeOpen = false;
+        else
+        {
+            LeaveMatch();
+            return;
+        }
     }
+
+    // Being somebody else. The key is armed at the player's own spawn and while
+    // they're waiting to come back from it, and nowhere else — that rule is the
+    // whole of the feature, and it's checked here so the key is dead in the
+    // hand rather than answered with a refusal from across the wire. The server
+    // asks it again on arrival anyway, off the same spawns.
+    //
+    // Read before the Dead branch below, like the scoreboard and the radar,
+    // because the respawn wait is the other half of when this is used: a player
+    // who has just been killed by something their class was wrong for gets to
+    // do something about it while they wait, and the soldier they're owed
+    // arrives as whatever they picked.
+    if (m_classChangeOpen)
+    {
+        // The same key closes it again — it's a screen being held open, and a
+        // player who opened it by accident should get out the way they came in.
+        // So does anything that would have stopped it opening: the screen is
+        // only ever up where the choice is live, which today means the whistle
+        // going while somebody is reading the cards takes them away.
+        if (!CanChangeClass() || m_binds.Pressed(input, Act::ClassChange))
+            m_classChangeOpen = false;
+        else if (const auto picked = m_classSelect.Update(input, camera.ViewportWidth(),
+                                                          camera.ViewportHeight()))
+        {
+            Net::Writer w;
+            Net::WriteChangeClass(w, static_cast<uint8_t>(*picked));
+            m_net->SendReliable(w.bytes);
+            m_classChangeOpen = false;
+        }
+    }
+    else if (m_binds.Pressed(input, Act::ClassChange) && CanChangeClass())
+        m_classChangeOpen = true;
 
     // The scoreboard is a held key, read here rather than in ReadCommand
     // because it asks nothing of the simulation: it's this machine deciding
@@ -731,7 +801,10 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // a player looked at the board. Read before the Dead branch below so it
     // works either side of a respawn — the wait is exactly when a player has
     // nothing to do but read it.
-    m_showScores = m_binds.Down(input, Act::Scoreboard);
+    //
+    // Not while the cards are up: the board and the cards want the same middle
+    // of the same screen, and the one the player just opened wins.
+    m_showScores = !m_classChangeOpen && m_binds.Down(input, Act::Scoreboard);
 
     // The radar's zoom, read in the same place and for the same reason: it
     // decides what this machine draws in its own corner and the simulation has
@@ -785,10 +858,21 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // inside ReadCommand, and the World does exactly the same work on a
     // sentence that arrived over a socket. The one keepsake this side holds
     // onto is the aim distance, which the aim indicator wants at render time.
+    //
+    // With the class cards up the player's hands are on a menu rather than on a
+    // soldier, so the command is made empty instead of not being made at all:
+    // stand still, hold this facing, press nothing. Not sending one would be
+    // worse than sending nothing, because a starved server reapplies the last
+    // command it had (Server::Impl::Step) — a player who opened the screen
+    // mid-stride would watch their soldier walk out of the spawn area they
+    // opened it in.
     m_screenRight = camera.ScreenRightOnGround();
-    const Command fresh = ReadCommand(
-        input, camera, m_hasPredicted ? m_predicted.pos : m_world.Local()->pos);
-    m_aimDist = fresh.aimDist;
+    const Command fresh =
+        m_classChangeOpen
+            ? Command{}
+            : ReadCommand(input, camera, m_hasPredicted ? m_predicted.pos : m_world.Local()->pos);
+    if (!m_classChangeOpen)
+        m_aimDist = fresh.aimDist;
 
     // The whistle has gone: the arena is frozen and nothing pressed reaches
     // it. The controls stop being read rather than being read and ignored,
@@ -898,12 +982,24 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // the player rather than the soldier: stop drawing a swing whose arm is
     // gone, start the wait, and let the camera hold where the body fell
     // (m_eyePos keeps the spot).
+    //
+    // Absence with a spawn already promised isn't death, though: a class change
+    // takes the old soldier off the field and puts a new one on in the same
+    // tick, and if the snapshot that carries them is read a packet ahead of the
+    // Respawned that names them, this is the frame in between. m_camSnapPending
+    // is exactly that promise — set by Welcome and Respawned, spent by the
+    // first snapshot with us in it — so waiting on it costs a real death
+    // nothing and saves a class change a frame of the grey screen.
     if (!m_world.Local())
     {
         m_meleeFlash = 0.0f;
         // The prediction dies with the soldier it was predicting.
         m_hasPredicted = false;
         m_pendingCmds.clear();
+        // Nothing to look through and nothing to look at yet; the eye stays
+        // where it was, which is where the body was standing.
+        if (m_camSnapPending)
+            return;
         m_phase = Phase::Dead;
         m_respawnTimer = World::kRespawnDelay;
         return;
@@ -924,6 +1020,28 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     }
     m_sound.SetListener(m_eyePos, camera.ScreenUpOnGround());
     camera.SetTarget(m_eyePos);
+}
+
+bool Game::CanChangeClass() const
+{
+    // Nothing to change on a menu, and nothing to change into once the whistle
+    // has gone: the arena is frozen for the length of the result, the next
+    // match deals everybody a fresh soldier anyway, and this is one more key
+    // that stops reaching the fight along with all the others.
+    if (!m_net || m_world.MatchOver())
+        return false;
+    // Waiting to come back is the other place it's allowed, and the plainer of
+    // the two: there is no soldier to trade, only the one being owed, and
+    // saying now what that one should be costs the fight nothing.
+    if (m_phase == Phase::Dead)
+        return true;
+    if (m_phase != Phase::Playing)
+        return false;
+    // Otherwise it's a question about where they're standing. The eye is the
+    // soldier as drawn, which is the position the player is actually looking
+    // out of, and the spawns are the level's — the same ones the server will
+    // measure against when the ask arrives.
+    return m_world.InSpawnArea(m_team, m_eyePos);
 }
 
 Command Game::ReadCommand(const Input& input, const IsoCamera& camera, const Vector3& pos) const
@@ -1692,7 +1810,32 @@ void Game::Render(Renderer& renderer)
                                 identity);
     }
 
+    // The ground a player can change class on, drawn in a pass of its own
+    // rather than with the indicators above, because it outlasts having a
+    // soldier: the respawn wait is when the choice is most often made, and the
+    // spawn is where it will be served.
+    if (m_phase == Phase::Playing || m_phase == Phase::Dead)
+    {
+        const XMFLOAT4& teamTint = TeamColor(m_team);
+        const XMFLOAT4 ring = { teamTint.x, teamTint.y, teamTint.z,
+                                CanChangeClass() ? kSpawnRingAlphaLive : kSpawnRingAlpha };
+        const Vector3 spawn = m_world.TeamSpawn(m_team);
+        m_scratch.clear();
+        AppendArc(m_scratch, { spawn.x, kAimRingHeight, spawn.z }, World::kSpawnArea, 0.0f,
+                  XM_2PI, kSpawnRingSegments, ring);
+        renderer.DrawLinesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
+                                identity);
+    }
+
     RenderHud(renderer);
+
+    // The class cards, last of everything: a screen laid over a match that is
+    // still being fought behind it. It goes after the HUD rather than instead
+    // of it — the corner panel, the radar and the scoreboard's own key all keep
+    // working, because a player choosing a class is choosing it about the fight
+    // they can see.
+    if (m_classChangeOpen)
+        m_classSelect.Render(renderer, m_binds, ClassSelect::Mode::Change);
 }
 
 // Screen-space overlay: the gameplay cluster (Hud.cpp), the respawn countdown,
@@ -1805,6 +1948,14 @@ void Game::RenderHud(Renderer& renderer)
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
     addHint(m_binds.Label(Act::Scoreboard), "SCORES");
+    // The class change, but only where it would work: standing on your own
+    // spawn, or waiting to come back from it. A cap that was always up would be
+    // a cap that lies five minutes out of every six, and one that appears
+    // exactly when the key goes live is how the rule gets taught — the player
+    // walks home for something else, the row grows a key they didn't know they
+    // had, and that is the whole of the explanation.
+    if (CanChangeClass())
+        addHint(m_binds.Label(Act::ClassChange), "CHANGE CLASS");
 
     hud.hints = hints;
     hud.hintCount = hintCount;
@@ -1957,7 +2108,11 @@ void Game::RenderHud(Renderer& renderer)
     // to do, so it's the one thing on screen worth reading. Counts whole
     // seconds remaining, so it reaches 1 for the last second and never shows a
     // 0 the player can't act on.
-    else if (m_phase == Phase::Dead)
+    // Nor while the class cards are up, for the same reason: they have the
+    // middle of the screen, and text is drawn over overlay geometry whatever
+    // order it was queued in. Nothing is lost — the wait is running, and it
+    // ends by handing the player a soldier of whatever they've just picked.
+    else if (m_phase == Phase::Dead && !m_classChangeOpen)
     {
         const std::string countdown =
             "RESPAWNING IN " + std::to_string(static_cast<int>(std::ceil(m_respawnTimer)));

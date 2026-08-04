@@ -11,17 +11,33 @@ using namespace ScreenDraw;
 
 namespace
 {
-    // Screen-space depth layers (ortho z, smaller is closer): card fills at
-    // the back, bars in the middle, lines and text on top.
-    constexpr float kZCard = 0.8f;
-    constexpr float kZBar = 0.7f;
-    constexpr float kZText = 0.6f;
+    // Overlay geometry ignores z — what's submitted later is what's on top —
+    // so everything below is appended in the order it should be read: the
+    // backdrop, then each card's fill, then its border and bars.
+    constexpr float kZ = 0.0f;
 
     constexpr XMFLOAT4 kTitleColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
     constexpr XMFLOAT4 kCardBg = { 0.06f, 0.08f, 0.12f, 1.0f };
     constexpr XMFLOAT4 kCardBgHover = { 0.10f, 0.14f, 0.20f, 1.0f };
     constexpr XMFLOAT4 kBarBg = { 0.14f, 0.17f, 0.23f, 1.0f };
+    // What the match behind the cards is dimmed to when this screen is opened
+    // from inside one. Not blacked out: the fight is still going on and being
+    // able to see it is half of why a player is choosing a class at all.
+    constexpr XMFLOAT4 kBackdrop = { 0.02f, 0.03f, 0.05f, 0.76f };
+
+    // A rectangle's border as four quads. The outlines used to be lines in a
+    // batch of their own, which the overlay path has no equivalent of; drawn
+    // this way they also thicken with the resolution instead of staying one
+    // pixel on every screen there is.
+    void AppendBorder(std::vector<Vertex>& out, float x, float y, float w, float h, float t,
+                      const XMFLOAT4& color)
+    {
+        AppendQuad(out, x, y, w, t, kZ, color);
+        AppendQuad(out, x, y + h - t, w, t, kZ, color);
+        AppendQuad(out, x, y + t, t, h - t * 2.0f, kZ, color);
+        AppendQuad(out, x + w - t, y + t, t, h - t * 2.0f, kZ, color);
+    }
 
     // Normalizers for the stat bars: whatever the strongest class in a stat
     // has, that's a full bar. All three are folded out of the class table
@@ -103,43 +119,68 @@ std::optional<ClassId> ClassSelect::Update(const Input& input, uint32_t width, u
     return std::nullopt;
 }
 
-void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
+void ClassSelect::Render(Renderer& renderer, const Bindings& binds, Mode mode)
 {
     const float w = static_cast<float>(renderer.Width());
     const float h = static_cast<float>(renderer.Height());
-    renderer.SetViewProj(XMMatrixOrthographicOffCenterLH(0.0f, w, h, 0.0f, 0.0f, 1.0f));
 
     m_tris.clear();
-    m_lines.clear();
 
-    DrawCentered(renderer, "CHOOSE YOUR CLASS", w * 0.5f, h * 0.14f, h * 0.05f, kTitleColor);
-    // The card numbers are the one thing on this screen that isn't a binding:
-    // picking a class is a menu, and menus stay where the game put them.
-    DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
-                 kHintColor);
-    // The grenade isn't on any card because it isn't a class trait: every
-    // soldier gets the same one, so it's called out once, here. The key comes
-    // off the player's bindings rather than being spelled out — this screen is
-    // the last thing read before spawning, and a briefing naming a key the
-    // player doesn't use would be worse than no briefing.
-    DrawCentered(renderer, "ONE GRENADE PER LIFE - " + binds.Label(Bindings::Action::Grenade) +
-                               " TO THROW",
-                 w * 0.5f, h * 0.82f, h * 0.022f, kHintColor);
-    // The reload isn't a class trait either — every weapon has one — so it's
-    // called out alongside the grenade rather than on the cards, which carry
-    // only what separates one class from another. What the cards do carry is
-    // the two prices; what this line has to say is why there are two, since a
-    // player who doesn't know reloading early is cheaper will only ever pay
-    // the other one.
-    DrawCentered(renderer, "EMPTY RELOADS ITSELF - " + binds.Label(Bindings::Action::Reload) +
-                               " TO RELOAD EARLY, AND QUICKER",
-                 w * 0.5f, h * 0.86f, h * 0.022f, kHintColor);
-    // Nor is the blade: every soldier carries the same one, and it's the answer
-    // to the range no class's primary covers, so it belongs down here with the
-    // rest of what they all have in common.
-    DrawCentered(renderer, "THREE MELEE SWINGS, THEN A WAIT - " +
-                               binds.Label(Bindings::Action::Melee) + " TO SWING",
-                 w * 0.5f, h * 0.90f, h * 0.022f, kHintColor);
+    // Over a match, the arena goes down under a sheet first so the cards read
+    // against something quiet. Before one there is nothing back there to dim.
+    if (mode == Mode::Change)
+        AppendQuad(m_tris, 0.0f, 0.0f, w, h, kZ, kBackdrop);
+
+    // What the screen is for, which is not the same sentence twice: the first
+    // time it's the choice that starts a match, and the second it's the choice
+    // being revisited. A player who opened this by accident should be able to
+    // tell which one they're looking at from the top line alone.
+    DrawCentered(renderer, mode == Mode::Change ? "CHANGE CLASS" : "CHOOSE YOUR CLASS", w * 0.5f,
+                 h * 0.14f, h * 0.05f, kTitleColor);
+
+    if (mode == Mode::Change)
+    {
+        // One line, tucked under the cards rather than down the bottom of the
+        // screen: the match's own readouts are still on, and the loadout
+        // cluster lives where the briefing below would otherwise be. The
+        // briefing isn't repeated anyway — a player already in a match has
+        // spawned once and been told about the grenade, the reload, and the
+        // blade.
+        DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4 - ESC TO KEEP THIS ONE", w * 0.5f,
+                     h * 0.755f, h * 0.022f, kHintColor);
+    }
+    else
+    {
+        // The card numbers are the one thing on this screen that isn't a
+        // binding: picking a class is a menu, and menus stay where the game put
+        // them.
+        DrawCentered(renderer, "CLICK A CARD OR PRESS 1 - 4", w * 0.5f, h * 0.78f, h * 0.022f,
+                     kHintColor);
+        // The grenade isn't on any card because it isn't a class trait: every
+        // soldier gets the same one, so it's called out once, here. The key
+        // comes off the player's bindings rather than being spelled out — this
+        // screen is the last thing read before spawning, and a briefing naming
+        // a key the player doesn't use would be worse than no briefing.
+        DrawCentered(renderer, "ONE GRENADE PER LIFE - " +
+                                   binds.Label(Bindings::Action::Grenade) + " TO THROW",
+                     w * 0.5f, h * 0.82f, h * 0.022f, kHintColor);
+        // The reload isn't a class trait either — every weapon has one — so
+        // it's called out alongside the grenade rather than on the cards, which
+        // carry only what separates one class from another. What the cards do
+        // carry is the two prices; what this line has to say is why there are
+        // two, since a player who doesn't know reloading early is cheaper will
+        // only ever pay the other one.
+        DrawCentered(renderer, "EMPTY RELOADS ITSELF - " +
+                                   binds.Label(Bindings::Action::Reload) +
+                                   " TO RELOAD EARLY, AND QUICKER",
+                     w * 0.5f, h * 0.86f, h * 0.022f, kHintColor);
+        // Nor is the blade: every soldier carries the same one, and it's the
+        // answer to the range no class's primary covers, so it belongs down
+        // here with the rest of what they all have in common.
+        DrawCentered(renderer, "THREE MELEE SWINGS, THEN A WAIT - " +
+                                   binds.Label(Bindings::Action::Melee) + " TO SWING",
+                     w * 0.5f, h * 0.90f, h * 0.022f, kHintColor);
+    }
 
     for (size_t i = 0; i < kClassCount; ++i)
     {
@@ -148,9 +189,9 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
         const bool hover = static_cast<int>(i) == m_hover;
         const float pad = r.w * 0.08f;
 
-        AppendQuad(m_tris, r.x, r.y, r.w, r.h, kZCard, hover ? kCardBgHover : kCardBg);
-        AppendOutline(m_lines, r.x, r.y, r.w, r.h, kZText,
-                      hover ? def.color : Dim(def.color, 0.45f));
+        AppendQuad(m_tris, r.x, r.y, r.w, r.h, kZ, hover ? kCardBgHover : kCardBg);
+        AppendBorder(m_tris, r.x, r.y, r.w, r.h, std::max(h * 0.0018f, 1.0f),
+                     hover ? def.color : Dim(def.color, 0.45f));
 
         const std::string key = std::to_string(i + 1);
         renderer.DrawScreenText(key, r.x + pad, r.y + pad, r.h * 0.06f, kHintColor);
@@ -222,14 +263,11 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
             // line and now ends just short of the bottom edge.
             const float rowY = r.y + r.h * 0.55f + b * rowH * 1.15f;
             renderer.DrawScreenText(bars[b].label, r.x + pad, rowY, labelSize, kHintColor);
-            AppendQuad(m_tris, barX, rowY, barW, labelSize, kZBar, kBarBg);
+            AppendQuad(m_tris, barX, rowY, barW, labelSize, kZ, kBarBg);
             AppendQuad(m_tris, barX, rowY, barW * std::clamp(bars[b].fraction, 0.0f, 1.0f),
-                       labelSize, kZBar - 0.02f, def.color);
+                       labelSize, kZ, def.color);
         }
     }
 
-    renderer.DrawTriangles(m_tris.data(), static_cast<uint32_t>(m_tris.size()),
-                           XMMatrixIdentity());
-    renderer.DrawLines(m_lines.data(), static_cast<uint32_t>(m_lines.size()),
-                       XMMatrixIdentity());
+    renderer.DrawScreenTriangles(m_tris.data(), static_cast<uint32_t>(m_tris.size()));
 }
