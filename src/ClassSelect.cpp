@@ -127,9 +127,12 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
                  w * 0.5f, h * 0.82f, h * 0.022f, kHintColor);
     // The reload isn't a class trait either — every weapon has one — so it's
     // called out alongside the grenade rather than on the cards, which carry
-    // only what separates one class from another.
+    // only what separates one class from another. What the cards do carry is
+    // the two prices; what this line has to say is why there are two, since a
+    // player who doesn't know reloading early is cheaper will only ever pay
+    // the other one.
     DrawCentered(renderer, "EMPTY RELOADS ITSELF - " + binds.Label(Bindings::Action::Reload) +
-                               " TO RELOAD EARLY",
+                               " TO RELOAD EARLY, AND QUICKER",
                  w * 0.5f, h * 0.86f, h * 0.022f, kHintColor);
     // Nor is the blade: every soldier carries the same one, and it's the answer
     // to the range no class's primary covers, so it belongs down here with the
@@ -161,9 +164,20 @@ void ClassSelect::Render(Renderer& renderer, const Bindings& binds)
         // halves of one trade (how long the class can fire, what the pause
         // costs), and a bar per half would read as two more things to be good
         // at when a big magazine and a quick reload aren't the same virtue.
+        //
+        // Both reload prices, early first, in the order the player will meet
+        // them. A single-shot weapon gets one number because it only ever has
+        // one: its magazine is always empty by the time it's changed, and
+        // printing a price it can't be charged would be a lie about the class
+        // on the screen where the class is being chosen.
         char loadout[48];
-        std::snprintf(loadout, sizeof(loadout), "%d %s - %.1fS RELOAD", def.primary.magazine,
-                      def.primary.magazine == 1 ? "RD" : "RDS", def.primary.reloadTime);
+        if (def.primary.magazine == 1)
+            std::snprintf(loadout, sizeof(loadout), "1 RD - %.1fS RELOAD",
+                          def.primary.reloadEmpty);
+        else
+            std::snprintf(loadout, sizeof(loadout), "%d RDS - %.1f/%.1fS RELOAD",
+                          def.primary.magazine, def.primary.reloadEarly,
+                          def.primary.reloadEmpty);
         DrawCentered(renderer, loadout, r.x + r.w * 0.5f, r.y + r.h * 0.45f, r.w * 0.042f,
                      Dim(def.color, 0.85f));
 

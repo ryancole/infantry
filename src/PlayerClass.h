@@ -28,12 +28,21 @@ struct WeaponDef
     float fireInterval;      // seconds between shots
     // Shots a full magazine holds, and what it costs to refill it. Together
     // they cap how long a class can hold a trigger down before it has to stop
-    // and spend reloadTime doing nothing, which is what keeps a high rate of
+    // and spend a reload doing nothing, which is what keeps a high rate of
     // fire from simply being better than a slow one. 0 = not magazine-fed:
     // the weapon never reloads and its supply is limited some other way (the
     // grenade below is issued by the life).
     int magazine;
-    float reloadTime;        // seconds to swap a magazine
+    // The refill, in two numbers, because that is how the zone writes its own
+    // weapons: one price for changing a magazine with rounds still in it, a
+    // longer one for being caught with none. The leftover rounds are thrown
+    // away with the magazine either way (World::BeginReload), so what topping
+    // up buys is not ammunition — it's the shorter wait, and the right to take
+    // it in a lull instead of in the middle of the next fight. Getting that
+    // wrong twice over is what an empty magazine costs. A magazine of one only
+    // ever empties, so those weapons never pay anything but reloadEmpty.
+    float reloadEarly;       // seconds to swap a magazine with rounds left
+    float reloadEmpty;       // seconds to swap one that ran dry
     float projectileSpeed;   // horizontal muzzle speed
     float projectileRadius;
     float projectileMass;
@@ -162,21 +171,43 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // Two shapes of weapon, and the magazine is what tells them apart.
     //
     // The automatics (marine, medic) get roughly the same window of fire out of
-    // a magazine — 3.5 to 6 seconds — whatever their cadence, and pay for it
-    // afterwards in proportion to what that magazine could do: the marine's
-    // thirty rounds cost more to replace than the medic's twenty weaker ones.
-    // Their decision is when to spend the pause, which is why the reload key
-    // exists.
+    // a magazine — 3.5 to 6 seconds — whatever their cadence, and then have to
+    // stop for about as long again. Their decision is when to spend the pause,
+    // which is why the reload key exists, and the pair of reload numbers is
+    // what makes it a real decision rather than a formality: topping up costs
+    // the marine 3.5 seconds and the medic 3, while being caught dry costs 5
+    // and 6. The medic has the wider gap and so the most to gain by changing a
+    // magazine in a lull — a PDW that runs out in the middle of something
+    // takes twice as long to replace as one changed before it did, which is a
+    // hard price for a class that has to be somewhere. The marine's gap is the
+    // narrowest, which is the same as saying it's the class least punished for
+    // firing until the click.
     //
     // The single-shot pair (sniper, grenadier) reload after every shot, so
     // there's no burst to ration and no decision to make: fireInterval never
-    // gets to matter and the reload alone is the cadence. Both are weapons that
-    // end a soldier in one or two hits, and a magazine let them do it to a whole
-    // squad on one breath — five bolts at 85 damage inside four and a half
-    // seconds, four shells at 40 and a 2.2 blast inside three. What they get
-    // instead is one shot that has to count, and a wait long enough that missing
-    // it is felt. The sniper waits longest, as it did when it carried five: the
-    // deadliest shot in the game pays the highest price for the next one.
+    // gets to matter, the early number can never be paid at all, and the empty
+    // reload alone is the cadence. Both are weapons that end a soldier in one
+    // or two hits, and a magazine let them do it to a whole squad on one breath
+    // — five bolts at 85 damage inside four and a half seconds, four shells at
+    // 40 and a 2.2 blast inside three. What they get instead is one shot that
+    // has to count, and a wait long enough that missing it is felt. The sniper
+    // waits longest, as it did when it carried five: the deadliest shot in the
+    // game pays the highest price for the next one.
+    //
+    // The reload column is the second one with a source, after sight. The zone
+    // lists both halves for every weapon it issues, and the four rows below
+    // take its numbers unaltered — assault rifle 3.5/5, PDW 3/6, grenade
+    // launcher 3.2/6.5, sniper rifle 5/7. That is between two and a half and
+    // nearly four times what this game used to charge (the marine waited 2.1
+    // seconds, the sniper 2.4), and taking it at face value is a deliberate
+    // bet: that the wait is meant to be long enough to be a thing that happens
+    // to you rather than a hitch in the shooting, and that a sniper firing once
+    // every seven seconds is a sniper whose misses matter. Nothing else in the
+    // table has been moved to soften it, so this is the change that will be
+    // felt first if any of it is wrong. Two of the zone's rows have nowhere to
+    // land here: the ripper gun is 4/6 and no class carries one, and the hand
+    // grenade's 2/2 is a reload for a weapon that gets issued by the life
+    // instead (kGrenade below, which never reloads).
     // Weight is its own axis, and it does not follow top speed. The medic is
     // the light one at both ends — quickest onto its speed and quickest off it
     // — because a class whose job is crossing open ground to reach someone
@@ -225,11 +256,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // nothing at all. Violet and amber are as far from each other as those were,
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
-    // name         blurb              color                          | speed accel  stop | sight | fire   mag reload speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 2.10f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 1.60f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 2.40f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 1.80f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
+    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  dmg    blast bnce  boom  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
@@ -238,12 +269,17 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
 // it — fireInterval alone flatters a weapon that stops after every shot, and at
 // a magazine of one it describes nothing at all. Weapons that never reload are
 // just their cadence.
+//
+// It's the empty reload that belongs here, not the early one: firing a whole
+// magazine is what this rate measures, and a magazine fired to the end is
+// always replaced dry. The early number is what a player can do better than
+// this figure by not emptying it.
 inline constexpr float SustainedFireRate(const WeaponDef& w)
 {
     if (w.magazine <= 0)
         return w.fireInterval > 0.0f ? 1.0f / w.fireInterval : 0.0f;
     const float mag = static_cast<float>(w.magazine);
-    return mag / ((mag - 1.0f) * w.fireInterval + w.reloadTime);
+    return mag / ((mag - 1.0f) * w.fireInterval + w.reloadEmpty);
 }
 
 // Standard issue for every class, thrown with the grenade key rather than the
@@ -263,10 +299,12 @@ inline constexpr float SustainedFireRate(const WeaponDef& w)
 // fireInterval is 0 because nothing about the grenade is paced by a cadence,
 // and the magazine is 0 because nothing about it is paced by a reload either:
 // a soldier gets Game::kGrenadesPerLife of them and no more until they die, so
-// the limit is the count, not the clock.
+// the limit is the count, not the clock. The zone does give the hand grenade a
+// reload of its own — two seconds, both halves the same — but that's the
+// pacing of a thing you carry several of, and this one is issued by the life.
 inline constexpr WeaponDef kGrenade = {
-    // fire  mag reload speed  radius mass   lob   fuse  dmg    blast bnce  boom
-       0.0f,  0,  0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 30.0f, 4.0f, 0.45f, true
+    // fire  mag early empty speed  radius mass   lob   fuse  dmg    blast bnce  boom
+       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 30.0f, 4.0f, 0.45f, true
 };
 
 // The blade every soldier carries, swung with the melee key. Standard issue

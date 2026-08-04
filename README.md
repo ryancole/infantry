@@ -29,7 +29,7 @@ Prototype scaffold with a working game loop:
 - The wire is built for roads worse than a LAN: every command packet carries its two predecessors, so a lost packet can't eat a grenade press; snapshots are quantized (a position is two bytes an axis, an angle two bytes, health one) to about half their float weight with no statefulness to resync; the protocol carries a version and a server refuses a mismatched build or a full house at the door; and losing the server — or pressing Escape in somebody else's match — lands on the main menu with the world swept clean, not on the desktop. Delta compression is deliberately absent: full snapshots self-heal from any loss, and ten soldiers don't weigh enough to trade that away
 - Servers are found, not typed: JOIN on the main menu shouts a UDP broadcast at the LAN once a second and lists every server that answers — machine name, address, how full — refreshing live and forgetting the ones that go quiet. One typed row covers servers a broadcast can't reach. An internet server browser is the piece that still needs a landlord (somewhere to host the list), and it's the one piece of the netcode left
 - A soldier turns rather than pivots: the facing chases the cursor at a fixed rate instead of snapping to it, so getting behind someone is worth the trip. Holding steady drops both the walk and the turn to a fraction of normal — the gun sits where it's put, at the price of being able to leave
-- Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire
+- Per-class primary weapons, each magazine-fed: the automatics get a few seconds of fire before they have to stop and reload, while the sniper and grenadier reload after every shot, so the wait *is* their rate of fire. Every weapon has two reload times, taken from the zone's own numbers — changing a magazine with rounds still in it is seconds quicker than being caught with an empty one, so when to stop and top up is a decision worth making
 - One grenade per life for every class: bounces off the world under Jolt, detonates on its fuse (or on a direct hit), with blast damage that cover blocks
 - A melee swing for every class, on three charges and a recovery of its own rather than the magazine's: barely more reach than the two bodies involved and five swings to kill, so it's what's left when a primary can't answer — caught mid-reload, or with someone already inside its range
 - Ragdoll corpses: the soldier model is built from eleven jointed segments, so a killed soldier is handed to Jolt as a ragdoll that keeps the pose it died in, is thrown by the blow that killed it, and falls where it stood
@@ -44,7 +44,7 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | `W` `A` `S` `D` | Move (screen-relative) |
 | Mouse | Aim |
 | Left mouse / `Space` | Fire |
-| `R` | Reload (automatic when the magazine empties) |
+| `R` | Reload (automatic when the magazine empties, and quicker before it does) |
 | `F` | Throw grenade (every class, one per life) |
 | `V` | Melee swing (every class, three charges then a recovery) |
 | `Shift` | Hold steady (slow walk, much slower turn) |

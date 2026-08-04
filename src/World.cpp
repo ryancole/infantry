@@ -756,11 +756,23 @@ void World::BeginReload(Unit& unit)
     if (unit.reloadTimer > 0.0f || unit.ammo >= weapon.magazine)
         return;
 
-    // Whatever was left in the magazine goes with it: partial reloads would
-    // make tapping R between every shot strictly correct, and there's nothing
-    // interesting about a player who does that.
+    // Whatever was left in the magazine goes with it: a reload that banked the
+    // spare rounds would make tapping R between every shot strictly correct,
+    // and there's nothing interesting about a player who does that. What
+    // reloading early buys instead is time — the shorter of the weapon's two
+    // prices — so topping up is worth doing when there's a lull to do it in
+    // and never worth doing on reflex, since every tap still costs a full
+    // magazine and several seconds of not being able to shoot back.
+    //
+    // Which price is being charged is decided here and only here, from what's
+    // in the magazine one instruction before it's emptied. Firing the last
+    // round comes through the same door (ApplyCommand calls this the moment
+    // ammo hits zero), so running dry pays the long number without anything
+    // else having to know that's what happened.
+    const bool dry = unit.ammo <= 0;
     unit.ammo = 0;
-    unit.reloadTimer = weapon.reloadTime;
+    unit.reloadSpan = dry ? weapon.reloadEmpty : weapon.reloadEarly;
+    unit.reloadTimer = unit.reloadSpan;
     Event ev;
     ev.type = Event::Type::ReloadStart;
     ev.unit = unit.id;
@@ -1405,6 +1417,7 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
             // but the own-unit they're meaningless and stay zero.
             unit.ammo = old->ammo;
             unit.reloadTimer = old->reloadTimer;
+            unit.reloadSpan = old->reloadSpan;
             unit.grenades = old->grenades;
             unit.meleeCharges = old->meleeCharges;
             unit.meleeRecover = old->meleeRecover;
@@ -1434,6 +1447,7 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
             me->moveVel = { snap.own.moveVelX, 0.0f, snap.own.moveVelZ };
             me->ammo = snap.own.ammo;
             me->reloadTimer = snap.own.reloadTimer;
+            me->reloadSpan = snap.own.reloadSpan;
             me->grenades = snap.own.grenades;
             me->meleeCharges = snap.own.meleeCharges;
             me->meleeRecover = snap.own.meleeRecover;
