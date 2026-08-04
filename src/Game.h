@@ -376,6 +376,10 @@ private:
     // local so the frames it isn't up cost nothing but a capacity that's
     // already been paid for.
     std::vector<Hud::ScoreRow> m_scoreRows;
+    // The radar's blips, on the same terms: rebuilt every frame, and never
+    // more than a squad a side, so the vector settles at capacity within the
+    // first few frames of a match and stops allocating.
+    std::vector<Hud::Blip> m_radarBlips;
 
     // The seam between render time and the tick. Frames deposit their dt in
     // the accumulator and the command clock spends it in whole ticks — one

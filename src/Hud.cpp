@@ -79,6 +79,29 @@ namespace
     // competing with which side you're on.
     constexpr XMFLOAT4 kBoardYouBg = { 1.00f, 1.00f, 1.00f, 0.10f };
 
+    // The radar, bottom left. The box the arena is fitted inside rather than
+    // the size it comes out: the map decides the panel's shape, and these two
+    // numbers only say how much of the screen it may take. Near enough square
+    // because the map arrives turned to face the camera and a long letterbox
+    // laid on a diagonal needs the same room either way — see Hud.h. Big
+    // enough that hardcorps2t's 197 units land at better than a pixel each,
+    // which is what makes a trench mouth a shape rather than a smudge.
+    constexpr float kRadarMaxWidth = 264.0f;
+    constexpr float kRadarMaxHeight = 264.0f;
+    // A soldier is 0.8 units across and would be a single pixel drawn to
+    // scale, so the blips are exaggerated to about six units wide. That's the
+    // trade every radar makes: positions stay true, sizes stop being. Ten of
+    // them on a panel this size is a readable scatter rather than a clump.
+    constexpr float kBlipRadius = 5.0f;
+    constexpr float kBlipCore = 2.4f; // the class mark inside it
+    constexpr float kBlipArrow = 10.0f; // how far the player's heading reaches
+    constexpr XMFLOAT4 kRadarField = { 0.00f, 0.00f, 0.00f, 0.30f };
+    // The rock the middle is navigated around, in the slate the arena floor is
+    // already drawn in. Dark enough to stay underneath the blips — terrain on
+    // this panel is context, and the moment it competes with a body it has
+    // stopped being context.
+    constexpr XMFLOAT4 kRadarWall = { 0.42f, 0.47f, 0.56f, 0.55f };
+
     constexpr float kHintSize = 13.0f;
     constexpr float kHintGap = 15.0f; // hint row -> panel
     constexpr float kHintKeyPad = 7.0f;
@@ -151,6 +174,28 @@ namespace
             { XMFLOAT3{ x + w, y, 0.0f }, c },
             { XMFLOAT3{ x + w, y + h, 0.0f }, c },
             { XMFLOAT3{ x, y + h, 0.0f }, c },
+        };
+        out.push_back(v[0]);
+        out.push_back(v[1]);
+        out.push_back(v[2]);
+        out.push_back(v[0]);
+        out.push_back(v[2]);
+        out.push_back(v[3]);
+    }
+
+    // A quad given by its four corners in order, for the shapes that aren't
+    // square to the panel. Everything else here is laid out on the screen's
+    // own axes and gets AppendQuad; the radar's contents are laid out on the
+    // arena's, turned to face the camera, so a rectangle over there is a
+    // rectangle at an angle over here.
+    void AppendCorners(std::vector<Vertex>& out, const XMFLOAT2& a, const XMFLOAT2& b,
+                       const XMFLOAT2& c, const XMFLOAT2& d, const XMFLOAT4& color)
+    {
+        const Vertex v[4] = {
+            { XMFLOAT3{ a.x, a.y, 0.0f }, color },
+            { XMFLOAT3{ b.x, b.y, 0.0f }, color },
+            { XMFLOAT3{ c.x, c.y, 0.0f }, color },
+            { XMFLOAT3{ d.x, d.y, 0.0f }, color },
         };
         out.push_back(v[0]);
         out.push_back(v[1]);
@@ -971,6 +1016,154 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
             number(row.kills, killsRight);
             number(row.deaths, deathsRight);
         }
+    }
+
+    renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
+}
+
+void Hud::RenderRadar(Renderer& renderer, const Radar& radar)
+{
+    const float h = static_cast<float>(renderer.Height());
+    const float s = h / kDesignHeight;
+    const float pad = kPanelPad * s;
+
+    const float halfX = std::max(radar.arenaHalf.x, 0.001f);
+    const float halfZ = std::max(radar.arenaHalf.y, 0.001f);
+
+    // The turn that makes the panel agree with the screen. `right` is the
+    // ground direction that runs rightward across the view; up is the same
+    // vector a quarter turn on, negated on the way out because screen y runs
+    // down. Normalized rather than trusted — an unset camera would otherwise
+    // collapse the whole map to a point.
+    float rx = radar.screenRight.x, rz = radar.screenRight.y;
+    const float rlen = std::sqrt(rx * rx + rz * rz);
+    if (rlen > 1e-4f)
+    {
+        rx /= rlen;
+        rz /= rlen;
+    }
+    else
+    {
+        rx = 1.0f;
+        rz = 0.0f;
+    }
+    const auto toU = [&](float x, float z) { return x * rx + z * rz; };
+    const auto toV = [&](float x, float z) { return x * rz - z * rx; };
+
+    // How much room the turned arena needs. The corners are the extremes of
+    // both axes, and the arena is centered on the origin, so each half-extent
+    // is just the two contributions added with their signs thrown away.
+    const float halfU = std::fabs(rx) * halfX + std::fabs(rz) * halfZ;
+    const float halfV = std::fabs(rz) * halfX + std::fabs(rx) * halfZ;
+
+    // One scale for both axes, picked so the arena fits inside the box and
+    // touches one edge of it. The panel then shrinks to the map rather than
+    // the map stretching to the panel — which is what keeps a bearing read off
+    // this thing the same bearing the player would walk.
+    const float scale = std::min(kRadarMaxWidth * s / (halfU * 2.0f),
+                                 kRadarMaxHeight * s / (halfV * 2.0f));
+    const float fieldW = halfU * 2.0f * scale;
+    const float fieldH = halfV * 2.0f * scale;
+
+    const float panelW = fieldW + pad * 2.0f;
+    const float panelH = fieldH + pad * 2.0f;
+    const float panelX = std::floor(kSideMargin * s);
+    const float panelY = std::floor(h - kBottomMargin * s - panelH);
+    const float fieldX = panelX + pad;
+    const float fieldY = panelY + pad;
+
+    // A spot on the ground to a spot on the panel: turned to face the camera,
+    // then scaled into the box.
+    const auto map = [&](float x, float z) {
+        return XMFLOAT2{ fieldX + (toU(x, z) + halfU) * scale,
+                         fieldY + (toV(x, z) + halfV) * scale };
+    };
+
+    static std::vector<Vertex> tris;
+    tris.clear();
+
+    AppendRoundRect(tris, panelX, panelY, panelW, panelH, kPanelCorner * s, kPanelBg);
+
+    // The ground itself, darker than the panel around it. On a map turned to
+    // face the camera this is doing real work rather than tidying an edge:
+    // the arena is a diamond in a square box, so without it there would be
+    // nothing to say which of the panel is ground and which is margin.
+    const XMFLOAT2 corners[4] = { map(-halfX, -halfZ), map(halfX, -halfZ), map(halfX, halfZ),
+                                  map(-halfX, halfZ) };
+    AppendCorners(tris, corners[0], corners[1], corners[2], corners[3], kRadarField);
+
+    // Terrain next, so nothing about the map can end up drawn over a soldier.
+    // A rock thinner than a pixel is still worth a pixel: the outcrops are read
+    // as a belt rather than one at a time, and a belt with gaps punched in it
+    // by rounding is a different belt. Widening happens in the arena's units,
+    // before the turn, because after it there's no axis left to widen along.
+    const float minWorld = scale > 0.0f ? 1.0f / scale : 0.0f;
+    for (size_t i = 0; i < radar.wallCount; ++i)
+    {
+        const Visibility::Rect& r = radar.walls[i];
+        const float padX = std::max(minWorld - (r.maxX - r.minX), 0.0f) * 0.5f;
+        const float padZ = std::max(minWorld - (r.maxZ - r.minZ), 0.0f) * 0.5f;
+        const float x0 = r.minX - padX, x1 = r.maxX + padX;
+        const float z0 = r.minZ - padZ, z1 = r.maxZ + padZ;
+        AppendCorners(tris, map(x0, z0), map(x1, z0), map(x1, z1), map(x0, z1), kRadarWall);
+    }
+
+    // A hairline round the field, over the terrain that runs up against it.
+    // The arena's edge is a wall a soldier can be pinned against, so it's worth
+    // drawing as a line rather than left as wherever the dark fill stops.
+    const float rule = std::max(1.0f * s, 1.0f);
+    for (int i = 0; i < 4; ++i)
+    {
+        const XMFLOAT2& a = corners[i];
+        const XMFLOAT2& b = corners[(i + 1) % 4];
+        const float dx = b.x - a.x, dy = b.y - a.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len > 1e-4f)
+            AppendOrientedQuad(tris, a.x, a.y, dx / len, dy / len, len, rule, kDivider);
+    }
+
+    const float blipR = kBlipRadius * s;
+    const float coreR = kBlipCore * s;
+
+    for (size_t i = 0; i < radar.blipCount; ++i)
+    {
+        const Blip& blip = radar.blips[i];
+        const XMFLOAT2 at = map(blip.x, blip.z);
+        const float cx = at.x;
+        const float cy = at.y;
+
+        // Two colors, in the order the body wears them: the side underneath,
+        // because which side a soldier is on is the only thing that decides
+        // whether to shoot, and the class mark on top of it. Lifted toward
+        // white on the way in for the same reason the roster's icons are —
+        // armor is chosen to hold up at arena distance, and this is a ten-pixel
+        // dot on a near-black panel.
+        AppendDisc(tris, cx, cy, blipR, Lift(blip.team, kSideLift));
+        AppendDisc(tris, cx, cy, coreR, Lift(blip.cls, kSideLift));
+
+        if (!blip.you)
+            continue;
+
+        // You: the same two colors and a shape nobody else has. An arrowhead
+        // off the front of the dot, in the class color that's already at its
+        // middle, pointed where the soldier is pointed. The facing goes through
+        // the same turn the position did — a heading drawn on the arena's axes
+        // over a map drawn on the camera's would point somewhere the soldier
+        // isn't looking, which is the whole fault this panel was turned to fix.
+        // Normalized after that rather than before, since an aim direction
+        // arriving as zero would otherwise put a degenerate triangle on screen.
+        const float au = toU(blip.aimX, blip.aimZ), av = toV(blip.aimX, blip.aimZ);
+        const float len = std::sqrt(au * au + av * av);
+        if (len <= 1e-4f)
+            continue;
+        const float dx = au / len, dz = av / len;
+        const float px = -dz, pz = dx;
+        const float base = blipR * 0.55f;
+        const float wing = blipR * 0.95f;
+        const float reach = kBlipArrow * s;
+        AppendTriangle(tris, cx + dx * reach, cy + dz * reach, cx + dx * base + px * wing,
+                       cy + dz * base + pz * wing, cx + dx * base - px * wing,
+                       cy + dz * base - pz * wing, Lift(blip.cls, kSideLift));
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));

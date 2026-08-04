@@ -1797,6 +1797,53 @@ void Game::RenderHud(Renderer& renderer)
     hud.hintCount = hintCount;
     Hud::Render(renderer, hud);
 
+    // The radar, bottom left: where everyone the player is allowed to know
+    // about is standing, on a picture of the ground they're standing on.
+    //
+    // The blips are filtered here, against the same eyes and the same test the
+    // arena's bodies are drawn through — your own side always, an enemy only
+    // while somebody on your side has a clear line to them. It has to be this
+    // test and not a weaker one: a snapshot arrives fog-filtered already, so
+    // trusting it would be nearly right, and nearly right means a soldier who
+    // walked behind an outcrop this frame keeps a blip for as long as the
+    // client hasn't been told otherwise. The radar is the one readout on
+    // screen with the reach to make that mistake visible.
+    //
+    // Positions are the drawn ones rather than the simulated ones — the same
+    // blend, off the same prediction — so a blip crossing the panel moves as
+    // smoothly as the body it belongs to.
+    m_radarBlips.clear();
+    for (const Unit& unit : m_world.Units())
+    {
+        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
+        const Unit& src = predicted ? m_predicted : unit;
+        const float a = predicted ? m_predAlpha : m_renderAlpha;
+        const Vector3 pos = Vector3::Lerp(src.prevPos, src.pos, a);
+        if (unit.team != m_team && unit.controller != Unit::Controller::Local &&
+            !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
+            continue;
+
+        Vector3 aim = Vector3::Lerp(src.prevAimDir, src.aimDir, a);
+        m_radarBlips.push_back({ pos.x, pos.z, TeamColor(unit.team), unit.cls->color,
+                                 unit.controller == Unit::Controller::Local, aim.x, aim.z });
+    }
+
+    Hud::Radar radar = {};
+    radar.arenaHalf = { m_world.ArenaHalf().x, m_world.ArenaHalf().y };
+    // The panel is turned to face the camera with the same vector that stands
+    // a health bar square to the view. The view is isometric and its yaw
+    // starts at 45°, so the arena's own axes are not the screen's — a radar
+    // laid out on them puts the player's base on the wrong side of the panel,
+    // which is worse than being at an angle to it. One vector, read once in
+    // Update, so the panel and the arena can't disagree about which way the
+    // camera is pointing.
+    radar.screenRight = { m_screenRight.x, m_screenRight.z };
+    radar.walls = m_world.Occluders().data();
+    radar.wallCount = m_world.Occluders().size();
+    radar.blips = m_radarBlips.data();
+    radar.blipCount = m_radarBlips.size();
+    Hud::RenderRadar(renderer, radar);
+
     // The scoreboard, while the key is down. Every place on the field, both
     // sides, whether or not this player has ever laid eyes on the soldier
     // standing in it — the fog hides bodies, not the board, which is why the
