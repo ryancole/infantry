@@ -98,7 +98,7 @@ struct Server::Impl
     std::vector<Event> events;
     std::vector<Event> heard;
     std::vector<Net::CmdEntry> cmdScratch;
-    std::vector<DirectX::XMFLOAT2> eyes; // one client's side's, rebuilt per snapshot
+    std::vector<Visibility::Eye> eyes; // one client's side's, rebuilt per snapshot
 
     float accum = 0.0f;
     uint32_t tick = 0;
@@ -541,10 +541,15 @@ void Server::Impl::Broadcast(World& world)
 
         // What this client's side can see, from every eye it has: their own
         // first — which is their soldier while they have one and the spot they
-        // fell on while they don't — then the rest of the squad, that one left
-        // out so a living player isn't looked through twice.
+        // fell on while they don't, reaching as far as the class they picked
+        // sees — then the rest of the squad, each with its own class's reach,
+        // that one left out so a living player isn't looked through twice.
+        // The session's class is the authority for their own eye because it
+        // outlives their unit, which is the whole reason viewPos is kept here
+        // as well.
         eyes.clear();
-        eyes.push_back({ session->viewPos.x, session->viewPos.y });
+        eyes.push_back({ { session->viewPos.x, session->viewPos.y },
+                         kClassDefs[session->classId].sight });
         world.TeamEyes(session->team, eyes, session->unitId);
 
         Net::Writer snap;

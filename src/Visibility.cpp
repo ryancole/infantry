@@ -208,15 +208,15 @@ namespace Visibility
         return true;
     }
 
-    bool IsPointVisibleAny(const std::vector<XMFLOAT2>& eyes, const XMFLOAT2& point,
-                           const std::vector<Rect>& occluders, float range)
+    bool IsPointVisibleAny(const std::vector<Eye>& eyes, const XMFLOAT2& point,
+                           const std::vector<Rect>& occluders)
     {
-        const float rangeSq = range * range;
-        for (const XMFLOAT2& eye : eyes)
+        for (const Eye& eye : eyes)
         {
-            const float dx = point.x - eye.x;
-            const float dz = point.y - eye.y;
-            if (dx * dx + dz * dz <= rangeSq && IsPointVisible(eye, point, occluders))
+            const float dx = point.x - eye.pos.x;
+            const float dz = point.y - eye.pos.y;
+            if (dx * dx + dz * dz <= eye.range * eye.range &&
+                IsPointVisible(eye.pos, point, occluders))
                 return true;
         }
         return false;

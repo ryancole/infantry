@@ -1286,10 +1286,15 @@ void Game::RemoveCorpse(size_t index)
 // squadmate. That the same list is built on the server (World::TeamEyes, from
 // the same World) is what keeps a spotted enemy from arriving in the snapshot
 // only to be culled back out here.
+// The player's own eye takes its reach from the class they picked rather than
+// from the roster, for the same reason it takes its position from m_eyePos:
+// while they're dead there is no unit of theirs to read either off, and a
+// sniper watching their own body cool should still be watching it from a
+// sniper's distance.
 void Game::UpdateTeamEyes()
 {
     m_teamEyes.clear();
-    m_teamEyes.push_back({ m_eyePos.x, m_eyePos.z });
+    m_teamEyes.push_back({ { m_eyePos.x, m_eyePos.z }, m_class->sight });
     m_world.TeamEyes(m_team, m_teamEyes, m_myUnitId);
 }
 
@@ -1303,15 +1308,14 @@ void Game::UpdateTeamEyes()
 // gaps: darkness doesn't union. Drawn per soldier it would double up wherever
 // two of them see the same ground, and it would cover ground one of them sees
 // perfectly well.
-void Game::AppendSight(const XMFLOAT2& eye, std::vector<Vertex>& out) const
+void Game::AppendSight(const Visibility::Eye& eye, std::vector<Vertex>& out) const
 {
     const std::vector<XMFLOAT2> poly =
-        Visibility::ComputePolygon(eye, m_world.Occluders(), m_world.ArenaHalf(),
-                                   World::kSightRange);
+        Visibility::ComputePolygon(eye.pos, m_world.Occluders(), m_world.ArenaHalf(), eye.range);
     if (poly.size() < 3)
         return;
 
-    const Vertex center = { XMFLOAT3{ eye.x, kFogHeight, eye.y }, kFogColor };
+    const Vertex center = { XMFLOAT3{ eye.pos.x, kFogHeight, eye.pos.y }, kFogColor };
     for (size_t i = 0; i < poly.size(); ++i)
     {
         const XMFLOAT2& a = poly[i];
@@ -1458,8 +1462,7 @@ void Game::Render(Renderer& renderer)
                                           kSoldierBoundsRadius))
                 continue;
             if (unit.team != m_team &&
-                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
-                                               World::kSightRange))
+                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
                 continue;
         }
         DrawSoldier(renderer, pos, blendDir(src.prevAimDir, src.aimDir, a),
@@ -1478,7 +1481,7 @@ void Game::Render(Renderer& renderer)
         if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
             continue;
         if (!Visibility::IsPointVisibleAny(m_teamEyes, { pelvis.pos.x, pelvis.pos.z },
-                                           m_world.Occluders(), World::kSightRange))
+                                           m_world.Occluders()))
             continue;
 
         // Sinking is a drawing trick, not a physical one: the bodies stay put
@@ -1500,8 +1503,7 @@ void Game::Render(Renderer& renderer)
     for (const World::Projectile& shot : m_world.Projectiles())
     {
         const Vector3& pos = shot.pos;
-        if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
-                                          World::kSightRange))
+        if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
         {
             // Per-shot radius, not the class's: a thrown grenade is a fatter
             // projectile than most primaries fire.
@@ -1517,8 +1519,7 @@ void Game::Render(Renderer& renderer)
     // projectiles: a burst behind a wall stays hidden.
     for (const Particle& p : m_particles)
     {
-        if (!Visibility::IsPointVisibleAny(m_teamEyes, { p.pos.x, p.pos.z }, m_world.Occluders(),
-                                           World::kSightRange))
+        if (!Visibility::IsPointVisibleAny(m_teamEyes, { p.pos.x, p.pos.z }, m_world.Occluders()))
             continue;
         const float s = p.size * (p.life / p.maxLife);
         AppendCube(m_scratch, p.pos, { s, s, s }, p.color);
@@ -1547,7 +1548,7 @@ void Game::Render(Renderer& renderer)
     // squad's worth of fans over a real map's occluders can outgrow the batch,
     // and the mark cares about neither order nor overlap — and then one dark
     // sheet lands on everything left unmarked.
-    for (const XMFLOAT2& eye : m_teamEyes)
+    for (const Visibility::Eye& eye : m_teamEyes)
     {
         m_fogVerts.clear();
         AppendSight(eye, m_fogVerts);
