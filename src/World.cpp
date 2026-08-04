@@ -584,6 +584,7 @@ void World::TickClocks(Unit& unit, float dt)
 {
     unit.fireCooldown -= dt;
     unit.meleeCooldown -= dt;
+    unit.voiceCooldown -= dt;
 
     // The blade's recovery runs on its own and takes no key: there's nothing
     // to decide about it, so there's nothing to press. It's a timer since the
@@ -764,6 +765,29 @@ void World::ApplyCommand(Unit& unit, const Command& cmd, float dt)
         ev.pos = unit.pos;
         ev.cls = unit.cls; // rides the wire as a class index; the sound comes back off it
         ev.sound = ability.startSound;
+        Emit(ev);
+    }
+
+    // --- The voice: a shout, on an edge and on a clock of its own. It is the
+    // one thing in this function that spends nothing — no hand comes off a
+    // weapon for it, no charge is used, and a soldier mid-reload can still call
+    // for help, which is most of when they'd want to. So the only thing between
+    // it and a key held down is kVoiceCooldown, and the check is made here
+    // rather than on the keyboard because the keyboard is somebody else's.
+    //
+    // The bounds test is doing the same work: a command arrives from a machine
+    // that may have been edited, and a byte naming a callout that doesn't exist
+    // is a byte that would otherwise index off the end of the table on five
+    // other people's computers. kVoiceNone fails it like any other number that
+    // isn't a callout, which is why silence needs no case of its own ---
+    if (cmd.voice < kVoiceCount && unit.voiceCooldown <= 0.0f)
+    {
+        unit.voiceCooldown = kVoiceCooldown;
+        Event ev;
+        ev.type = Event::Type::Voice;
+        ev.unit = unit.id;
+        ev.pos = unit.pos;
+        ev.voice = cmd.voice;
         Emit(ev);
     }
 }

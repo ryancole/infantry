@@ -6,6 +6,7 @@
 #include "Physics.h"
 #include "PlayerClass.h"
 #include "Visibility.h"
+#include "Voice.h"
 
 #include <DirectXMath.h>
 #include <SimpleMath.h>
@@ -93,6 +94,11 @@ struct Unit
     int meleeCharges;
     float meleeRecover;  // > 0 while the charges are coming back
     float meleeCooldown; // time until the next swing
+    // > 0 while this soldier has just said something and can't say anything
+    // else (kVoiceCooldown). Kept on the body rather than on the connection
+    // because it's the mouth that's busy, and the simulation is the one end of
+    // the wire that gets to decide a client is shouting too often.
+    float voiceCooldown;
     Ability::Runtime ability;
     // Whatever this soldier's brain remembers between frames, and nothing
     // at all while the controller is Local. Meaningless out here on
@@ -153,6 +159,7 @@ struct Event
         ReloadEnd,    // pos, local
         MeleeSwing,   // pos, dir (the swing), local
         AbilityStart, // pos, sound, local
+        Voice,        // a soldier shouted: pos, voice, local
     };
 
     Type type;
@@ -179,6 +186,11 @@ struct Event
     float radius = 0.0f;
     bool explodes = false;
     bool hitUnit = false;
+    // Which callout was shouted (Voice.h), for a Voice event and nothing else.
+    // It rides the wire as itself and the sound comes back off it at the far
+    // end, the same trade AbilityStart makes with `cls`: a table index is a
+    // byte and a clip name is a pointer into this process.
+    uint8_t voice = kVoiceNone;
     const char* sound = nullptr;
 };
 

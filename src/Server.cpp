@@ -475,6 +475,12 @@ void Server::Impl::Step(World& world)
             session->queue.front().second.reload |= skipped.reload;
             session->queue.front().second.grenade |= skipped.grenade;
             session->queue.front().second.ability |= skipped.ability;
+            // A shout carries forward the same way, and the one already in the
+            // command that will run wins: two callouts folded into one tick
+            // would only have been one anyway — the mouth is on a cooldown —
+            // and the newer of the two is the one the player pressed last.
+            if (session->queue.front().second.voice == kVoiceNone)
+                session->queue.front().second.voice = skipped.voice;
             session->acked = seq;
         }
 
@@ -488,6 +494,7 @@ void Server::Impl::Step(World& world)
             session->held.reload = false;
             session->held.grenade = false;
             session->held.ability = false;
+            session->held.voice = kVoiceNone;
         }
         else
         {

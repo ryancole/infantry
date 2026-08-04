@@ -40,6 +40,15 @@ namespace
         { "melee",        "MELEE",        Key('V') },
         { "ability",      "ABILITY",      Key('Q') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
+        // F5, because that is where Infantry's callouts were and because the
+        // three keys after it are where the next three are going. It is the
+        // one binding on this list whose default is knowingly awkward: a call
+        // for a medic is made while being shot at, by a hand that is also
+        // holding WASD, and the function row is a reach from there. The zone's
+        // layout wins the default anyway — anyone who played it will press F5
+        // without being told, and everyone else can move it to a key their
+        // thumb likes, which is what this screen is for.
+        { "voice_medic",  "CALL MEDIC",   Key(VK_F5) },
         { "scoreboard",   "SCOREBOARD",   Key(VK_TAB) },
         // F11, which is where Infantry put it and where anyone who played it
         // will reach for it. Nothing else on this list is anywhere near the

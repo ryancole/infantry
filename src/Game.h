@@ -343,7 +343,7 @@ private:
     // say anything the player has bound, including two of them joined by a plus.
     // They live here rather than in RenderHud because the HUD is handed pointers
     // to them and draws after that function has returned.
-    static constexpr size_t kMaxHints = 8;
+    static constexpr size_t kMaxHints = 10;
     std::array<std::string, kMaxHints> m_hintKeys;
     const ClassDef* m_class = nullptr; // set when the player picks; never null while Playing
     // The side the local player fights on. The World keeps its own copy for

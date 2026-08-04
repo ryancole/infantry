@@ -921,6 +921,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_pendingCmd.reload = m_pendingCmd.reload || fresh.reload;
         m_pendingCmd.grenade = m_pendingCmd.grenade || fresh.grenade;
         m_pendingCmd.ability = m_pendingCmd.ability || fresh.ability;
+        // The same latch the edges above get, spelled out because the byte
+        // can't be OR'd: a callout already waiting for its tick keeps the tick,
+        // and a second press inside the same frame's worth of them is a press
+        // the cooldown was going to eat regardless.
+        if (fresh.voice != kVoiceNone && m_pendingCmd.voice == kVoiceNone)
+            m_pendingCmd.voice = fresh.voice;
 
         m_tickAccum += dt;
         while (m_tickAccum >= World::kTickDt)
@@ -959,6 +965,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
             m_pendingCmd.reload = false;
             m_pendingCmd.grenade = false;
             m_pendingCmd.ability = false;
+            m_pendingCmd.voice = kVoiceNone;
         }
         m_predAlpha = m_tickAccum / World::kTickDt;
     }
@@ -1106,6 +1113,11 @@ Command Game::ReadCommand(const Input& input, const IsoCamera& camera, const Vec
                   input.padEvents.leftShoulder == PadTracker::PRESSED;
     cmd.ability =
         m_binds.Pressed(input, Act::Ability) || input.padEvents.b == PadTracker::PRESSED;
+    // The one thing a soldier says out loud. No pad button: the face buttons
+    // are spent on the kit, and the day there are four callouts they'll want
+    // the d-pad as a set rather than one of them taking a button now.
+    if (m_binds.Pressed(input, Act::VoiceMedic))
+        cmd.voice = static_cast<uint8_t>(VoiceId::Medic);
 
     return cmd;
 }
@@ -1190,6 +1202,29 @@ void Game::ProcessEvents()
         case Event::Type::AbilityStart:
             // The player's own kit is heard at the listener, the way the
             // reload is; anyone else's is a thing happening in the world.
+            if (ev.sound)
+            {
+                if (ev.local)
+                    m_sound.Play(ev.sound);
+                else
+                    PlaySoundAt(ev.sound, ev.pos);
+            }
+            break;
+
+        case Event::Type::Voice:
+            // A shout is played on exactly the terms it arrived on, with no
+            // second opinion taken here at all: it's in this list because the
+            // server decided this player is near enough to hear it, and near
+            // enough is the only question a callout asks. Whose side the mouth
+            // was on is not a second question — an enemy calling for a medic is
+            // information, and being given it is the point.
+            //
+            // Your own goes to the ear rather than to your feet, the same as
+            // your own reload and your own ability. The two are inches apart
+            // under this camera and the reason isn't distance: the sound is the
+            // only confirmation the player gets that anything went out, so it
+            // has to arrive the same way every time rather than being panned by
+            // where they happen to be standing.
             if (ev.sound)
             {
                 if (ev.local)
@@ -1980,6 +2015,12 @@ void Game::RenderHud(Renderer& renderer)
     addHint(m_binds.Label(Act::Grenade), "GRENADE");
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
+    // The cap is the word that gets shouted, off the callout table rather than
+    // spelled again here — the same deal the ability cap has with its class.
+    // MEDIC over VOICE for the same reason FIELD DRESSING beat ABILITY: a
+    // player wants to know what the key does to the match, not what kind of
+    // key it is.
+    addHint(m_binds.Label(Act::VoiceMedic), kVoiceDefs[static_cast<size_t>(VoiceId::Medic)].name);
     addHint(m_binds.Label(Act::Scoreboard), "SCORES");
     // The class change, but only where it would work: standing on your own
     // spawn, or waiting to come back from it. A cap that was always up would be

@@ -71,7 +71,13 @@ namespace Net
     // kind of break an older client survives by ignoring bytes it can't read;
     // the version still moves, because a client from 10 would sit there with a
     // key that does nothing and no way to be told why.
-    constexpr uint8_t kProtocolVersion = 11;
+    // 12: soldiers can shout. A command carries what was said (Command::voice)
+    // and an event carries it back down (Event::voice) — one byte on the end of
+    // each record, which is the plainest kind of break there is. Both messages
+    // pack their records nose to tail behind a count, so a build from 11 reads
+    // the first one correctly and then takes a callout for the head of the next
+    // command it wasn't expecting.
+    constexpr uint8_t kProtocolVersion = 12;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -252,6 +258,10 @@ namespace Net
             if (cmd.grenade) bits |= kCmdGrenade;
             if (cmd.ability) bits |= kCmdAbility;
             w.U8(bits);
+            // Not a bit, because it isn't one thing: the byte names which
+            // callout, and kVoiceNone — the answer on all but a handful of
+            // ticks in a match — is one of the values it can name.
+            w.U8(cmd.voice);
         }
     }
 
@@ -273,6 +283,10 @@ namespace Net
             entry.cmd.reload = bits & kCmdReload;
             entry.cmd.grenade = bits & kCmdGrenade;
             entry.cmd.ability = bits & kCmdAbility;
+            // Whatever the byte says, unchecked: what a callout number has to
+            // be is the simulation's rule, and it's applied where the rest of
+            // them are (World::ApplyCommand).
+            entry.cmd.voice = r.U8();
             if (r.ok)
                 out.push_back(entry);
         }
@@ -592,6 +606,9 @@ namespace Net
             w.U8(static_cast<uint8_t>(ev.team));
             // The class rides as its table index; -1 is "no class involved".
             w.U8(ev.cls ? static_cast<uint8_t>(ev.cls - kClassDefs) : 0xff);
+            // And the callout as its own, with kVoiceNone for the events that
+            // aren't one, which is all of them but Voice.
+            w.U8(ev.voice);
             uint8_t bits = 0;
             if (ev.fatal) bits |= kEvFatal;
             if (ev.explodes) bits |= kEvExplodes;
@@ -621,6 +638,7 @@ namespace Net
             ev.team = r.U8();
             const uint8_t clsId = r.U8();
             ev.cls = clsId < kClassCount ? &kClassDefs[clsId] : nullptr;
+            ev.voice = r.U8();
             const uint8_t bits = r.U8();
             ev.fatal = bits & kEvFatal;
             ev.explodes = bits & kEvExplodes;
@@ -628,6 +646,13 @@ namespace Net
             ev.local = ev.unit >= 0 && ev.unit == myUnitId;
             if (ev.type == Event::Type::AbilityStart && ev.cls)
                 ev.sound = ev.cls->ability.startSound;
+            // Same trade, off the other table: the callout arrived as an index
+            // and the clip it plays is a pointer this side of the wire. A
+            // number the table doesn't have leaves the sound null, which is a
+            // presentation that plays nothing rather than one that reads off
+            // the end of an array.
+            if (ev.type == Event::Type::Voice && ev.voice < kVoiceCount)
+                ev.sound = kVoiceDefs[ev.voice].sound;
             if (r.ok)
                 out.push_back(ev);
         }
