@@ -98,6 +98,7 @@ struct Server::Impl
     std::vector<Event> events;
     std::vector<Event> heard;
     std::vector<Net::CmdEntry> cmdScratch;
+    std::vector<DirectX::XMFLOAT2> eyes; // one client's side's, rebuilt per snapshot
 
     float accum = 0.0f;
     uint32_t tick = 0;
@@ -507,9 +508,9 @@ void Server::Impl::Rematch(World& world)
 
 void Server::Impl::Broadcast(World& world)
 {
-    // The snapshot is fog-filtered per viewer (a soldier you can't see is
-    // absent from the bytes, not merely undrawn), and events go by earshot,
-    // so a firefight behind a wall is still a thing you hear.
+    // The snapshot is fog-filtered per viewer (a soldier nobody on your side
+    // can see is absent from the bytes, not merely undrawn), and events go by
+    // earshot, so a firefight behind a wall is still a thing you hear.
     for (auto& session : sessions)
     {
         if (!session->joined)
@@ -538,8 +539,16 @@ void Server::Impl::Broadcast(World& world)
             }
         }
 
+        // What this client's side can see, from every eye it has: their own
+        // first — which is their soldier while they have one and the spot they
+        // fell on while they don't — then the rest of the squad, that one left
+        // out so a living player isn't looked through twice.
+        eyes.clear();
+        eyes.push_back({ session->viewPos.x, session->viewPos.y });
+        world.TeamEyes(session->team, eyes, session->unitId);
+
         Net::Writer snap;
-        Net::WriteSnapshotVisible(snap, world, tick, session->viewPos, session->unitId,
+        Net::WriteSnapshotVisible(snap, world, tick, eyes, session->unitId, session->team,
                                   session->slot);
         Net::WriteSnapshotOwn(snap, session->unitId >= 0 ? world.UnitById(session->unitId)
                                                          : nullptr,

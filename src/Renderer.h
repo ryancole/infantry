@@ -79,6 +79,21 @@ public:
     // Same blend/depth states with line topology (translucent indicators).
     void DrawLinesAlpha(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
 
+    // The fog of war's two passes, which exist because a side's sight is the
+    // union of several soldiers' and darkness doesn't union: drawn per soldier
+    // it would stack in the overlaps, and it would cover ground one squadmate
+    // sees clearly because the next one doesn't.
+    //
+    // So the light goes down first and the darkness once. MarkSeen writes
+    // nothing but a mark in the stencil buffer — no color, no depth — over
+    // every pixel its triangles cover, and may be called as many times as
+    // there are eyes; marking twice is marking. DrawTrianglesUnseen then draws
+    // alpha triangles everywhere the mark isn't. Both test depth without
+    // writing it, like the other overlays, so a wall still punches through.
+    // The mark is cleared with the depth buffer at BeginFrame.
+    void MarkSeen(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
+    void DrawTrianglesUnseen(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
+
     // Loads a glTF model (path relative to the exe dir or the repo root).
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
@@ -161,6 +176,9 @@ private:
     std::unique_ptr<DirectX::BasicEffect> m_lineEffect;
     std::unique_ptr<DirectX::BasicEffect> m_alphaEffect;
     std::unique_ptr<DirectX::BasicEffect> m_alphaLineEffect;
+    // The fog's mask and the sheet that reads it; see MarkSeen.
+    std::unique_ptr<DirectX::BasicEffect> m_seenEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_unseenEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
     // Overlay geometry: no depth (nothing is bound by then) and straight-alpha

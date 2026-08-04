@@ -29,4 +29,11 @@ namespace Visibility
     // cull entities (projectiles, later enemies) the player cannot see.
     bool IsPointVisible(const DirectX::XMFLOAT2& viewer, const DirectX::XMFLOAT2& point,
                         const std::vector<Rect>& occluders);
+
+    // The same test from several eyes at once: true if any of them has a clear
+    // line to the point. What a side sees is what its soldiers see between
+    // them, so one clear line out of five is the whole answer and the rest of
+    // the list goes untested.
+    bool IsPointVisibleAny(const std::vector<DirectX::XMFLOAT2>& eyes,
+                           const DirectX::XMFLOAT2& point, const std::vector<Rect>& occluders);
 }

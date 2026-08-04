@@ -394,6 +394,19 @@ public:
     // corner panel is a scoreboard, not a wallhack.
     int Standing(int team) const;
 
+    // Where a side is looking from: the ground position of every living
+    // soldier on `team`, appended to `out`. A side sees with all of its eyes at
+    // once — what one soldier has line of sight to, the whole side has — so
+    // this list, rather than one point, is what the fog of war and the
+    // snapshot's filter are both built from, and building it here is what
+    // keeps them building it the same way.
+    //
+    // `except` leaves one soldier out by unit id, for the caller that has a
+    // better answer for that one than the roster does: a viewer's own eye is
+    // their predicted position on a client and their last standing place while
+    // they're dead, and it goes in the list ahead of this call.
+    void TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except = -1) const;
+
     // --- The match: a clock, a score, and the one thing they decide.
     //
     // The clock runs down from kMatchLength on every Tick, and when it

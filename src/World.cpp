@@ -379,6 +379,13 @@ int World::Standing(int team) const
     }));
 }
 
+void World::TeamEyes(int team, std::vector<DirectX::XMFLOAT2>& out, int except) const
+{
+    for (const Unit& u : m_units)
+        if (u.team == team && u.hp > 0.0f && u.id != except)
+            out.push_back({ u.pos.x, u.pos.z });
+}
+
 void World::RemoveUnit(int id)
 {
     std::erase_if(m_units, [id](const Unit& u) { return u.id == id; });

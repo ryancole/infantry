@@ -45,7 +45,12 @@ namespace Net
     // shape here means what the bytes mean, and a build that missed the change
     // would decode a heading as a sidestep and walk off at right angles rather
     // than fail at anything.
-    constexpr uint8_t kProtocolVersion = 6;
+    // 7: a snapshot's units are what the receiver's *side* can see, not what
+    // they can see. Same bytes again, and again the meaning is the thing that
+    // moved: an older client would take the squadmate its server just sent
+    // from behind a wall and cull it back out with its own one-eyed test, so
+    // the two builds would draw different fields off identical packets.
+    constexpr uint8_t kProtocolVersion = 7;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -333,15 +338,21 @@ namespace Net
         SnapOwn own;
     };
 
-    // One client's snapshot: the fight as seen from `viewer`. This is the
-    // fog of war made real — a soldier the viewer can't see isn't dimmed or
-    // skipped by their renderer, they're absent from the bytes, so no amount
-    // of client cleverness can find an enemy behind a wall. The test is the
-    // same Visibility the fog is drawn with, from the same eye, which keeps
-    // the server's opinion of "hidden" and the player's picture of it one
-    // opinion. The viewer's own soldier always makes the cut; per-team
-    // standing counts go out unfiltered, because the scoreboard is meant to
-    // be known.
+    // One client's snapshot: the fight as seen by `ownTeam`, through `eyes` —
+    // the viewer's own, and one per living soldier on their side. This is the
+    // fog of war made real — a soldier nobody on the receiving side can see
+    // isn't dimmed or skipped by their renderer, they're absent from the bytes,
+    // so no amount of client cleverness can find an enemy behind a wall. The
+    // test is the same Visibility the fog is drawn with, from the same eyes,
+    // which keeps the server's opinion of "hidden" and the player's picture of
+    // it one opinion.
+    //
+    // Two things skip the filter outright. The viewer's own soldier, because
+    // they are the eye. And every soldier on their side, because a squad that
+    // blinks out of existence when it turns a corner is a squad nobody can
+    // fight alongside — where your side is standing is the one thing the fog
+    // was never keeping from you. Per-team standing counts go out unfiltered
+    // too, because the scoreboard is meant to be known.
     //
     // Built per client rather than shared, which is what buys the filter; at
     // ten soldiers a match the redundant serialization is nothing. `ownSlot` is
@@ -349,8 +360,8 @@ namespace Net
     // between recipients, and the reason it's a parameter rather than something
     // the World could be asked.
     inline void WriteSnapshotVisible(Writer& w, const World& world, uint32_t tick,
-                                     const DirectX::SimpleMath::Vector2& viewer, int ownId,
-                                     int ownSlot)
+                                     const std::vector<DirectX::XMFLOAT2>& eyes, int ownId,
+                                     int ownTeam, int ownSlot)
     {
         w.U8(static_cast<uint8_t>(MsgType::Snapshot));
         w.U32(tick);
@@ -384,17 +395,20 @@ namespace Net
         }
 
         const auto visible = [&](float x, float z) {
-            return Visibility::IsPointVisible(viewer, { x, z }, world.Occluders());
+            return Visibility::IsPointVisibleAny(eyes, { x, z }, world.Occluders());
+        };
+        const auto sendUnit = [&](const Unit& u) {
+            return u.id == ownId || u.team == ownTeam || visible(u.pos.x, u.pos.z);
         };
 
         uint8_t unitCount = 0;
         for (const Unit& u : world.Units())
-            if (u.id == ownId || visible(u.pos.x, u.pos.z))
+            if (sendUnit(u))
                 ++unitCount;
         w.U8(unitCount);
         for (const Unit& u : world.Units())
         {
-            if (u.id != ownId && !visible(u.pos.x, u.pos.z))
+            if (!sendUnit(u))
                 continue;
             w.I32(u.id);
             w.U8(static_cast<uint8_t>(u.cls - kClassDefs)); // index into the one table

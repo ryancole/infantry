@@ -192,4 +192,13 @@ namespace Visibility
         }
         return true;
     }
+
+    bool IsPointVisibleAny(const std::vector<XMFLOAT2>& eyes, const XMFLOAT2& point,
+                           const std::vector<Rect>& occluders)
+    {
+        for (const XMFLOAT2& eye : eyes)
+            if (IsPointVisible(eye, point, occluders))
+                return true;
+        return false;
+    }
 }
