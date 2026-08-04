@@ -1295,8 +1295,9 @@ void Game::UpdateTeamEyes()
 
 // One eye's share of the fog mask. The visibility polygon around it is
 // star-shaped by construction — consecutive points always span a straight run
-// of one edge — so a fan of triangles back to the eye is exactly the ground
-// that eye can see, and the mask is the union of those fans over the squad.
+// of one edge, or one chord of the arc where the range ran out before a wall
+// did — so a fan of triangles back to the eye is exactly the ground that eye
+// can see, and the mask is the union of those fans over the squad.
 //
 // Which is why the fog is a mask now rather than dark quads laid over the
 // gaps: darkness doesn't union. Drawn per soldier it would double up wherever
@@ -1305,7 +1306,8 @@ void Game::UpdateTeamEyes()
 void Game::AppendSight(const XMFLOAT2& eye, std::vector<Vertex>& out) const
 {
     const std::vector<XMFLOAT2> poly =
-        Visibility::ComputePolygon(eye, m_world.Occluders(), m_world.ArenaHalf());
+        Visibility::ComputePolygon(eye, m_world.Occluders(), m_world.ArenaHalf(),
+                                   World::kSightRange);
     if (poly.size() < 3)
         return;
 
@@ -1415,8 +1417,9 @@ void Game::Render(Renderer& renderer)
                                kObstacleColor);
 
     // The soldiers, off the World's roster. An enemy nobody on the player's
-    // side can see stays hidden — behind a wall they disappear until somebody
-    // on the squad re-finds them. The player's own side skips the test: where
+    // side can see stays hidden — behind a wall, or simply out past what any
+    // of them can make out, they disappear until somebody on the squad gets
+    // eyes on them again. The player's own side skips the test: where
     // your squad is standing is not something the fog was ever keeping from
     // you, and a soldier who vanished on turning a corner would be one nobody
     // could fight alongside. The local unit skips the frustum test too — the
@@ -1455,7 +1458,8 @@ void Game::Render(Renderer& renderer)
                                           kSoldierBoundsRadius))
                 continue;
             if (unit.team != m_team &&
-                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
+                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
+                                               World::kSightRange))
                 continue;
         }
         DrawSoldier(renderer, pos, blendDir(src.prevAimDir, src.aimDir, a),
@@ -1474,7 +1478,7 @@ void Game::Render(Renderer& renderer)
         if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
             continue;
         if (!Visibility::IsPointVisibleAny(m_teamEyes, { pelvis.pos.x, pelvis.pos.z },
-                                           m_world.Occluders()))
+                                           m_world.Occluders(), World::kSightRange))
             continue;
 
         // Sinking is a drawing trick, not a physical one: the bodies stay put
@@ -1496,7 +1500,8 @@ void Game::Render(Renderer& renderer)
     for (const World::Projectile& shot : m_world.Projectiles())
     {
         const Vector3& pos = shot.pos;
-        if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
+        if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders(),
+                                          World::kSightRange))
         {
             // Per-shot radius, not the class's: a thrown grenade is a fatter
             // projectile than most primaries fire.
@@ -1512,7 +1517,8 @@ void Game::Render(Renderer& renderer)
     // projectiles: a burst behind a wall stays hidden.
     for (const Particle& p : m_particles)
     {
-        if (!Visibility::IsPointVisibleAny(m_teamEyes, { p.pos.x, p.pos.z }, m_world.Occluders()))
+        if (!Visibility::IsPointVisibleAny(m_teamEyes, { p.pos.x, p.pos.z }, m_world.Occluders(),
+                                           World::kSightRange))
             continue;
         const float s = p.size * (p.life / p.maxLife);
         AppendCube(m_scratch, p.pos, { s, s, s }, p.color);

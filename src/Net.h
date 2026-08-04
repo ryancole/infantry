@@ -50,7 +50,10 @@ namespace Net
     // moved: an older client would take the squadmate its server just sent
     // from behind a wall and cull it back out with its own one-eyed test, so
     // the two builds would draw different fields off identical packets.
-    constexpr uint8_t kProtocolVersion = 7;
+    // 8: sight has a range (World::kSightRange). A client from 7 draws its fog
+    // to the horizon, so the ground an enemy has just vanished from would still
+    // be lit on its screen — the same disagreement, in the other direction.
+    constexpr uint8_t kProtocolVersion = 8;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -339,13 +342,14 @@ namespace Net
     };
 
     // One client's snapshot: the fight as seen by `ownTeam`, through `eyes` —
-    // the viewer's own, and one per living soldier on their side. This is the
-    // fog of war made real — a soldier nobody on the receiving side can see
-    // isn't dimmed or skipped by their renderer, they're absent from the bytes,
-    // so no amount of client cleverness can find an enemy behind a wall. The
-    // test is the same Visibility the fog is drawn with, from the same eyes,
-    // which keeps the server's opinion of "hidden" and the player's picture of
-    // it one opinion.
+    // the viewer's own, and one per living soldier on their side, each of them
+    // reaching World::kSightRange. This is the fog of war made real — a soldier
+    // nobody on the receiving side can see isn't dimmed or skipped by their
+    // renderer, they're absent from the bytes, so no amount of client
+    // cleverness can find an enemy behind a wall or out in the dark. The test
+    // is the same Visibility the fog is drawn with, from the same eyes and to
+    // the same distance, which keeps the server's opinion of "hidden" and the
+    // player's picture of it one opinion.
     //
     // Two things skip the filter outright. The viewer's own soldier, because
     // they are the eye. And every soldier on their side, because a squad that
@@ -395,7 +399,8 @@ namespace Net
         }
 
         const auto visible = [&](float x, float z) {
-            return Visibility::IsPointVisibleAny(eyes, { x, z }, world.Occluders());
+            return Visibility::IsPointVisibleAny(eyes, { x, z }, world.Occluders(),
+                                                 World::kSightRange);
         };
         const auto sendUnit = [&](const Unit& u) {
             return u.id == ownId || u.team == ownTeam || visible(u.pos.x, u.pos.z);
