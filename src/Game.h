@@ -380,6 +380,31 @@ private:
     // more than a squad a side, so the vector settles at capacity within the
     // first few frames of a match and stops allocating.
     std::vector<Hud::Blip> m_radarBlips;
+    // What the radar's zoom keys move between. 1 is the whole arena fitted in
+    // the box, which is the widest the panel can ever be asked to show, and 6
+    // is a window about thirty-six units across — under a marine's sight, so
+    // there is always a zoom at which the radar shows less than the soldier
+    // can see and the player has to choose.
+    //
+    // The default is past the point where a letterbox map covers a square box
+    // (about 2.9 on hardcorps2t), because a panel with empty corners is a panel
+    // spending screen on nothing. What it costs is that the whole map is no
+    // longer the default reading — it's one key away instead, which is the
+    // right way round: the fight in front of you is the common question and
+    // "which way across" is the occasional one.
+    //
+    // Held rather than tapped, so the rate is per second and the range takes
+    // about two of them end to end.
+    static constexpr float kRadarZoomMin = 1.0f;
+    static constexpr float kRadarZoomMax = 6.0f;
+    static constexpr float kRadarZoomDefault = 3.0f;
+    static constexpr float kRadarZoomRate = 2.5f;
+    // How much of the arena the radar's box holds, driven by the player's two
+    // zoom keys. It lives here rather than in the panel because it's a thing
+    // the player is doing rather than a fact about the layout, and it isn't
+    // saved for the same reason the camera's zoom isn't: it's a posture taken
+    // for a fight, not a setting.
+    float m_radarZoom = kRadarZoomDefault;
 
     // The seam between render time and the tick. Frames deposit their dt in
     // the accumulator and the command clock spends it in whole ticks — one

@@ -733,6 +733,19 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // nothing to do but read it.
     m_showScores = m_binds.Down(input, Act::Scoreboard);
 
+    // The radar's zoom, read in the same place and for the same reason: it
+    // decides what this machine draws in its own corner and the simulation has
+    // no opinion about it. Held rather than tapped, and geometric rather than
+    // additive, so a step means the same fraction of what's on show wherever in
+    // the range it's taken — the same thing the camera's wheel does. Read
+    // ahead of the Dead branch below because the wait is exactly when a player
+    // has time to look at the map.
+    if (m_binds.Down(input, Act::RadarIn))
+        m_radarZoom *= std::pow(kRadarZoomRate, dt);
+    if (m_binds.Down(input, Act::RadarOut))
+        m_radarZoom /= std::pow(kRadarZoomRate, dt);
+    m_radarZoom = std::clamp(m_radarZoom, kRadarZoomMin, kRadarZoomMax);
+
     // Dead: the arena runs on without the player — NPCs keep fighting, shots
     // keep flying, the corpse keeps falling — but no command reaches the
     // simulation and the camera holds on the spot where the body dropped
@@ -1842,6 +1855,14 @@ void Game::RenderHud(Renderer& renderer)
     radar.wallCount = m_world.Occluders().size();
     radar.blips = m_radarBlips.data();
     radar.blipCount = m_radarBlips.size();
+    radar.zoom = m_radarZoom;
+    // What the window follows: the eye, which is the soldier while they have
+    // one and the spot they died on for the length of the wait. The same point
+    // the fog is cut from and the ear listens at, so the map keeps looking at
+    // the place the player is actually experiencing the match from rather than
+    // blinking to the middle of the arena the moment they go down.
+    radar.focusX = m_eyePos.x;
+    radar.focusZ = m_eyePos.z;
     Hud::RenderRadar(renderer, radar);
 
     // The scoreboard, while the key is down. Every place on the field, both

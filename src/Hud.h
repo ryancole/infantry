@@ -242,6 +242,20 @@ namespace Hud
         size_t wallCount;
         const Blip* blips;
         size_t blipCount;
+        // How much of the arena the box holds. 1 is the whole of it, fitted;
+        // above that the map is drawn larger than the box and the box becomes a
+        // window onto it, which is what stops a letterbox map from leaving the
+        // corners of a square panel empty. The panel itself never changes size —
+        // zooming changes what is in the box, not how much screen the box is
+        // worth.
+        float zoom;
+        // Where the window looks when there is more map than box: the player's
+        // own soldier, or the spot they died on while they wait. Clamped to the
+        // arena in here rather than by the caller, because how much of the map
+        // the box currently holds is a fact about the layout and the layout is
+        // decided down here — a window that ran off the edge would scroll the
+        // ground away from under a soldier standing still.
+        float focusX, focusZ;
     };
 
     void RenderRadar(Renderer& renderer, const Radar& radar);

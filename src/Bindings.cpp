@@ -41,6 +41,14 @@ namespace
         { "ability",      "ABILITY",      Key('Q') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
         { "scoreboard",   "SCOREBOARD",   Key(VK_TAB) },
+        // The bracket pair, because it's the one adjacent pair of keys left
+        // that isn't under a hand playing the game: the radar is adjusted
+        // between fights rather than during them, and putting its zoom
+        // anywhere near WASD would be putting it somewhere it can be hit by
+        // accident. Closing bracket zooms in, on the reading that the pair
+        // runs left-to-right from wider to tighter.
+        { "radar_in",     "RADAR ZOOM IN",  Key(VK_OEM_6) },
+        { "radar_out",    "RADAR ZOOM OUT", Key(VK_OEM_4) },
         { "orbit_camera", "ORBIT CAMERA", Mouse(2) },
     };
 
