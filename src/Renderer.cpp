@@ -159,6 +159,7 @@ void Renderer::Shutdown()
     m_alphaLineEffect.reset();
     m_seenEffect.reset();
     m_unseenEffect.reset();
+    m_seenTriEffect.reset();
     m_modelEffect.reset();
     m_texModelEffect.reset();
     m_screenTriEffect.reset();
@@ -289,6 +290,21 @@ void Renderer::CreateEffects()
         CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     m_unseenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
                                                    unseenDesc);
+
+    // And the pass that reads it the other way round (see DrawTrianglesSeen):
+    // solid geometry, drawn where the mark is and nowhere else. Depth is
+    // tested and not written, because everything here is decoration standing
+    // on ground that has already had its say about what's in front of what.
+    D3D12_DEPTH_STENCIL_DESC seenTriStencil = markStencil;
+    seenTriStencil.FrontFace = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                 D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_EQUAL };
+    seenTriStencil.BackFace = seenTriStencil.FrontFace;
+
+    const EffectPipelineStateDescription seenTriDesc(
+        &Vertex::InputLayout, CommonStates::Opaque, seenTriStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_seenTriEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                    seenTriDesc);
 
     const EffectPipelineStateDescription modelDesc(
         &VertexPositionNormalTexture::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
@@ -761,6 +777,11 @@ void Renderer::MarkSeen(const Vertex* verts, uint32_t count, const XMMATRIX& wor
 void Renderer::DrawTrianglesUnseen(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
     DrawBatch(verts, count, world, m_unseenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void Renderer::DrawTrianglesSeen(const Vertex* verts, uint32_t count, const XMMATRIX& world)
+{
+    DrawBatch(verts, count, world, m_seenTriEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& world,

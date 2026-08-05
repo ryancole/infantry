@@ -22,7 +22,7 @@ namespace
     // and live in Bindings.h alongside the defaults.
     using Act = Bindings::Action;
 
-    constexpr float kFogHeight = 0.02f; // just above the floor grid lines
+    constexpr float kFogHeight = 0.02f; // just above the turf, under the grass
     constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
 
     // Bounding sphere used to skip soldiers that fall outside the viewport.
@@ -64,18 +64,16 @@ namespace
     constexpr int kSplatSegments = 8;      // fan segments per stain
     constexpr int kSplatVerts = kSplatSegments * 3;
     constexpr size_t kMaxSplats = 512;
-    constexpr float kSplatHeight = 0.012f;    // over the grid lines, under the fog quads
+    constexpr float kSplatHeight = 0.012f;    // over the turf, under the fog quads
     constexpr float kSplatMinRadius = 0.10f;
     constexpr float kSplatMaxRadius = 0.30f;
 
     constexpr float kPerfSmoothRate = 4.0f; // HUD timing smoothing, ~1/4s window
 
-    // The ground: jungle floor rather than the blue-grey the blockout arena
-    // wore. The grid still says how far away things are, it just does it in
-    // the colors of the place it's drawn on.
-    constexpr XMFLOAT4 kGridMinor = { 0.09f, 0.15f, 0.10f, 1.0f };
-    constexpr XMFLOAT4 kGridMajor = { 0.14f, 0.24f, 0.15f, 1.0f };
-    constexpr XMFLOAT4 kBorder = { 0.45f, 0.30f, 0.16f, 1.0f };
+    // The ground is no longer drawn here: it's a sheet of turf with grass on
+    // it, built once from the level and living in Ground.h alongside the
+    // reasoning about what it costs and why the blades are drawn last.
+    //
     // Colliders with no model to draw them — the trench lines around the
     // bases, today — are dug earth.
     constexpr XMFLOAT4 kObstacleColor = { 0.40f, 0.33f, 0.22f, 1.0f };
@@ -403,30 +401,18 @@ void Game::LoadContent(Renderer& renderer)
     // and what's left here is what the level looks like.
     m_world.Init(level);
 
-    // Static floor grid. Each axis is ruled to its own half-extent, since the
-    // arena is a rectangle: a square grid on a long map would either stop short
-    // of the ends or hang off the sides.
-    const Vector2 arenaHalf = m_world.ArenaHalf();
-    const int halfX = static_cast<int>(arenaHalf.x);
-    const int halfZ = static_cast<int>(arenaHalf.y);
-    for (int i = -halfX; i <= halfX; ++i)
-    {
-        const bool border = (i == -halfX || i == halfX);
-        const bool major = (i % 8) == 0;
-        const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
-        const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, -arenaHalf.y }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ f, 0.0f, arenaHalf.y }, col });
-    }
-    for (int i = -halfZ; i <= halfZ; ++i)
-    {
-        const bool border = (i == -halfZ || i == halfZ);
-        const bool major = (i % 8) == 0;
-        const XMFLOAT4 col = border ? kBorder : (major ? kGridMajor : kGridMinor);
-        const float f = static_cast<float>(i);
-        m_gridVerts.push_back({ XMFLOAT3{ -arenaHalf.x, 0.0f, f }, col });
-        m_gridVerts.push_back({ XMFLOAT3{ arenaHalf.x, 0.0f, f }, col });
-    }
+    // The floor: turf over the whole arena with grass standing on it, grown
+    // around everything solid so no blade comes up through a trench wall. The
+    // World has already turned the level's objects into colliders by here, so
+    // the footprints are taken off that list rather than off the level again —
+    // one answer to "what is solid", and the ground and the physics are
+    // reading it from the same place.
+    std::vector<Visibility::Rect> solids;
+    solids.reserve(m_world.Colliders().size());
+    for (const World::Collider& c : m_world.Colliders())
+        solids.push_back({ c.center.x - c.size.x * 0.5f, c.center.z - c.size.z * 0.5f,
+                           c.center.x + c.size.x * 0.5f, c.center.z + c.size.z * 0.5f });
+    m_ground = Ground::Build(m_world.ArenaHalf(), solids);
 
     // The drawn half of each level object. Each distinct model is loaded
     // once; instances share it.
@@ -1738,7 +1724,10 @@ void Game::Render(Renderer& renderer)
 
     const XMMATRIX identity = XMMatrixIdentity();
 
-    renderer.DrawLines(m_gridVerts.data(), static_cast<uint32_t>(m_gridVerts.size()), identity);
+    // The floor, first and opaque: everything else in the arena sorts against
+    // the depth it writes. The grass that stands on it goes down after the
+    // fog — see below, and Ground.h.
+    Ground::DrawTurf(renderer, m_ground, m_scratch);
 
     for (const World::Collider& c : m_world.Colliders())
         if (c.debugDraw)
@@ -1886,6 +1875,14 @@ void Game::Render(Renderer& renderer)
     AppendFogSheet(m_fogVerts);
     renderer.DrawTrianglesUnseen(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
                                  identity);
+
+    // And the grass, on the other side of the same mark. It stands a third of
+    // a unit off the floor, which is above the plane the fog is a sheet at, so
+    // laid down with the turf it would stay lit through the darkness and
+    // speckle the unseen half of the map green. Drawn here instead it grows
+    // only where the squad can see, which is the rule everything else in the
+    // arena already keeps.
+    Ground::DrawGrass(renderer, m_ground, m_scratch);
 
     // What the player's ability lets them see that nobody else does — for the
     // medic, squadmate health over the heads of the wounded. Which soldiers are

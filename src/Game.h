@@ -8,6 +8,7 @@
 #include "Command.h"
 #include "Input.h"
 #include "Discovery.h"
+#include "Ground.h"
 #include "Hud.h"
 #include "JoinMenu.h"
 #include "MainMenu.h"
@@ -462,7 +463,10 @@ private:
     std::vector<Vertex> m_fogVerts; // reused per frame
     std::vector<Prop> m_props;
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
-    std::vector<Vertex> m_gridVerts;   // static, built once
+    // The floor and the grass on it, built once from the level and never
+    // touched again — see Ground.h. It's chunked rather than one mesh because
+    // the camera shows about one percent of a map this size at a time.
+    Ground::Field m_ground;
     // Blood on the floor, kept as finished geometry rather than as splats to
     // rebuild: a stain never moves or fades once it lands, so the vertices it
     // was born with are the vertices it dies with. Oldest first, so the cap
