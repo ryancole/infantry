@@ -938,16 +938,10 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
 }
 
 float World::PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
-                             float targetDist, std::vector<Vector3>* outArc) const
+                             float targetDist) const
 {
     const float speed = ShotSpeed(weapon, targetDist);
     const float radius = weapon.projectileRadius;
-    if (outArc)
-    {
-        outArc->clear();
-        outArc->push_back({ from.x + dir.x * kMuzzleOffset, kMuzzleHeight,
-                            from.z + dir.z * kMuzzleOffset });
-    }
     // Coarser than the physics tick, but the arc is smooth and the boxes are
     // fat relative to per-step travel, so the indicator lands within a step.
     constexpr float kStep = 1.0f / 120.0f;
@@ -955,9 +949,6 @@ float World::PredictShotStop(const WeaponDef& weapon, const Vector3& from, const
     {
         const float ht = kMuzzleOffset + speed * t;
         const float y = kMuzzleHeight + weapon.lobVelocity * t - 0.5f * kGravity * t * t;
-        if (outArc)
-            outArc->push_back({ from.x + dir.x * ht, std::max(y, radius),
-                                from.z + dir.z * ht });
         if (y <= radius) // came back down to the ground
             return ht;
 

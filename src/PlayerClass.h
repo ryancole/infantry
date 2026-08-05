@@ -293,9 +293,46 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // nothing at all. Violet and amber are as far from each other as those were,
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
+    // Reach is the third column with a source, and the first to come out of the
+    // zone's item table rather than its prose. Every projectile in
+    // hardcorps2.itm carries a muzzle velocity and an alive time — the server
+    // repo's Docs/Itm names the columns, and its own aiming code fixes the unit
+    // at thousandths of a pixel per ten-millisecond tick — and what survives the
+    // trip is a set of ratios rather than distances. The sniper rifle reaches
+    // about 1.6 times the assault rifle; the PDW about 0.6. The absolute
+    // numbers don't transfer, since that game measured across a map five
+    // hundred tiles wide, but the spread does, and it's tighter than this table
+    // had: our sniper was reaching 2.4 times the marine.
+    //
+    // Reach here isn't a stat, it's a consequence. A round leaves the muzzle
+    // level at 0.6 up and dies where it meets the floor, so how far it gets is
+    // its speed times the same fall — about a third of a second for all of
+    // them, a hair longer for the thinner rounds. That makes projectileSpeed
+    // the only lever there is, and the speeds below are set so the reaches land
+    // on the zone's ratios: marine 16.8 units, medic 10.1, sniper 27.
+    //
+    // The sniper is what the other two were fitted around, rather than the
+    // marine everything else in this table is read against. Its 27 units is
+    // already load-bearing: the sight of 38 exists so LONG RANGE can see the
+    // whole of what it shoots at, and the dead ground of 6 was measured against
+    // a reach that long. Anchoring on the marine instead would have cut the
+    // bolt to 18 and left both of those paragraphs describing a class that no
+    // longer existed. The price is paid by the marine, whose round is now half
+    // again as fast (34 -> 51) and reaches half again as far — the largest
+    // single change in this table, and the first thing to look at if the
+    // shooting starts feeling wrong. Against the AI it reads as a fix: a
+    // rifleman opens fire at Brain::kEngageRange (22) and now covers most of
+    // that ground instead of half of it. The medic still can't reach
+    // kPreferredRange (11), the distance its own brain circles at, which is a
+    // thing that was already true and isn't made worse here.
+    //
+    // The grenadier sits out of it. Its shell is lobbed, so the arc ends the
+    // flight long before the fall would, and the zone's own launcher agrees —
+    // the alive time on that row is a twenty-second safety net, not a range.
+    // The zone's flamethrower ratio (0.4) has no class here to land on.
     // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 34.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 26.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
     { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
     { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
 };
