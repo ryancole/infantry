@@ -606,6 +606,24 @@ void Renderer::DrawScreenText(std::string_view text, float x, float y, float siz
     m_textDraws.push_back({ std::string(text), x, y - m_fontCapOffsetY * scale, scale, color });
 }
 
+void Renderer::DrawScreenTextOutlined(std::string_view text, float x, float y, float size,
+                                      const XMFLOAT4& color)
+{
+    // Ring first, fill last: the sprite batch is in its default deferred mode,
+    // so what is queued later is drawn over what came before.
+    constexpr float kEdgeShare = 0.09f; // of the cap height
+    constexpr XMFLOAT4 kEdgeColor = { 0.0f, 0.0f, 0.0f, 0.85f };
+    static constexpr float kRing[8][2] = {
+        { -1.0f, 0.0f }, { 1.0f, 0.0f },  { 0.0f, -1.0f }, { 0.0f, 1.0f },
+        { -1.0f, -1.0f }, { 1.0f, -1.0f }, { -1.0f, 1.0f }, { 1.0f, 1.0f },
+    };
+
+    const float edge = std::max(1.0f, size * kEdgeShare);
+    for (const float(&offset)[2] : kRing)
+        DrawScreenText(text, x + offset[0] * edge, y + offset[1] * edge, size, kEdgeColor);
+    DrawScreenText(text, x, y, size, color);
+}
+
 float Renderer::MeasureScreenText(std::string_view text, float size) const
 {
     const std::string str(text);

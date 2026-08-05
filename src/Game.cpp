@@ -2109,11 +2109,15 @@ void Game::DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) co
     if (!renderer.WorldToScreen({ pos.x, 0.0f, pos.z }, screen))
         return;
 
+    // Outlined, because this is the one piece of text in the game with no
+    // panel under it: it is read against a jungle floor, a palm, a rock, or a
+    // patch of somebody's blood, and green over leaves or red over blood is a
+    // word that isn't there.
     const float h = static_cast<float>(renderer.Height());
     const float size = h * kNameSize;
-    renderer.DrawScreenText(name, screen.x - renderer.MeasureScreenText(name, size) * 0.5f,
-                            screen.y + h * kNameDrop, size,
-                            unit.team == m_team ? kNameFriendlyColor : kNameEnemyColor);
+    renderer.DrawScreenTextOutlined(name, screen.x - renderer.MeasureScreenText(name, size) * 0.5f,
+                                    screen.y + h * kNameDrop, size,
+                                    unit.team == m_team ? kNameFriendlyColor : kNameEnemyColor);
 }
 
 // Screen-space overlay: the gameplay cluster (Hud.cpp), the respawn countdown,
