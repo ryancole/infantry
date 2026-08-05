@@ -85,29 +85,43 @@ namespace
     constexpr XMFLOAT4 kGrenadeCasingColor = { 0.32f, 0.30f, 0.28f, 1.0f };
     constexpr float kGrenadeBlinkPeriod = 0.24f; // seconds per on/off cycle
     constexpr float kGrenadeFlashLife = 0.4f;    // fuse left when it goes solid bright
-    // The aim indicator is alpha-blended; the shaft dims via alpha rather
-    // than darker RGB so whatever it crosses still shows through.
+    // The landing circle a lobbed primary would get. It's the last colored
+    // thing the aim indicator has left — the line and its head are grey (see
+    // kAimDotColor) — and no class carries a lobbed primary today, so nothing
+    // draws it yet.
     constexpr XMFLOAT4 kAimColor = { 0.95f, 0.95f, 0.40f, 0.55f };
-    constexpr XMFLOAT4 kAimDimColor = { 0.95f, 0.95f, 0.40f, 0.22f };
-    // Drained of color while the magazine is out: the line still tracks the
+    // Drained of color while the magazine is out: the mark still tracks the
     // cursor, but nothing will come out of the barrel until the reload ends,
     // and that has to be visible without looking away from the fight.
     constexpr XMFLOAT4 kAimSpentColor = { 0.62f, 0.64f, 0.68f, 0.45f };
-    constexpr XMFLOAT4 kAimSpentDimColor = { 0.62f, 0.64f, 0.68f, 0.18f };
-    // The grenade's ring is orange, so it never reads as part of the primary's
-    // yellow aim line.
-    constexpr XMFLOAT4 kGrenadeAimColor = { 0.95f, 0.50f, 0.18f, 0.35f };
     // The dead ground in front of a weapon with a minimum range — the sniper's
-    // and nobody else's. Drawn in the spent grey rather than the aim's yellow
-    // because it means the same thing that color already means everywhere else
-    // on this indicator: pointing here does nothing. The ring is the honest
-    // shape of the rule (it's a radius, not a point on the line) and the shaft
-    // inside it is greyed to say which end of the line the ring is talking
-    // about; where they cross is the near edge of the class's reach.
+    // and nobody else's. The ring is the honest shape of the rule: it's a
+    // radius, not a point on the line, so a body anywhere inside it is one the
+    // weapon passes through. Where it crosses the dots is the near edge of the
+    // class's reach, and the dots inside it are faded to say which side of the
+    // crossing is which.
     constexpr XMFLOAT4 kDeadRangeColor = { 0.62f, 0.64f, 0.68f, 0.30f };
-    constexpr XMFLOAT4 kDeadRangeDimColor = { 0.62f, 0.64f, 0.68f, 0.14f };
-    constexpr float kAimRingHeight = 0.05f;    // above the fog quads, so it isn't dimmed
-    constexpr float kGrenadeMarkRadius = 0.5f; // first-bounce marker, not the blast size
+    constexpr float kAimRingHeight = 0.05f; // above the fog quads, so it isn't dimmed
+    // The indicator itself — the pips and the head that ends them. Small solid
+    // marks, far enough apart to read as a run of dots rather than a dashed
+    // line, and grey rather than any color of its own: the line is a thing to
+    // glance at and never a thing to look past, so it's kept quiet enough that
+    // the ground it crosses is still the brighter of the two.
+    constexpr XMFLOAT4 kAimDotColor = { 0.72f, 0.74f, 0.78f, 0.30f };
+    // The same grey, fainter, for a mark that can't be acted on: the pips
+    // inside a minimum range, and the whole indicator through a reload. It's
+    // the only channel a colorless line has left to say so with, and it says
+    // the right thing — less mark for less weapon.
+    constexpr XMFLOAT4 kAimDotFadedColor = { 0.72f, 0.74f, 0.78f, 0.14f };
+    constexpr float kAimDotSpacing = 0.9f;
+    constexpr float kAimDotRadius = 0.055f;
+    constexpr int kAimDotSegments = 6; // a filled hexagon is a dot at arena distance
+    // The head on the far end. Its point sits exactly on the stop, so the arrow
+    // is read the way an arrow is read — the tip is the claim, and the body of
+    // it lies back down the line the shot came along rather than out past the
+    // last ground the round can reach.
+    constexpr float kAimArrowLength = 0.6f;
+    constexpr float kAimArrowHalfWidth = 0.26f;
     // The swing: a pale arc swept at the blade's real reach, fading out over an
     // eighth of a second. It's drawn after the fact rather than as an aim
     // indicator on purpose — a melee is a commitment, so what the player gets to
@@ -224,6 +238,43 @@ namespace
                       const XMFLOAT4& color)
     {
         AppendArc(out, center, radius, 0.0f, XM_2PI, 24, color);
+    }
+
+    // One dot of the aim indicator: a small filled disc lying flat on the floor
+    // at the height every other ground mark uses, wound as a fan from its
+    // center. Solid rather than an outline because at this size an outline is
+    // mostly the hole in the middle of it — a pip either reads as a dot or it
+    // reads as nothing. Triangles, so these go in a batch of their own.
+    void AppendDot(std::vector<Vertex>& out, float x, float z, const XMFLOAT4& color)
+    {
+        const XMFLOAT3 center{ x, kAimRingHeight, z };
+        for (int i = 0; i < kAimDotSegments; ++i)
+        {
+            const float a0 = XM_2PI * i / kAimDotSegments;
+            const float a1 = XM_2PI * (i + 1) / kAimDotSegments;
+            out.push_back({ center, color });
+            out.push_back({ XMFLOAT3{ x + std::cos(a0) * kAimDotRadius, kAimRingHeight,
+                                      z + std::sin(a0) * kAimDotRadius }, color });
+            out.push_back({ XMFLOAT3{ x + std::cos(a1) * kAimDotRadius, kAimRingHeight,
+                                      z + std::sin(a1) * kAimDotRadius }, color });
+        }
+    }
+
+    // The arrow head that ends the aim indicator: one filled triangle lying in
+    // the dots' plane, its point on `tip` and its base squared off across
+    // `dir`. It replaces the bar that used to cross the end — a bar says where
+    // the line stops but not which way it was going, and on a flat indicator
+    // that direction is worth saying twice. It carries the dots' own grey, so
+    // what marks it as the end is its shape and nothing else.
+    void AppendArrowHead(std::vector<Vertex>& out, const Vector3& tip, const Vector3& dir,
+                         const XMFLOAT4& color)
+    {
+        const float bx = tip.x - dir.x * kAimArrowLength;
+        const float bz = tip.z - dir.z * kAimArrowLength;
+        const float px = -dir.z * kAimArrowHalfWidth, pz = dir.x * kAimArrowHalfWidth;
+        out.push_back({ XMFLOAT3{ tip.x, tip.y, tip.z }, color });
+        out.push_back({ XMFLOAT3{ bx - px, tip.y, bz - pz }, color });
+        out.push_back({ XMFLOAT3{ bx + px, tip.y, bz + pz }, color });
     }
 
     // Draws a living soldier: the model's segments posed by the walk cycle and
@@ -1749,18 +1800,24 @@ void Game::Render(Renderer& renderer)
                                     identity);
     }
 
-    // Aim indicator: the shot's actual trajectory as a dim 3D polyline — an
-    // arch for the grenade's lob, a near-level line with droop for bullets —
-    // ending where the shot really stops (max range, the first wall the arc
-    // can't clear, or the ground). A bright tick crosses the end point, lobbed
-    // weapons get a landing circle, and the grenade gets a marker where the
-    // throw touches down. Drawn after the fog pass so it stays bright. There's
-    // nothing to aim while dead, so it goes with the soldier. The whole
-    // indicator greys out through a reload — where the shot would land is still
-    // worth showing, but not as something the player can act on yet. It goes
-    // entirely once the match is over: the arena is frozen, and a line still
-    // tracking the cursor across it would be the one thing on screen claiming
-    // there was still something to shoot.
+    // Aim indicator: the ground the shot travels over, laid down as dots on
+    // the floor and ending where the shot really stops (max range, the first
+    // wall the arc can't clear, or the ground). Flat rather than the trajectory
+    // itself, because a line hanging in the air reads at the height it's drawn
+    // and not the height it means — a shaft passing over a crate looks like it
+    // ends on the crate. A dot can't be misread that way: it's a piece of
+    // ground, which is what the player is picking. What that gives up is the
+    // arc's shape, so whether a lob clears the wall in front of it isn't
+    // something the indicator claims any more — where it stops still is. An
+    // arrow head takes the end point, and the primary is the only weapon it
+    // speaks for: the grenade is thrown on a feel for the arc, not off a mark
+    // that has to be read. Drawn after the fog pass so it isn't dimmed twice.
+    // There's nothing to aim while dead, so it goes
+    // with the soldier. The whole line fades through a reload — where the shot
+    // would land is still worth showing, but not as something the player can
+    // act on yet. It goes entirely once the match is over: the arena is frozen,
+    // and a line of dots still tracking the cursor across it would be the one
+    // thing on screen claiming there was still something to shoot.
     if (m_phase == Phase::Playing && !m_world.MatchOver())
     {
         Unit& u = *m_world.Local();
@@ -1775,39 +1832,43 @@ void Game::Render(Renderer& renderer)
         const Vector3 laim = blendDir(drawn.prevAimDir, drawn.aimDir, da);
         const bool reloading = u.reloadTimer > 0.0f;
         const XMFLOAT4 aimColor = reloading ? kAimSpentColor : kAimColor;
-        const XMFLOAT4 aimDim = reloading ? kAimSpentDimColor : kAimDimColor;
 
-        m_world.PredictShotStop(u.cls->primary, lpos, laim, m_aimDist, &m_aimArc);
+        // How far down the line the shot gets. The flight arches and droops,
+        // but its shadow doesn't: horizontal travel is a straight run along the
+        // aim, so one distance is the whole of what the dots need.
+        const float stop = m_world.PredictShotStop(u.cls->primary, lpos, laim, m_aimDist);
 
         // The near edge of what this weapon can do, for the one class that has
         // one. Everything inside it is ground the primary is useless on, so
-        // that stretch of the line is drawn as dead rather than as aim — the
-        // player should be able to see, without reading anything, that the
-        // first stride in front of them isn't theirs. At 0 the test is never
-        // true and nothing about the indicator changes, which is every class
-        // but the sniper.
+        // those dots are drawn as dead rather than as aim — the player should
+        // be able to see, without reading anything, that the first stride in
+        // front of them isn't theirs. At 0 no dot is ever inside it and nothing
+        // about the indicator changes, which is every class but the sniper.
         const float minRange = u.cls->primary.minRange;
-        const auto inDeadGround = [&](const Vector3& p) {
-            const float dx = p.x - lpos.x, dz = p.z - lpos.z;
-            return dx * dx + dz * dz < minRange * minRange;
-        };
 
+        // Where the run of dots ends: on a wall it's the floor the shot dies
+        // over, which is the ground the player was pointing at anyway.
+        const Vector3 end(lpos.x + laim.x * stop, kAimRingHeight, lpos.z + laim.z * stop);
+
+        // Stepped in world distance rather than per sample of the flight, so
+        // the spacing is a length of ground and stays the same length whether
+        // it's a thrown grenade crawling out or a rifle round. Filled pips and
+        // the arrow head are triangles, so they share a batch of their own,
+        // laid down before the marks that are made of lines.
+        // The run stops where the head starts, so no pip is buried under it.
+        // Head and pips are the one grey; the head is told apart by being the
+        // only mark on the line with a shape, which is all a terminus needs.
         m_scratch.clear();
-        for (size_t i = 1; i < m_aimArc.size(); ++i)
-        {
-            const XMFLOAT4& shaft = inDeadGround(m_aimArc[i]) ? kDeadRangeDimColor : aimDim;
-            m_scratch.push_back({ m_aimArc[i - 1], shaft });
-            m_scratch.push_back({ m_aimArc[i], shaft });
-        }
+        const XMFLOAT4 dotColor = reloading ? kAimDotFadedColor : kAimDotColor;
+        for (float d = kAimDotSpacing; d < stop - kAimArrowLength; d += kAimDotSpacing)
+            AppendDot(m_scratch, lpos.x + laim.x * d, lpos.z + laim.z * d,
+                      d < minRange ? kAimDotFadedColor : dotColor);
+        AppendArrowHead(m_scratch, end, laim, dotColor);
+        renderer.DrawTrianglesAlpha(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()),
+                                    identity);
+        m_scratch.clear();
 
-        // End-of-flight tick, perpendicular to the aim direction, at the
-        // height of the impact (on a wall it floats at the hit point).
-        const Vector3 end = m_aimArc.back();
-        const float px = -laim.z * 0.45f, pz = laim.x * 0.45f;
-        m_scratch.push_back({ { end.x - px, end.y, end.z - pz }, aimColor });
-        m_scratch.push_back({ { end.x + px, end.y, end.z + pz }, aimColor });
-
-        // ...and the near end as a ring on the ground around the soldier,
+        // The near end as a ring on the ground around the soldier,
         // because that is the shape the rule actually has: a body anywhere
         // inside it is one this weapon passes through, whichever way the gun is
         // pointed. It sits under the soldier at the height every other ground
@@ -1819,21 +1880,6 @@ void Game::Render(Renderer& renderer)
 
         if (u.cls->primary.lobVelocity > 0.0f)
             AppendCircle(m_scratch, end, 0.4f, aimColor);
-
-        // Grenade marker: where the throw first touches down. Deliberately not
-        // the blast radius — the grenade bounces and rolls on from here before
-        // its fuse ends it, so a ring sized to the blast would promise a
-        // detonation point nothing can predict. What it does show honestly is
-        // the throw's reach, so a lob falling short of the cursor is visible
-        // before it leaves the hand. Gone for good once the grenade is spent,
-        // which is the in-world half of the HUD's count.
-        if (u.grenades > 0)
-        {
-            const float dist = m_world.PredictShotStop(kGrenade, lpos, laim, m_aimDist);
-            const Vector3 land(lpos.x + laim.x * dist, kAimRingHeight,
-                               lpos.z + laim.z * dist);
-            AppendCircle(m_scratch, land, kGrenadeMarkRadius, kGrenadeAimColor);
-        }
 
         // The swing that just happened: the blade's arc at its real reach,
         // frozen where it was aimed and fading out over the flash. It's the

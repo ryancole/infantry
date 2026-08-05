@@ -454,5 +454,4 @@ private:
     // sheds the stalest patch.
     std::vector<Vertex> m_splatVerts;
     std::vector<Vertex> m_scratch;     // reused per draw
-    std::vector<Vector3> m_aimArc;     // aim indicator trajectory, reused per frame
 };

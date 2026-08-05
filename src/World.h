@@ -558,10 +558,10 @@ public:
 
     // Marches the ballistic arc SpawnShot would fire (aimed targetDist away)
     // against the colliders and the ground; returns the horizontal distance
-    // from `from` at which the shot stops. When outArc is given, fills it
-    // with the sampled trajectory (muzzle to stop). Powers the aim indicator.
+    // from `from` at which the shot stops. Powers the aim indicator, which
+    // draws that distance along the ground and never needs the arc's height.
     float PredictShotStop(const WeaponDef& weapon, const Vector3& from, const Vector3& dir,
-                          float targetDist, std::vector<Vector3>* outArc = nullptr) const;
+                          float targetDist) const;
 
 private:
     // A slot waiting to be filled again. Queued when an AI soldier dies and
