@@ -44,6 +44,12 @@ public:
         Melee,
         Ability,
         Steady,
+        // Shouting for a medic. It sits with the kit rather than with the
+        // screen-only keys below because it's the last thing on this list the
+        // simulation actually hears: pressing it puts a sound in the arena that
+        // both sides can hear, which is a thing that happens in the match and
+        // not a thing that happens on this monitor.
+        VoiceMedic,
         // Held, not toggled: the scoreboard is a thing you look at, and looking
         // away is letting go. It's an action rather than a nailed-down key like
         // the menu arrows because it's pressed with the hands that are playing

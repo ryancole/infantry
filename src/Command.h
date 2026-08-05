@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Voice.h"
+
 #include <DirectXMath.h>
 #include <SimpleMath.h>
 
@@ -58,4 +60,10 @@ struct Command
     bool reload = false;
     bool grenade = false;
     bool ability = false;
+    // Something shouted on this slice (Voice.h), or kVoiceNone — which is what
+    // nearly every command says. An edge like the three above, and one of them
+    // in spirit: the reason it isn't a fourth bool is that there will be more
+    // than one thing to shout, and a byte that names which is a byte the wire
+    // was going to have to carry anyway.
+    uint8_t voice = kVoiceNone;
 };
