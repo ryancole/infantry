@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <string>
 
 using namespace DirectX;
@@ -156,6 +157,24 @@ namespace
     constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
+    // A player's name, under the boots of the soldier they're driving. Green
+    // for your side and red for theirs rather than the two teams' own colors,
+    // which is the one mark on the field that breaks that rule and is worth
+    // saying why: armor answers "which side is that", and it has to be the same
+    // answer on every screen, so the same body is blue to both of the people
+    // looking at it. A name answers "is that one of mine", which is a question
+    // about whoever is reading it — so it is drawn from the reader's end, and
+    // the two marks aren't in competition because they aren't answering the
+    // same question. Green and red because that pair is read before it is
+    // looked at, which is the only speed a label over a fight is any use at.
+    //
+    // Small, because there can be ten of them on screen at once and not one is
+    // worth taking an eye off the fight for. About the size of the perf readout
+    // in the corner: there when looked at, quiet when not.
+    constexpr XMFLOAT4 kNameFriendlyColor = { 0.42f, 0.92f, 0.46f, 1.0f };
+    constexpr XMFLOAT4 kNameEnemyColor = { 1.00f, 0.38f, 0.36f, 1.0f };
+    constexpr float kNameSize = 0.0115f; // cap height, as a share of the window's
+    constexpr float kNameDrop = 0.013f;  // boots -> the top of the name
 
     // Appends a solid cube with fixed per-face shading. Units and obstacles
     // moved to the renderer's lit shapes; this remains for effects (impact
@@ -190,6 +209,51 @@ namespace
             for (int i : tris)
                 out.push_back({ p[i], col });
         }
+    }
+
+    // Whether anything solid stands between `point` and the camera.
+    //
+    // It exists because screen text is drawn after the world and cannot be
+    // depth-tested against it, so a label sits on top of the wall its soldier
+    // is hidden behind. For an enemy that is the label saying more than the
+    // arena does, which is the one thing it must never do — so the enemy's name
+    // asks this question and goes unwritten when the answer is yes.
+    //
+    // The projection is orthographic, so "toward the camera" is one direction
+    // for the whole arena (IsoCamera::EyeDirection) and the test is one ray
+    // marched along it against the level's boxes: the standard slab
+    // intersection, starting at the soldier so a box behind them doesn't count
+    // and running to infinity because the eye is outside everything. A near-zero
+    // component of the direction — an orbit that lines the camera up with an
+    // axis — is nudged rather than special-cased, which keeps a slab that should
+    // read as infinite from arriving as a zero-times-infinity NaN.
+    bool BlockedFromEye(const std::vector<World::Collider>& colliders, const Vector3& point,
+                        const Vector3& toEye)
+    {
+        const auto inverse = [](float v) {
+            constexpr float kTiny = 1e-6f;
+            return 1.0f / (std::abs(v) < kTiny ? (v < 0.0f ? -kTiny : kTiny) : v);
+        };
+        const float inv[3] = { inverse(toEye.x), inverse(toEye.y), inverse(toEye.z) };
+        const float from[3] = { point.x, point.y, point.z };
+
+        for (const World::Collider& box : colliders)
+        {
+            const float center[3] = { box.center.x, box.center.y, box.center.z };
+            const float half[3] = { box.size.x * 0.5f, box.size.y * 0.5f, box.size.z * 0.5f };
+            float enter = 0.0f;
+            float leave = std::numeric_limits<float>::infinity();
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const float t0 = (center[axis] - half[axis] - from[axis]) * inv[axis];
+                const float t1 = (center[axis] + half[axis] - from[axis]) * inv[axis];
+                enter = std::max(enter, std::min(t0, t1));
+                leave = std::min(leave, std::max(t0, t1));
+            }
+            if (enter <= leave)
+                return true;
+        }
+        return false;
     }
 
     // Mixes `f` of the way to white. A team color is chosen to read as armor
@@ -711,6 +775,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             switch (*picked)
             {
+            case OptionsMenu::Choice::Player:   m_phase = Phase::Player; break;
             case OptionsMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
             case OptionsMenu::Choice::Audio:    m_phase = Phase::Audio; break;
             case OptionsMenu::Choice::Back:     m_phase = Phase::MainMenu; break;
@@ -724,6 +789,22 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // keystroke would put a file write in the middle of a player trying three
     // keys to see which feels right, and there's nothing to lose by waiting
     // until they're done.
+    //
+    // Nothing takes effect anywhere else when the name changes, and nothing
+    // needs to: a name is stated at the door of a server, and the player is
+    // standing on a menu, so there is no match for a new one to reach until
+    // they join the next one.
+    if (m_phase == Phase::Player)
+    {
+        if (m_playerMenu.Update(input, dt, m_settings, camera.ViewportWidth(),
+                                camera.ViewportHeight()))
+        {
+            m_settings.Save();
+            m_phase = Phase::Options;
+        }
+        return;
+    }
+
     if (m_phase == Phase::KeyBinds)
     {
         if (m_bindMenu.Update(input, m_binds, camera.ViewportWidth(), camera.ViewportHeight()))
@@ -796,7 +877,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         if (m_net->GetStatus() == NetClient::Status::Connected && !m_joinSent && m_class)
         {
             Net::Writer w;
-            Net::WriteJoin(w, static_cast<uint8_t>(m_class - kClassDefs));
+            // The name goes up with the class, because this is the one message
+            // that says who is arriving. It's whatever the settings hold — the
+            // account name on a first run, whatever the player typed after
+            // that, and possibly nothing at all, which the server answers with
+            // a name of its own.
+            Net::WriteJoin(w, static_cast<uint8_t>(m_class - kClassDefs), m_settings.playerName);
             m_net->SendReliable(w.bytes);
             m_joinSent = true;
         }
@@ -879,6 +965,16 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_radarZoom /= std::pow(kRadarZoomRate, dt);
     m_radarZoom = std::clamp(m_radarZoom, kRadarZoomMin, kRadarZoomMax);
 
+    // Which way the camera has ended up facing, in the two forms the draw needs
+    // it: the vector that stands a health bar and the radar square to the view,
+    // and the one an enemy's name is tested for cover along. Read here rather
+    // than further down for the reason the radar's zoom is — a dead player is
+    // still watching a match, and can still orbit the camera while they wait,
+    // so both of these have to keep up with a screen the player is looking at
+    // even on the frames they aren't in it.
+    m_screenRight = camera.ScreenRightOnGround();
+    m_toEye = camera.EyeDirection();
+
     // Dead: the arena runs on without the player — NPCs keep fighting, shots
     // keep flying, the corpse keeps falling — but no command reaches the
     // simulation and the camera holds on the spot where the body dropped
@@ -926,7 +1022,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // command it had (Server::Impl::Step) — a player who opened the screen
     // mid-stride would watch their soldier walk out of the spawn area they
     // opened it in.
-    m_screenRight = camera.ScreenRightOnGround();
     const Command fresh =
         m_classChangeOpen
             ? Command{}
@@ -1600,6 +1695,12 @@ void Game::Render(Renderer& renderer)
         return;
     }
 
+    if (m_phase == Phase::Player)
+    {
+        m_playerMenu.Render(renderer, m_settings);
+        return;
+    }
+
     if (m_phase == Phase::KeyBinds)
     {
         m_bindMenu.Render(renderer, m_binds);
@@ -1695,6 +1796,7 @@ void Game::Render(Renderer& renderer)
                     src.prevWalkPhase + (src.walkPhase - src.prevWalkPhase) * a,
                     src.prevMoveBlend + (src.moveBlend - src.prevMoveBlend) * a,
                     unit.team, unit.cls->color);
+        DrawName(renderer, unit, pos);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
     // with every segment placed by the physics body it was built from. Same
@@ -1952,6 +2054,72 @@ void Game::Render(Renderer& renderer)
         m_classSelect.Render(renderer, m_binds, ClassSelect::Mode::Change);
 }
 
+// The name under a soldier: whoever is standing in the roster row this unit
+// holds, colored by what they are to the person reading it.
+//
+// Everybody gets one, the bots included, and the label says nothing at all
+// about which is which. That is the point rather than an oversight: what the
+// player needs off a body at a glance is whose side it's on and which one of
+// them it is, and "is there a person behind it" is a question for the
+// scoreboard, where there's room to answer it and time to read. An arena where
+// only the humans were labelled would be an arena that told you which soldier
+// to take seriously, which is a thing the fight should be saying, not the HUD.
+//
+// Called from inside the soldier loop rather than from a pass of its own, so a
+// name and the body it belongs to are subject to exactly one rule: whatever
+// that loop decided to draw is what gets labelled, fog and frustum and all. A
+// second pass would be a second opinion about who can be seen, and the one
+// thing a name must never do is out a soldier the arena is hiding.
+void Game::DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) const
+{
+    // Not while something is deliberately holding the middle of the screen.
+    // Screen text draws over overlay geometry whatever order it was queued in,
+    // so a name behind the class cards or the scoreboard would be a name
+    // written across them — and neither is a moment when where somebody is
+    // standing is the question being asked.
+    if (m_classChangeOpen || m_showScores)
+        return;
+
+    const std::vector<World::Slot>& roster = m_world.Roster();
+    if (unit.slot < 0 || unit.slot >= static_cast<int>(roster.size()))
+        return;
+    const std::string& name = roster[unit.slot].name;
+    if (name.empty())
+        return;
+
+    // Your own side's names carry through walls; the other side's don't, and
+    // the split is the same one the fog already draws. Where your squad is
+    // standing was never something being kept from you — that is why their
+    // bodies skip the sight test in the first place — so a squadmate behind a
+    // rock is a squadmate you can still find, and the name is the only part of
+    // them that survives the rock to say so. An enemy is the opposite case
+    // exactly: their name would be telling you something the arena is refusing
+    // to, and a label that outranks the geometry is a wallhack with a small
+    // font. So theirs is asked whether the body can actually be seen from here,
+    // and stays unwritten when it can't.
+    if (unit.team != m_team && BlockedFromEye(m_world.Colliders(),
+                                              { pos.x, kSoldierBoundsY, pos.z }, m_toEye))
+        return;
+
+    // Anchored to the ground the soldier is standing on rather than to the
+    // model, which is what puts it under the boots: `pos` is the feet and the
+    // body is drawn upward from there, so a fixed drop in pixels clears it at
+    // any zoom without ever having to ask how tall the model came out.
+    XMFLOAT2 screen;
+    if (!renderer.WorldToScreen({ pos.x, 0.0f, pos.z }, screen))
+        return;
+
+    // Outlined, because this is the one piece of text in the game with no
+    // panel under it: it is read against a jungle floor, a palm, a rock, or a
+    // patch of somebody's blood, and green over leaves or red over blood is a
+    // word that isn't there.
+    const float h = static_cast<float>(renderer.Height());
+    const float size = h * kNameSize;
+    renderer.DrawScreenTextOutlined(name, screen.x - renderer.MeasureScreenText(name, size) * 0.5f,
+                                    screen.y + h * kNameDrop, size,
+                                    unit.team == m_team ? kNameFriendlyColor : kNameEnemyColor);
+}
+
 // Screen-space overlay: the gameplay cluster (Hud.cpp), the respawn countdown,
 // and the perf counters.
 void Game::RenderHud(Renderer& renderer)
@@ -2168,10 +2336,27 @@ void Game::RenderHud(Renderer& renderer)
             default:                       return Hud::Holder::Ai;
             }
         };
+        // What a row is called, and what it's carrying. Every place on the
+        // roster has a name — the bots are dealt one when the place is made —
+        // so this is now the same two columns for everybody, and which of the
+        // ten are people is left to the color the holder picks rather than to
+        // the shape of the row. A slot nobody has stood in yet has no class to
+        // name, and falls back to whatever it has.
+        //
+        // The names are pointers into the roster's own strings rather than
+        // copies. That's safe for exactly as long as it needs to be — the rows
+        // are built and handed to the HUD inside this function, and the World
+        // they point into can't change until the wire is pumped again next
+        // frame — and it's why they're rebuilt every frame rather than kept.
         m_scoreRows.clear();
         for (const World::Slot& slot : m_world.Roster())
-            m_scoreRows.push_back({ slot.team, slot.cls ? slot.cls->name : nullptr,
-                                    holder(slot.held), slot.local, slot.kills, slot.deaths });
+        {
+            const char* cls = slot.cls ? slot.cls->name : nullptr;
+            const bool named = !slot.name.empty();
+            m_scoreRows.push_back({ slot.team, named ? slot.name.c_str() : cls,
+                                    named ? cls : nullptr, holder(slot.held), slot.local,
+                                    slot.kills, slot.deaths });
+        }
 
         // Your side's column first, the same way the corner panel puts your row
         // on top. Two columns for two sides; a third team would want a third

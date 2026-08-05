@@ -2,12 +2,15 @@
 
 #include "Command.h"
 #include "PlayerClass.h"
+#include "PlayerName.h"
 #include "World.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <vector>
 
 // The wire. Everything the client and server say to each other is written
@@ -77,7 +80,17 @@ namespace Net
     // pack their records nose to tail behind a count, so a build from 11 reads
     // the first one correctly and then takes a callout for the head of the next
     // command it wasn't expecting.
-    constexpr uint8_t kProtocolVersion = 12;
+    // 13: a player is somebody rather than a class. The Join carries the name
+    // they asked to be called and every roster row in the snapshot carries the
+    // name of whoever is standing in it — the first strings this protocol has
+    // ever moved, each a length byte and that many characters. Real bytes in
+    // both directions: a build from 12 would take a slot's name length for the
+    // next slot's team and read the rest of the board as rubbish.
+    // 14: and a soldier says which row they're standing in (SnapUnit::slot),
+    // which is the thread that lets a name be drawn under the body rather than
+    // only on the board. One byte in the middle of the unit record, so a build
+    // from 13 reads it as half a position and puts everybody somewhere else.
+    constexpr uint8_t kProtocolVersion = 14;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -94,7 +107,7 @@ namespace Net
 
     enum class MsgType : uint8_t
     {
-        Join,        // c->s, reliable: protocol version + uint8 classId
+        Join,        // c->s, reliable: protocol version + uint8 classId + name
         Cmd,         // c->s, state: the player's recent Commands, newest last
         Welcome,     // s->c, reliable: your unit id and team
         Respawned,   // s->c, reliable: your fresh unit's id
@@ -169,6 +182,16 @@ namespace Net
         void F32(float v) { Raw(&v, sizeof v); }
         void Vec2XZ(const Vector3& v) { F32(v.x); F32(v.z); }
         void Vec3(const Vector3& v) { F32(v.x); F32(v.y); F32(v.z); }
+        // A length byte and that many characters. Counted rather than
+        // terminated because a reader that trusts a zero byte to arrive is a
+        // reader that walks off the end of a truncated packet looking for one.
+        void Str(std::string_view s)
+        {
+            const size_t n = std::min<size_t>(s.size(), 255);
+            U8(static_cast<uint8_t>(n));
+            if (n) // an empty view's data() is allowed to be null
+                Raw(s.data(), n);
+        }
         void Raw(const void* p, size_t n)
         {
             const uint8_t* b = static_cast<const uint8_t*>(p);
@@ -196,6 +219,21 @@ namespace Net
         float F32() { float v = 0; Raw(&v, sizeof v); return v; }
         Vector3 Vec2XZ() { const float x = F32(); const float z = F32(); return { x, 0.0f, z }; }
         Vector3 Vec3() { const float x = F32(); const float y = F32(); const float z = F32(); return { x, y, z }; }
+        // The whole field is consumed whatever `max` is: a sender claiming a
+        // longer string than the reader will keep is still a sender whose next
+        // field starts after it, and stopping short would decode the remainder
+        // of the packet against the wrong bytes. What's kept is the front of
+        // it, cut to what the caller has room for.
+        std::string Str(size_t max)
+        {
+            std::string out(U8(), '\0');
+            Raw(out.data(), out.size());
+            if (!ok)
+                return {};
+            if (out.size() > max)
+                out.resize(max);
+            return out;
+        }
         void Raw(void* out, size_t n)
         {
             if (n > left)
@@ -303,6 +341,13 @@ namespace Net
         int32_t id;
         uint8_t classId;
         uint8_t team;
+        // Which roster row this soldier is standing in, or -1 for a soldier the
+        // board the client was sent doesn't cover. It's here for one reason: a
+        // name hangs on a slot, and without this a client holding both lists
+        // has no way to say which of them belongs to the body it's about to
+        // draw. Everything else about a slot is already down here in the
+        // roster; this is the thread back to it.
+        int slot;
         float posX, posZ;
         float aimYaw;
         float walkPhase;
@@ -353,6 +398,15 @@ namespace Net
         bool you;     // the receiving player's own row
         uint16_t kills;
         uint16_t deaths;
+        // Who is standing here, if it's anybody who has a name — a player's,
+        // kept after they've gone, and empty for a slot the AI is fielding.
+        // It rides in every snapshot rather than arriving once on a reliable
+        // channel and being remembered, which is the same bet the rest of this
+        // message makes: a full snapshot heals from any loss, a table of names
+        // built up over a session is a table that can be one dropped update
+        // wrong, and twelve characters a slot is not enough weight to trade
+        // that away for. It costs about a tenth of what the soldiers do.
+        std::string name;
     };
 
     // Who a slot is held by, in one byte, low two bits. `you` rides in the same
@@ -438,6 +492,10 @@ namespace Net
             w.U8(bits);
             w.U16(static_cast<uint16_t>(std::clamp(slot.kills, 0, 65535)));
             w.U16(static_cast<uint16_t>(std::clamp(slot.deaths, 0, 65535)));
+            // Last, so the numbers stay nose to tail: the only variable-length
+            // thing in the record is the one thing after which nothing has to
+            // be found.
+            w.Str(slot.name);
         }
 
         const auto visible = [&](float x, float z) {
@@ -459,6 +517,10 @@ namespace Net
             w.I32(u.id);
             w.U8(static_cast<uint8_t>(u.cls - kClassDefs)); // index into the one table
             w.U8(static_cast<uint8_t>(u.team));
+            // One byte, and 0xff for "not on the board you were sent" — which
+            // is free as a sentinel because the roster above is cut at 255
+            // rows, so index 255 is a row no client has ever been told about.
+            w.U8(u.slot >= 0 && u.slot < 255 ? static_cast<uint8_t>(u.slot) : 0xff);
             w.I16(QPos(u.pos.x));
             w.I16(QPos(u.pos.z));
             w.I16(QAngle(std::atan2(u.aimDir.z, u.aimDir.x)));
@@ -528,7 +590,10 @@ namespace Net
             slot.you = (bits & kSlotYou) != 0;
             slot.kills = r.U16();
             slot.deaths = r.U16();
-            snap.roster.push_back(slot);
+            // Cut to what a name may be, whatever the sender claimed: the
+            // limit is the readout's, and the readout is on this side.
+            slot.name = r.Str(PlayerName::kMaxLength);
+            snap.roster.push_back(std::move(slot));
         }
         const int unitCount = r.U8();
         snap.units.reserve(unitCount);
@@ -538,6 +603,8 @@ namespace Net
             u.id = r.I32();
             u.classId = r.U8();
             u.team = r.U8();
+            const uint8_t slotId = r.U8();
+            u.slot = slotId == 0xff ? -1 : slotId;
             u.posX = DqPos(r.I16());
             u.posZ = DqPos(r.I16());
             u.aimYaw = DqAngle(r.I16());
@@ -660,11 +727,17 @@ namespace Net
 
     // --- The small reliable messages -----------------------------------------
 
-    inline void WriteJoin(Writer& w, uint8_t classId)
+    // The name goes up at the door and nowhere else: it's what a player is
+    // called for the length of the connection, so the one moment it can be
+    // stated is the moment the connection begins. Sent as the player typed it
+    // (already cleaned on the way out of their settings) and cleaned again on
+    // arrival, because between here and there is a client we don't own.
+    inline void WriteJoin(Writer& w, uint8_t classId, std::string_view name)
     {
         w.U8(static_cast<uint8_t>(MsgType::Join));
         w.U8(kProtocolVersion);
         w.U8(classId);
+        w.Str(name);
     }
 
     inline void WriteReject(Writer& w, RejectReason why)

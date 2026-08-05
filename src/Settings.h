@@ -24,9 +24,28 @@ struct Settings
     // are elsewhere.
     bool backgroundAudio = false;
 
+    // What the other players call you: the name on your row of the scoreboard,
+    // sent once when you join a server and cleaned at both ends
+    // (PlayerName::Clean). It is a setting rather than something asked for at
+    // the door because it is the same answer every time — a player types it
+    // once and then never thinks about it again, which is precisely the kind of
+    // thing a file is for and a prompt isn't.
+    //
+    // The default is the Windows account name, on the same reasoning Discovery
+    // uses the machine name to label a server on the join screen: the machine
+    // already knows what its owner is called, and a first run that puts a real
+    // name on the board is better than one that makes the player go and find a
+    // menu. Empty is legal and means "hasn't said" — the server names you off
+    // the id it issued you instead, so a row is always somebody.
+    std::string playerName = DefaultName();
+
     // %LOCALAPPDATA%\Infantry\settings.toml — beside bindings.toml, and for
     // the same reasons.
     static std::string FilePath();
+    // The account name this machine's owner signed in under, as a name the
+    // game will accept, or empty if it can't be had. Only ever the starting
+    // value of the field above — once the file exists, the file is the answer.
+    static std::string DefaultName();
     // False when there's nothing to read or it's unusable, in which case the
     // defaults stand. A setting the file doesn't mention keeps its default, so
     // a partial file is legal.

@@ -32,6 +32,15 @@ public:
     DirectX::SimpleMath::Vector3 ScreenUpOnGround() const;
     DirectX::SimpleMath::Vector3 ScreenRightOnGround() const;
 
+    // Which way the eye lies from anywhere in the arena, as a unit vector. The
+    // projection is orthographic, so this is one direction for the whole scene
+    // rather than a different one per point — which is what makes "is there a
+    // wall between the camera and that soldier" a single ray to march instead
+    // of a question about where the eye happens to be. Handed out because the
+    // answer to that question is nobody's but the caller's; the camera has no
+    // opinion about what is worth occluding.
+    DirectX::SimpleMath::Vector3 EyeDirection() const;
+
 private:
     void ComputeMatrices(DirectX::XMMATRIX& view, DirectX::XMMATRIX& proj) const;
 

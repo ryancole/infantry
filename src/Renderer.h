@@ -107,6 +107,15 @@ public:
     // and worth it for anything that costs more than a few draws to submit.
     bool IsSphereVisible(const DirectX::XMFLOAT3& center, float radius) const;
 
+    // Where a world point lands on screen, in the same pixel coordinates
+    // DrawScreenText and DrawScreenTriangles take — the other direction from
+    // IsoCamera::ScreenToGround, and here rather than there because it is the
+    // matrix given to SetViewProj that decides it, which is this class's to
+    // know. False when the point is off the viewport or behind the eye, in
+    // which case `out` is not written: a label anchored to something nobody can
+    // see is a label with nowhere to go.
+    bool WorldToScreen(const DirectX::XMFLOAT3& world, DirectX::XMFLOAT2& out) const;
+
     // Renders the frame in grayscale while enabled (death/spectator flash).
     void SetMonochrome(bool enabled) { m_monochrome = enabled; }
 
@@ -124,6 +133,22 @@ public:
     // and `size` its pixel height, matching the old DebugText metrics.
     void DrawScreenText(std::string_view text, float x, float y, float size,
                         const DirectX::XMFLOAT4& color);
+
+    // The same text with a dark edge around it, for the words that are drawn
+    // over the arena rather than over a panel. Everything else the HUD says sits
+    // on a background this file chose; a label pinned to a soldier is read
+    // against whatever that soldier is standing on, and green letters over a
+    // palm or red ones over a blood stain are letters that aren't there.
+    //
+    // Eight offset copies underneath and the text over them, which is what an
+    // outline costs when the font is an alpha atlas and the batch has no shader
+    // of its own. The edge is a share of the cap height rather than a fixed
+    // number of pixels, so it stays an edge rather than becoming a smudge on a
+    // large window or vanishing on a small one, and it never goes under one
+    // physical pixel, which is the width below which it stops existing.
+    void DrawScreenTextOutlined(std::string_view text, float x, float y, float size,
+                                const DirectX::XMFLOAT4& color);
+
     float MeasureScreenText(std::string_view text, float size) const;
 
     // Queues alpha-blended screen-space triangles in pixel coordinates (x

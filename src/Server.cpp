@@ -2,6 +2,7 @@
 
 #include "Discovery.h"
 #include "Level.h"
+#include "PlayerName.h"
 #include "Team.h"
 
 #include <enet/enet.h>
@@ -37,15 +38,34 @@ namespace
     // they're currently driving (unitId is -1 for the length of the respawn
     // wait).
     //
-    // The slot is what makes them a player rather than a succession of
-    // soldiers: it holds their place through every death, it's what their kills
-    // and deaths are counted against, and it's the row they occupy on every
-    // client's scoreboard. `team` is the side that slot is on, kept alongside
-    // because it's asked for far more often than it changes.
+    // The slot is what makes them a player for the length of a *match* rather
+    // than a succession of soldiers: it holds their place through every death,
+    // it's what their kills and deaths are counted against, and it's the row
+    // they occupy on every client's scoreboard. `team` is the side that slot is
+    // on, kept alongside because it's asked for far more often than it changes.
+    //
+    // But a slot is not the player either — a match ends and everybody is dealt
+    // a fresh one (see Rematch), which is exactly the moment a server needs to
+    // say "the same person as before". That is what `player` is for, and it is
+    // the third and outermost of the three identities this game now has: a unit
+    // is one life, a slot is one match, a player is one connection. It is
+    // issued once, at the door, and nothing that happens inside — dying,
+    // changing class, a whistle, a whole new match — touches it.
     struct Session
     {
         ENetPeer* peer = nullptr;
         bool joined = false;
+        // This server's name for whoever is on the other end of this socket,
+        // unique for as long as the server is up and never reissued. Zero until
+        // they've actually joined, which is what makes "if they haven't got one
+        // already" a thing the code can ask rather than an assumption about how
+        // many times a Join can arrive.
+        int player = 0;
+        // What they're called, cleaned on arrival (PlayerName::Clean) and given
+        // to them off their id if they didn't say. Kept here as well as on the
+        // slot because it outlives the slot: a rematch re-claims a place and
+        // has to stamp the same name on it.
+        std::string name;
         int slot = -1;
         int team = -1;
         uint8_t classId = 0;
@@ -103,6 +123,11 @@ struct Server::Impl
     float accum = 0.0f;
     uint32_t tick = 0;
     long long eventsSeen = 0;
+    // The next player id to hand out. Counts up and never wraps back over a
+    // number it has already given away: an id that came round again would be
+    // two people in the log with one name for both, which is the one thing an
+    // identity is for. It starts at 1 so that zero can mean "hasn't joined".
+    int nextPlayer = 1;
     // The World knows the match is over; this is how the server notices it
     // just became so, which is the moment worth reporting and the moment the
     // intermission starts being watched.
@@ -273,6 +298,12 @@ void Server::Impl::Service(World& world)
             {
                 const uint8_t version = r.U8();
                 const uint8_t classId = r.U8() % kClassCount;
+                // Cleaned here rather than trusted, for the same reason the
+                // spawn-area check below is made here: the client that sent
+                // this is a program on somebody else's machine, and what a
+                // name may be is this end's rule. Read before the door
+                // decisions so the packet is consumed whatever they decide.
+                const std::string asked = PlayerName::Clean(r.Str(PlayerName::kMaxLength));
 
                 // The two ways the door stays shut: a different build of the
                 // game, or a match already full of humans. Refused loudly and
@@ -309,13 +340,24 @@ void Server::Impl::Service(World& world)
                 else
                 {
                     session->classId = classId;
+                    // Who this is, from here until the socket closes. Issued
+                    // only if they haven't got one — a Join is answered once
+                    // per connection today, and saying it this way means a
+                    // second one could never quietly turn somebody into a
+                    // different person mid-match.
+                    if (session->player == 0)
+                        session->player = nextPlayer++;
+                    // A player who didn't say is named off that id rather than
+                    // left blank: a row has to be somebody, and two silent
+                    // players have to be two different somebodies.
+                    session->name = asked.empty() ? PlayerName::Unnamed(session->player) : asked;
                     // The emptier side of the fence, humans-wise: the AI
                     // balances itself around whatever this decides.
                     int team = 0;
                     for (int t = 1; t < world.TeamCount(); ++t)
                         if (world.HumanSlots(t) < world.HumanSlots(team))
                             team = t;
-                    session->slot = world.ClaimSlot(team);
+                    session->slot = world.ClaimSlot(team, session->name);
                     session->team = world.SlotTeam(session->slot);
                     session->unitId =
                         world.SpawnRemote(kClassDefs[session->classId], session->slot);
@@ -327,7 +369,8 @@ void Server::Impl::Service(World& world)
                                       static_cast<uint8_t>(session->team));
                     SendReliable(session->peer, w);
                     if (config.log)
-                        std::printf("player joined: %s on team %d, unit %d\n",
+                        std::printf("player %d %s joined: %s on team %d, unit %d\n",
+                                    session->player, session->name.c_str(),
                                     kClassDefs[session->classId].name, session->team,
                                     session->unitId);
                 }
@@ -389,8 +432,8 @@ void Server::Impl::Service(World& world)
                         SendReliable(session->peer, respawn);
                     }
                     if (config.log)
-                        std::printf("player on team %d is now %s\n", session->team,
-                                    kClassDefs[classId].name);
+                        std::printf("player %d %s is now %s\n", session->player,
+                                    session->name.c_str(), kClassDefs[classId].name);
                 }
             }
             else if (session && type == Net::MsgType::Cmd && session->joined)
@@ -423,7 +466,8 @@ void Server::Impl::Service(World& world)
                         world.RemoveUnit(session->unitId);
                     world.ReleaseSlot(session->slot);
                     if (config.log)
-                        std::printf("player left team %d\n", session->team);
+                        std::printf("player %d %s left team %d\n", session->player,
+                                    session->name.c_str(), session->team);
                 }
                 netEvent.peer->data = nullptr;
                 std::erase_if(sessions, [session](const auto& s) { return s.get() == session; });
@@ -557,7 +601,10 @@ void Server::Impl::Rematch(World& world)
     {
         if (!session->joined)
             continue;
-        session->slot = world.ClaimSlot(session->team);
+        // The same person, a fresh place: the name belongs to the connection
+        // rather than to the match that just ended, so the new row is stamped
+        // with it and the board comes back reading the names it read before.
+        session->slot = world.ClaimSlot(session->team, session->name);
         session->team = world.SlotTeam(session->slot);
         session->unitId = world.SpawnRemote(kClassDefs[session->classId], session->slot);
         session->respawnTimer = 0.0f;

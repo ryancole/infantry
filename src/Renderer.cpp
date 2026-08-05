@@ -437,6 +437,28 @@ bool Renderer::IsSphereVisible(const XMFLOAT3& center, float radius) const
     return std::abs(ndc.x) <= 1.0f + rx && std::abs(ndc.y) <= 1.0f + ry;
 }
 
+// Clip space, then the viewport transform: x from [-1, 1] across the width and
+// y from [1, -1] down the height, because NDC counts up and pixels count down.
+// The divide by w is a divide by one under this camera, and is done anyway so
+// the answer doesn't quietly become wrong the day the projection stops being
+// orthographic.
+bool Renderer::WorldToScreen(const XMFLOAT3& world, XMFLOAT2& out) const
+{
+    XMFLOAT4 clip;
+    XMStoreFloat4(&clip, XMVector3Transform(XMLoadFloat3(&world), m_viewProj));
+    if (clip.w <= 0.0f)
+        return false;
+
+    const float ndcX = clip.x / clip.w;
+    const float ndcY = clip.y / clip.w;
+    if (std::abs(ndcX) > 1.0f || std::abs(ndcY) > 1.0f)
+        return false;
+
+    out.x = (ndcX * 0.5f + 0.5f) * static_cast<float>(m_width);
+    out.y = (0.5f - ndcY * 0.5f) * static_cast<float>(m_height);
+    return true;
+}
+
 void Renderer::CreatePostProcess()
 {
     // Post passes draw a fullscreen triangle with no depth buffer bound.
@@ -582,6 +604,24 @@ void Renderer::DrawScreenText(std::string_view text, float x, float y, float siz
     // Shift so the capital's top lands on y (DrawString positions the top of
     // the full line cell, which sits above the cap by the glyph Y offset).
     m_textDraws.push_back({ std::string(text), x, y - m_fontCapOffsetY * scale, scale, color });
+}
+
+void Renderer::DrawScreenTextOutlined(std::string_view text, float x, float y, float size,
+                                      const XMFLOAT4& color)
+{
+    // Ring first, fill last: the sprite batch is in its default deferred mode,
+    // so what is queued later is drawn over what came before.
+    constexpr float kEdgeShare = 0.09f; // of the cap height
+    constexpr XMFLOAT4 kEdgeColor = { 0.0f, 0.0f, 0.0f, 0.85f };
+    static constexpr float kRing[8][2] = {
+        { -1.0f, 0.0f }, { 1.0f, 0.0f },  { 0.0f, -1.0f }, { 0.0f, 1.0f },
+        { -1.0f, -1.0f }, { 1.0f, -1.0f }, { -1.0f, 1.0f }, { 1.0f, 1.0f },
+    };
+
+    const float edge = std::max(1.0f, size * kEdgeShare);
+    for (const float(&offset)[2] : kRing)
+        DrawScreenText(text, x + offset[0] * edge, y + offset[1] * edge, size, kEdgeColor);
+    DrawScreenText(text, x, y, size, color);
 }
 
 float Renderer::MeasureScreenText(std::string_view text, float size) const

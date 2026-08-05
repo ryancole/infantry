@@ -104,3 +104,13 @@ Vector3 IsoCamera::ScreenRightOnGround() const
 {
     return { -std::cos(m_yaw), 0.0f, std::sin(m_yaw) };
 }
+
+Vector3 IsoCamera::EyeDirection() const
+{
+    // The same toEye ComputeMatrices builds, and deliberately the same
+    // expression rather than a second derivation of it: the day the pitch or
+    // the orbit changes, a ray marched toward an eye that had moved somewhere
+    // else would go on quietly answering the wrong question.
+    return { std::sin(m_yaw) * std::cos(kPitch), std::sin(kPitch),
+             std::cos(m_yaw) * std::cos(kPitch) };
+}

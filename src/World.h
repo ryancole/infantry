@@ -12,6 +12,7 @@
 #include <SimpleMath.h>
 #include <algorithm>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -109,10 +110,15 @@ struct Unit
     float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
     Vector3 knock;     // launch velocity the last hit would give its corpse
     // Which place on the roster this soldier is filling (World::Slot), or -1
-    // on a client's replica, where the roster arrives already counted and no
-    // unit here has ever killed anyone. A unit is one life; a slot is the whole
-    // match, and that is the difference a kill/death record has to be hung on —
-    // a tally kept on the unit would be swept off the field with the body.
+    // for a soldier standing in no place a holder of this roster knows about. A
+    // unit is one life; a slot is the whole match, and that is the difference a
+    // kill/death record has to be hung on — a tally kept on the unit would be
+    // swept off the field with the body.
+    //
+    // It rides the wire too, and on a replica it is the only thing it's for:
+    // nothing over there has ever killed anybody, but the roster arrives whole
+    // and a name hangs on a row of it, so this is how a body gets connected to
+    // the name that goes under it.
     int slot = -1;
     // The slot that last put damage on this soldier, and so the one that gets
     // the kill if the next blow is the last one. -1 until somebody has touched
@@ -288,14 +294,30 @@ public:
         };
 
         int team;
-        // What the slot is fielding. A human's class is fixed for the match by
-        // the class they picked; an AI slot's is dealt off the team's rotation
-        // and is re-dealt every time the slot refills, so a squad wiped out
-        // comes back with a different makeup. Either way it's what the
-        // scoreboard reads a row's name off, since nobody in this game has one.
-        // Null on a slot nothing has stood in yet — the five seconds between a
-        // side being owed a soldier and getting one.
+        // What the slot is fielding. A human's is whatever class they are
+        // currently holding; an AI slot's is dealt off the team's rotation and
+        // is re-dealt every time the slot refills, so a squad wiped out comes
+        // back with a different makeup and the same soldiers. Null on a slot
+        // nothing has stood in yet — the five seconds between a side being owed
+        // a soldier and getting one.
         const ClassDef* cls;
+        // Who is standing here, as far as anybody watching is concerned. A
+        // player's is what they asked to be called, cleaned to what a name may
+        // be (PlayerName::Clean) by whoever let them in; a bot's is dealt off
+        // the pool in the same file when the place is created.
+        //
+        // It belongs to the slot rather than to the soldier for the same reason
+        // the kills do, and the bots are what make that visible: a slot's class
+        // is re-dealt every life, so a name kept on the unit would rename the
+        // row every five seconds and the board would be a list of strangers. A
+        // name outlives the soldier wearing it, and a departed player's stays on
+        // their row for the rest of the match, because a record with the name
+        // taken off it is a row that can't be accounted for.
+        //
+        // Never empty on a slot anybody has been put in. Which of them are
+        // people is not a question this string answers — Held does that — and
+        // that is deliberate: the field draws these labels without asking.
+        std::string name;
         Held held;
         // The player sitting at *this* machine, so a scoreboard can mark their
         // row. False for every slot on a dedicated server, and set on a client
@@ -393,22 +415,26 @@ public:
     // inside the simulation — a Remote unit is a unit.
 
     // Reserves one of `team`'s slots for a human and returns its index — the
-    // name the caller holds them by from here on, and the row they'll appear
-    // on. The AI gives the slot up immediately: a living AI soldier standing in
-    // it is removed, quietly, no corpse — they rotate out, they don't die of
-    // somebody connecting. The claim holds through deaths and respawns, exactly
-    // like the local player's.
+    // handle the caller holds them by from here on, and the row they'll appear
+    // on. `name` is what that player is called, cleaned before it gets here
+    // (PlayerName::Clean); it's stamped on the slot rather than looked up later
+    // because the slot outlives every soldier who stands in it and the player
+    // who leaves halfway through. The AI gives the slot up immediately: a
+    // living AI soldier standing in it is removed, quietly, no corpse — they
+    // rotate out, they don't die of somebody connecting. The claim holds
+    // through deaths and respawns, exactly like the local player's.
     //
     // A side with no slot left to give gets one more rather than a refusal.
     // Under the current door policy that can't happen — a server sends every
     // joiner to the emptier side and shuts the door at kTeamSize a side — and
     // the day some mode oversubscribes a team, an extra row on the scoreboard
     // is a better answer than a player with nowhere to stand.
-    int ClaimSlot(int team);
+    int ClaimSlot(int team, std::string name);
     // Hands a claimed slot back — a disconnect. The slot itself doesn't go
     // back into service: it becomes the leaver's record (Held::Left) and keeps
-    // their kills and deaths for the rest of the match, because a side's score
-    // is the sum of its slots and quitting must not take points off the board.
+    // their name, their kills and their deaths for the rest of the match,
+    // because a side's score is the sum of its slots and quitting must not take
+    // points off the board.
     // The soldier the side is owed goes to a *fresh* slot instead, on the same
     // reinforcement clock a death starts — so a leaver's place refills the way
     // a casualty's does, not instantly, and the AI that fills it starts from
@@ -624,6 +650,14 @@ private:
     // it's owed a soldier but has nowhere to put one, which today means exactly
     // one thing: somebody left, and their slot stayed behind as their score.
     int AddAiSlot(int team);
+    // A name for a place nobody is going to choose one for, off the pool in
+    // PlayerName. Never one already on this roster while there's a spare, so
+    // the ten soldiers in a match are ten different people and a player who
+    // shares a name with a bot doesn't end up with a twin. Once every name in
+    // the pool is spoken for it starts repeating rather than handing back
+    // nothing: a soldier with a name shared with somebody across the map is
+    // still better than a soldier with none.
+    std::string PickBotName();
     // Whether anybody is currently standing in `slot`. A slot with no unit is a
     // side one soldier short: the AI's are refilled on the reinforcement clock,
     // a human's when their own respawn comes due.

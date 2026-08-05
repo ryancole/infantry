@@ -101,6 +101,7 @@ add_executable(infantry WIN32
     src/Model.cpp
     src/NetClient.cpp
     src/OptionsMenu.cpp
+    src/PlayerMenu.cpp
     src/Settings.cpp
     src/Soldier.cpp
     src/Sound.cpp
