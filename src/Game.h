@@ -14,6 +14,7 @@
 #include "NetClient.h"
 #include "OptionsMenu.h"
 #include "PlayerClass.h"
+#include "PlayerMenu.h"
 #include "Renderer.h"
 #include "Server.h"
 #include "Settings.h"
@@ -105,6 +106,7 @@ private:
         MainMenu,
         Join,    // the server browser: the LAN scan runs while this is up
         Options, // the settings screens' landing, and the way back to them
+        Player,  // the name this machine's player fights under
         KeyBinds,
         Audio,
         ClassSelect,
@@ -316,6 +318,7 @@ private:
     // while somebody is actually looking at the list.
     Discovery::Scan m_scan;
     OptionsMenu m_optionsMenu;
+    PlayerMenu m_playerMenu;
     BindMenu m_bindMenu;
     AudioMenu m_audioMenu;
     ClassSelect m_classSelect;

@@ -57,7 +57,10 @@ namespace
     // same 1080 scale as everything else, and deliberately the largest thing
     // the HUD draws: nothing is happening while it's up — the player is reading
     // rather than fighting — so it can afford the room the corner panel can't.
-    constexpr float kBoardWidth = 900.0f;
+    // Wider than it was, by exactly what a name cost: a row used to be one word
+    // and is now a person and the class they're playing, and the two must not
+    // have to share a column's worth of room between them.
+    constexpr float kBoardWidth = 1020.0f;
     constexpr float kBoardPad = 26.0f;
     constexpr float kBoardTitleSize = 30.0f;
     constexpr float kBoardClockSize = 22.0f;
@@ -1101,6 +1104,27 @@ void Hud::RenderScoreboard(Renderer& renderer, const Scoreboard& board)
             // being owed a soldier and getting one. Said with a dash rather
             // than a blank, so the row reads as empty rather than as broken.
             renderer.DrawScreenText(row.name ? row.name : "-", colX, textY, rowSize, nameColor);
+
+            // The class, for a row that's a person: smaller and quieter than
+            // the name, and parked against the numbers rather than trailing the
+            // name, so a column of them lines up and can be read down instead of
+            // hunted along. Muted whoever the row belongs to — it's what they're
+            // holding, not who they are, and on your own row the name is already
+            // doing the shouting.
+            if (row.cls)
+            {
+                const float classSize = kBoardLabelSize * s;
+                const XMFLOAT4 classColor =
+                    row.holder == Holder::Left ? kSpentColor : kMutedColor;
+                // One number column clear of the kills, which is the width that
+                // column is given anyway: the tag ends where a kill count could
+                // start, so the longest class name and the biggest score on the
+                // board still can't meet.
+                const float classRight = killsRight - numberW;
+                renderer.DrawScreenText(row.cls,
+                                        classRight - renderer.MeasureScreenText(row.cls, classSize),
+                                        rowY + (rowH - classSize) * 0.5f, classSize, classColor);
+            }
 
             const XMFLOAT4 numberColor = row.holder == Holder::Left ? kSpentColor
                                          : row.holder == Holder::Human ? kValueColor

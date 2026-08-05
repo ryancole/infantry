@@ -1,4 +1,3 @@
-- player names
 - grass
 - shadows
 - more SFX (walking, dying, spawning, throwing grenade, knife swing, etc)

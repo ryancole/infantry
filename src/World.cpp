@@ -230,7 +230,7 @@ void World::StartMatch()
     m_localSlot = -1;
     for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
         for (int i = 0; i < kTeamSize; ++i)
-            m_roster.push_back({ team, nullptr, Slot::Held::Ai, false, 0, 0 });
+            m_roster.push_back({ team, nullptr, {}, Slot::Held::Ai, false, 0, 0 });
 
     // Every place is the AI's until somebody claims one, and every one of them
     // gets a soldier now: the sides come up to strength together at the start
@@ -279,7 +279,7 @@ int World::SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller
     return unit.id;
 }
 
-int World::ClaimSlot(int team)
+int World::ClaimSlot(int team, std::string name)
 {
     team = std::clamp(team, 0, TeamCount() - 1);
 
@@ -301,6 +301,10 @@ int World::ClaimSlot(int team)
     std::erase_if(m_reinforcements, [slot](const Reinforcement& r) { return r.slot == slot; });
 
     m_roster[slot].held = Slot::Held::Human;
+    // Whoever the AI was standing here is nobody now; the name arrives with the
+    // claim and stays on the row for the rest of the match, through every
+    // soldier this player puts in it and past the moment they leave.
+    m_roster[slot].name = std::move(name);
     return slot;
 }
 
@@ -325,7 +329,7 @@ void World::ReleaseSlot(int slot)
 
 int World::AddAiSlot(int team)
 {
-    m_roster.push_back({ team, nullptr, Slot::Held::Ai, false, 0, 0 });
+    m_roster.push_back({ team, nullptr, {}, Slot::Held::Ai, false, 0, 0 });
     return static_cast<int>(m_roster.size()) - 1;
 }
 
@@ -1436,7 +1440,7 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
                                     : Slot::Held::Ai;
         m_roster.push_back({ slot.team,
                              slot.classId < kClassCount ? &kClassDefs[slot.classId] : nullptr,
-                             held, slot.you, slot.kills, slot.deaths });
+                             slot.name, held, slot.you, slot.kills, slot.deaths });
     }
 
     // Rebuild the roster in the snapshot's image, carrying each surviving

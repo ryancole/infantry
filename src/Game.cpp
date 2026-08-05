@@ -711,6 +711,7 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         {
             switch (*picked)
             {
+            case OptionsMenu::Choice::Player:   m_phase = Phase::Player; break;
             case OptionsMenu::Choice::KeyBinds: m_phase = Phase::KeyBinds; break;
             case OptionsMenu::Choice::Audio:    m_phase = Phase::Audio; break;
             case OptionsMenu::Choice::Back:     m_phase = Phase::MainMenu; break;
@@ -724,6 +725,22 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // keystroke would put a file write in the middle of a player trying three
     // keys to see which feels right, and there's nothing to lose by waiting
     // until they're done.
+    //
+    // Nothing takes effect anywhere else when the name changes, and nothing
+    // needs to: a name is stated at the door of a server, and the player is
+    // standing on a menu, so there is no match for a new one to reach until
+    // they join the next one.
+    if (m_phase == Phase::Player)
+    {
+        if (m_playerMenu.Update(input, dt, m_settings, camera.ViewportWidth(),
+                                camera.ViewportHeight()))
+        {
+            m_settings.Save();
+            m_phase = Phase::Options;
+        }
+        return;
+    }
+
     if (m_phase == Phase::KeyBinds)
     {
         if (m_bindMenu.Update(input, m_binds, camera.ViewportWidth(), camera.ViewportHeight()))
@@ -796,7 +813,12 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         if (m_net->GetStatus() == NetClient::Status::Connected && !m_joinSent && m_class)
         {
             Net::Writer w;
-            Net::WriteJoin(w, static_cast<uint8_t>(m_class - kClassDefs));
+            // The name goes up with the class, because this is the one message
+            // that says who is arriving. It's whatever the settings hold — the
+            // account name on a first run, whatever the player typed after
+            // that, and possibly nothing at all, which the server answers with
+            // a name of its own.
+            Net::WriteJoin(w, static_cast<uint8_t>(m_class - kClassDefs), m_settings.playerName);
             m_net->SendReliable(w.bytes);
             m_joinSent = true;
         }
@@ -1600,6 +1622,12 @@ void Game::Render(Renderer& renderer)
         return;
     }
 
+    if (m_phase == Phase::Player)
+    {
+        m_playerMenu.Render(renderer, m_settings);
+        return;
+    }
+
     if (m_phase == Phase::KeyBinds)
     {
         m_bindMenu.Render(renderer, m_binds);
@@ -2168,10 +2196,26 @@ void Game::RenderHud(Renderer& renderer)
             default:                       return Hud::Holder::Ai;
             }
         };
+        // What a row is called, and what it's holding. A place with a person in
+        // it is named after the person and says the class beside it; a place the
+        // AI is fielding is named after the class and says nothing beside it,
+        // because the class is the whole of what that place is and printing it
+        // twice would be the board talking to itself.
+        //
+        // The names are pointers into the roster's own strings rather than
+        // copies. That's safe for exactly as long as it needs to be — the rows
+        // are built and handed to the HUD inside this function, and the World
+        // they point into can't change until the wire is pumped again next
+        // frame — and it's why they're rebuilt every frame rather than kept.
         m_scoreRows.clear();
         for (const World::Slot& slot : m_world.Roster())
-            m_scoreRows.push_back({ slot.team, slot.cls ? slot.cls->name : nullptr,
-                                    holder(slot.held), slot.local, slot.kills, slot.deaths });
+        {
+            const char* cls = slot.cls ? slot.cls->name : nullptr;
+            const bool named = !slot.name.empty();
+            m_scoreRows.push_back({ slot.team, named ? slot.name.c_str() : cls,
+                                    named ? cls : nullptr, holder(slot.held), slot.local,
+                                    slot.kills, slot.deaths });
+        }
 
         // Your side's column first, the same way the corner panel puts your row
         // on top. Two columns for two sides; a third team would want a third

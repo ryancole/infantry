@@ -27,7 +27,10 @@ namespace
         OptionsMenu::Choice choice;
     };
 
-    constexpr std::array<Item, 3> kItems = { {
+    // Who you are before how you play: a name is the one thing on this shelf
+    // that anybody else in the match will ever see.
+    constexpr std::array<Item, 4> kItems = { {
+        { "PLAYER", "THE NAME THE OTHER PLAYERS SEE", OptionsMenu::Choice::Player },
         { "KEY BINDS", "PUT THE CONTROLS WHERE YOU WANT THEM", OptionsMenu::Choice::KeyBinds },
         { "AUDIO", "DECIDE WHEN THE GAME MAKES NOISE", OptionsMenu::Choice::Audio },
         { "BACK", "RETURN TO THE MAIN MENU", OptionsMenu::Choice::Back },

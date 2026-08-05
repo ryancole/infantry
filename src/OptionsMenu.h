@@ -23,6 +23,7 @@ class OptionsMenu
 public:
     enum class Choice
     {
+        Player,   // the name the player fights under
         KeyBinds, // the rebinding screen
         Audio,    // sound settings
         Back,     // out to the main menu
