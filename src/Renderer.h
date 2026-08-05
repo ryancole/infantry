@@ -107,6 +107,15 @@ public:
     // and worth it for anything that costs more than a few draws to submit.
     bool IsSphereVisible(const DirectX::XMFLOAT3& center, float radius) const;
 
+    // Where a world point lands on screen, in the same pixel coordinates
+    // DrawScreenText and DrawScreenTriangles take — the other direction from
+    // IsoCamera::ScreenToGround, and here rather than there because it is the
+    // matrix given to SetViewProj that decides it, which is this class's to
+    // know. False when the point is off the viewport or behind the eye, in
+    // which case `out` is not written: a label anchored to something nobody can
+    // see is a label with nowhere to go.
+    bool WorldToScreen(const DirectX::XMFLOAT3& world, DirectX::XMFLOAT2& out) const;
+
     // Renders the frame in grayscale while enabled (death/spectator flash).
     void SetMonochrome(bool enabled) { m_monochrome = enabled; }
 

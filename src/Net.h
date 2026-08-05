@@ -86,7 +86,11 @@ namespace Net
     // ever moved, each a length byte and that many characters. Real bytes in
     // both directions: a build from 12 would take a slot's name length for the
     // next slot's team and read the rest of the board as rubbish.
-    constexpr uint8_t kProtocolVersion = 13;
+    // 14: and a soldier says which row they're standing in (SnapUnit::slot),
+    // which is the thread that lets a name be drawn under the body rather than
+    // only on the board. One byte in the middle of the unit record, so a build
+    // from 13 reads it as half a position and puts everybody somewhere else.
+    constexpr uint8_t kProtocolVersion = 14;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -337,6 +341,13 @@ namespace Net
         int32_t id;
         uint8_t classId;
         uint8_t team;
+        // Which roster row this soldier is standing in, or -1 for a soldier the
+        // board the client was sent doesn't cover. It's here for one reason: a
+        // name hangs on a slot, and without this a client holding both lists
+        // has no way to say which of them belongs to the body it's about to
+        // draw. Everything else about a slot is already down here in the
+        // roster; this is the thread back to it.
+        int slot;
         float posX, posZ;
         float aimYaw;
         float walkPhase;
@@ -506,6 +517,10 @@ namespace Net
             w.I32(u.id);
             w.U8(static_cast<uint8_t>(u.cls - kClassDefs)); // index into the one table
             w.U8(static_cast<uint8_t>(u.team));
+            // One byte, and 0xff for "not on the board you were sent" — which
+            // is free as a sentinel because the roster above is cut at 255
+            // rows, so index 255 is a row no client has ever been told about.
+            w.U8(u.slot >= 0 && u.slot < 255 ? static_cast<uint8_t>(u.slot) : 0xff);
             w.I16(QPos(u.pos.x));
             w.I16(QPos(u.pos.z));
             w.I16(QAngle(std::atan2(u.aimDir.z, u.aimDir.x)));
@@ -588,6 +603,8 @@ namespace Net
             u.id = r.I32();
             u.classId = r.U8();
             u.team = r.U8();
+            const uint8_t slotId = r.U8();
+            u.slot = slotId == 0xff ? -1 : slotId;
             u.posX = DqPos(r.I16());
             u.posZ = DqPos(r.I16());
             u.aimYaw = DqAngle(r.I16());

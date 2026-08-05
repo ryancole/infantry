@@ -1458,6 +1458,10 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
         unit.controller =
             su.id == myUnitId ? Unit::Controller::Local : Unit::Controller::Remote;
         unit.team = su.team;
+        // The row this soldier is standing in, which on a replica is worth
+        // exactly one thing: the name hanging on it. -1 for a soldier whose
+        // slot the snapshot's board doesn't reach.
+        unit.slot = su.slot;
         unit.pos = { su.posX, 0.0f, su.posZ };
         unit.aimDir = { std::cos(su.aimYaw), 0.0f, std::sin(su.aimYaw) };
         // The wire wraps the walk phase to one cycle; unwrap it back onto

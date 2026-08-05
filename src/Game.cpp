@@ -156,6 +156,24 @@ namespace
     constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
+    // A player's name, under the boots of the soldier they're driving. Green
+    // for your side and red for theirs rather than the two teams' own colors,
+    // which is the one mark on the field that breaks that rule and is worth
+    // saying why: armor answers "which side is that", and it has to be the same
+    // answer on every screen, so the same body is blue to both of the people
+    // looking at it. A name answers "is that one of mine", which is a question
+    // about whoever is reading it — so it is drawn from the reader's end, and
+    // the two marks aren't in competition because they aren't answering the
+    // same question. Green and red because that pair is read before it is
+    // looked at, which is the only speed a label over a fight is any use at.
+    //
+    // Small, because there can be ten of them on screen at once and not one is
+    // worth taking an eye off the fight for. About the size of the perf readout
+    // in the corner: there when looked at, quiet when not.
+    constexpr XMFLOAT4 kNameFriendlyColor = { 0.42f, 0.92f, 0.46f, 1.0f };
+    constexpr XMFLOAT4 kNameEnemyColor = { 1.00f, 0.38f, 0.36f, 1.0f };
+    constexpr float kNameSize = 0.0115f; // cap height, as a share of the window's
+    constexpr float kNameDrop = 0.013f;  // boots -> the top of the name
 
     // Appends a solid cube with fixed per-face shading. Units and obstacles
     // moved to the renderer's lit shapes; this remains for effects (impact
@@ -1723,6 +1741,7 @@ void Game::Render(Renderer& renderer)
                     src.prevWalkPhase + (src.walkPhase - src.prevWalkPhase) * a,
                     src.prevMoveBlend + (src.moveBlend - src.prevMoveBlend) * a,
                     unit.team, unit.cls->color);
+        DrawName(renderer, unit, pos);
     }
     // Corpses, drawn from their ragdolls: the same model as a living soldier,
     // with every segment placed by the physics body it was built from. Same
@@ -1978,6 +1997,50 @@ void Game::Render(Renderer& renderer)
     // they can see.
     if (m_classChangeOpen)
         m_classSelect.Render(renderer, m_binds, ClassSelect::Mode::Change);
+}
+
+// The name under a soldier: whoever is standing in the roster row this unit
+// holds, colored by what they are to the person reading it.
+//
+// Only players have one. An AI slot's name is empty, so nothing is drawn, and
+// that is the whole of the "which of these are people" filter — it needs no
+// flag of its own, because having a name is what being a person is here.
+//
+// Called from inside the soldier loop rather than from a pass of its own, so a
+// name and the body it belongs to are subject to exactly one rule: whatever
+// that loop decided to draw is what gets labelled, fog and frustum and all. A
+// second pass would be a second opinion about who can be seen, and the one
+// thing a name must never do is out a soldier the arena is hiding.
+void Game::DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) const
+{
+    // Not while something is deliberately holding the middle of the screen.
+    // Screen text draws over overlay geometry whatever order it was queued in,
+    // so a name behind the class cards or the scoreboard would be a name
+    // written across them — and neither is a moment when where somebody is
+    // standing is the question being asked.
+    if (m_classChangeOpen || m_showScores)
+        return;
+
+    const std::vector<World::Slot>& roster = m_world.Roster();
+    if (unit.slot < 0 || unit.slot >= static_cast<int>(roster.size()))
+        return;
+    const std::string& name = roster[unit.slot].name;
+    if (name.empty())
+        return;
+
+    // Anchored to the ground the soldier is standing on rather than to the
+    // model, which is what puts it under the boots: `pos` is the feet and the
+    // body is drawn upward from there, so a fixed drop in pixels clears it at
+    // any zoom without ever having to ask how tall the model came out.
+    XMFLOAT2 screen;
+    if (!renderer.WorldToScreen({ pos.x, 0.0f, pos.z }, screen))
+        return;
+
+    const float h = static_cast<float>(renderer.Height());
+    const float size = h * kNameSize;
+    renderer.DrawScreenText(name, screen.x - renderer.MeasureScreenText(name, size) * 0.5f,
+                            screen.y + h * kNameDrop, size,
+                            unit.team == m_team ? kNameFriendlyColor : kNameEnemyColor);
 }
 
 // Screen-space overlay: the gameplay cluster (Hud.cpp), the respawn countdown,

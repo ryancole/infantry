@@ -110,10 +110,15 @@ struct Unit
     float moveBlend;   // 0..1 walk-pose weight, eases in/out so stops don't snap
     Vector3 knock;     // launch velocity the last hit would give its corpse
     // Which place on the roster this soldier is filling (World::Slot), or -1
-    // on a client's replica, where the roster arrives already counted and no
-    // unit here has ever killed anyone. A unit is one life; a slot is the whole
-    // match, and that is the difference a kill/death record has to be hung on —
-    // a tally kept on the unit would be swept off the field with the body.
+    // for a soldier standing in no place a holder of this roster knows about. A
+    // unit is one life; a slot is the whole match, and that is the difference a
+    // kill/death record has to be hung on — a tally kept on the unit would be
+    // swept off the field with the body.
+    //
+    // It rides the wire too, and on a replica it is the only thing it's for:
+    // nothing over there has ever killed anybody, but the roster arrives whole
+    // and a name hangs on a row of it, so this is how a body gets connected to
+    // the name that goes under it.
     int slot = -1;
     // The slot that last put damage on this soldier, and so the one that gets
     // the kill if the next blow is the last one. -1 until somebody has touched

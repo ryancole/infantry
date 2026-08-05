@@ -437,6 +437,28 @@ bool Renderer::IsSphereVisible(const XMFLOAT3& center, float radius) const
     return std::abs(ndc.x) <= 1.0f + rx && std::abs(ndc.y) <= 1.0f + ry;
 }
 
+// Clip space, then the viewport transform: x from [-1, 1] across the width and
+// y from [1, -1] down the height, because NDC counts up and pixels count down.
+// The divide by w is a divide by one under this camera, and is done anyway so
+// the answer doesn't quietly become wrong the day the projection stops being
+// orthographic.
+bool Renderer::WorldToScreen(const XMFLOAT3& world, XMFLOAT2& out) const
+{
+    XMFLOAT4 clip;
+    XMStoreFloat4(&clip, XMVector3Transform(XMLoadFloat3(&world), m_viewProj));
+    if (clip.w <= 0.0f)
+        return false;
+
+    const float ndcX = clip.x / clip.w;
+    const float ndcY = clip.y / clip.w;
+    if (std::abs(ndcX) > 1.0f || std::abs(ndcY) > 1.0f)
+        return false;
+
+    out.x = (ndcX * 0.5f + 0.5f) * static_cast<float>(m_width);
+    out.y = (0.5f - ndcY * 0.5f) * static_cast<float>(m_height);
+    return true;
+}
+
 void Renderer::CreatePostProcess()
 {
     // Post passes draw a fullscreen triangle with no depth buffer bound.

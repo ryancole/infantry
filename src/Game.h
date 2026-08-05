@@ -256,6 +256,11 @@ private:
     // The dark sheet that follows the marks, covering everything nobody on the
     // player's side can see.
     void AppendFogSheet(std::vector<Vertex>& out) const;
+    // Puts a player's name under the soldier they're driving, at `pos` — the
+    // same blended position the body was just drawn at. Draws nothing for a
+    // soldier the AI is fielding, which is what keeps the field labelled with
+    // people and only people.
+    void DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) const;
     void RenderHud(Renderer& renderer);
 
     // The whole match, behind its seam — always a replica the server's
