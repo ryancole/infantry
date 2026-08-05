@@ -1,6 +1,7 @@
 #include "World.h"
 
 #include "Net.h"
+#include "PlayerName.h"
 
 #include <algorithm>
 #include <cmath>
@@ -230,7 +231,7 @@ void World::StartMatch()
     m_localSlot = -1;
     for (int team = 0; team < static_cast<int>(m_teamSpawns.size()); ++team)
         for (int i = 0; i < kTeamSize; ++i)
-            m_roster.push_back({ team, nullptr, {}, Slot::Held::Ai, false, 0, 0 });
+            m_roster.push_back({ team, nullptr, PickBotName(), Slot::Held::Ai, false, 0, 0 });
 
     // Every place is the AI's until somebody claims one, and every one of them
     // gets a soldier now: the sides come up to strength together at the start
@@ -329,8 +330,30 @@ void World::ReleaseSlot(int slot)
 
 int World::AddAiSlot(int team)
 {
-    m_roster.push_back({ team, nullptr, {}, Slot::Held::Ai, false, 0, 0 });
+    m_roster.push_back({ team, nullptr, PickBotName(), Slot::Held::Ai, false, 0, 0 });
     return static_cast<int>(m_roster.size()) - 1;
+}
+
+std::string World::PickBotName()
+{
+    const auto taken = [this](const char* name) {
+        return std::any_of(m_roster.begin(), m_roster.end(),
+                           [name](const Slot& slot) { return slot.name == name; });
+    };
+
+    // A random place in the pool, then the first free name from there. Cheaper
+    // than gathering the free ones and shuffling, and the bias it buys — a name
+    // sitting just after a taken one comes up slightly more often — is a bias
+    // about which of forty strangers you meet, which is nothing.
+    std::uniform_int_distribution<size_t> pick(0, PlayerName::kBotNameCount - 1);
+    const size_t start = pick(m_rng);
+    for (size_t i = 0; i < PlayerName::kBotNameCount; ++i)
+    {
+        const char* candidate = PlayerName::kBotNames[(start + i) % PlayerName::kBotNameCount];
+        if (!taken(candidate))
+            return candidate;
+    }
+    return PlayerName::kBotNames[start]; // every name spoken for; repeat one
 }
 
 int World::HumanSlots(int team) const

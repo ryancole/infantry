@@ -130,19 +130,17 @@ namespace Hud
     struct ScoreRow
     {
         int team;
-        // Who is standing in the slot: a player's own name, or — for a place
-        // the AI is fielding — the class, which is the honest name for it,
-        // since the class really is re-dealt every time the slot refills. Null
-        // for a place nothing has stood in yet. This file doesn't know which
-        // kind it's been handed and doesn't need to: a row is drawn with the
-        // name it has.
+        // Who is standing in the slot. Everybody has a name now, the bots
+        // included, so this file has nothing to decide and doesn't know which
+        // kind it has been handed: a row is drawn with the name it has, and
+        // which of them are people is said by `holder` and by the color that
+        // comes off it. Null only for a place nothing has stood in yet.
         const char* name;
-        // The class beside it, for a row whose name is a person's. Null when
-        // the name *is* the class, which is what stops an AI row saying MARINE
-        // twice. It's here because a scoreboard that only named the people
-        // would have quietly stopped answering "which of them is the sniper",
-        // and on a board of ten that is half of what the enemy column is read
-        // for.
+        // The class beside it, quieter and smaller. It's a second column rather
+        // than the row's name because a name and a class answer different
+        // questions — who that is, and what they're carrying — and on a board of
+        // ten the second one is most of why the enemy column is read at all.
+        // Null for a place with nobody in it to be carrying anything.
         const char* cls;
         Holder holder;
         bool you;

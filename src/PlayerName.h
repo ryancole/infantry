@@ -19,10 +19,11 @@
 // in it and a lowercase name would be the one lowercase word on the screen.
 // Letters, digits, a space, a dash and an underscore, because that is enough
 // to be somebody and short of enough to draw a box around a squadmate's row.
-// Twelve characters, because the scoreboard is the only place a name is read
-// and a column that fits twelve of them also fits the class beside it — the
-// limit is what the readout can hold, which is the honest place for a limit to
-// come from.
+// Twelve characters, because the two places a name is read — a scoreboard
+// column that also has to fit the class beside it, and a label under a soldier
+// that must not be wider than the ground they're standing on — both stop being
+// readable somewhere around there. The limit is what the readouts can hold,
+// which is the honest place for a limit to come from.
 namespace PlayerName
 {
     inline constexpr size_t kMaxLength = 12;
@@ -76,4 +77,36 @@ namespace PlayerName
     {
         return Clean("SOLDIER " + std::to_string(player));
     }
+
+    // What the soldiers who can't choose are called.
+    //
+    // A bot used to be its class, and that was honest as far as it went: an AI
+    // place really does get dealt a fresh class every life, so MARINE was a true
+    // statement about what was standing there. What it wasn't was a person. Five
+    // rows of class names on a side is a parts list, and an arena where only the
+    // people have anything written under them is an arena that reads as one
+    // player among furniture. Naming them costs nothing the fight can feel — a
+    // bot is exactly as dangerous as it was — and it buys the thing a scoreboard
+    // is for: the soldier who has killed you three times is somebody, and now
+    // you know which one they are.
+    //
+    // Handles rather than surnames, because that is what the roster of a 1999
+    // online shooter looked like and because a bot here is standing in for a
+    // player rather than for a character. Every one of them survives Clean
+    // unchanged, which is not a coincidence to rely on — they go through it like
+    // everything else does.
+    inline constexpr const char* kBotNames[] = {
+        "REAPER",  "VIPER",   "HAVOC",    "GHOST",   "RAZOR",   "TALON",
+        "WIDOW",   "COBRA",   "FALCON",   "JACKAL",  "MAVERICK", "RECON",
+        "SABLE",   "SHRIKE",  "SPECTRE",  "VULTURE", "WRAITH",  "ANVIL",
+        "BADGER",  "BISHOP",  "CINDER",   "DAGGER",  "DIESEL",  "DRIFTER",
+        "FLINT",   "HAMMER",  "IRONSIDE", "KESTREL", "LOCKJAW", "NOMAD",
+        "ONYX",    "QUARRY",  "RIVET",    "SALVO",   "SHADOW",  "SLATE",
+        "STITCH",  "TREAD",   "VECTOR",   "WARDEN",
+    };
+
+    // Four times the ten a match fields, so a side is never dealt a name it
+    // has to share and a server that has been running long enough to hand out
+    // every one of them has had a lot of people come and go.
+    inline constexpr size_t kBotNameCount = sizeof(kBotNames) / sizeof(kBotNames[0]);
 }

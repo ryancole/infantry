@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <string>
 
 using namespace DirectX;
@@ -208,6 +209,51 @@ namespace
             for (int i : tris)
                 out.push_back({ p[i], col });
         }
+    }
+
+    // Whether anything solid stands between `point` and the camera.
+    //
+    // It exists because screen text is drawn after the world and cannot be
+    // depth-tested against it, so a label sits on top of the wall its soldier
+    // is hidden behind. For an enemy that is the label saying more than the
+    // arena does, which is the one thing it must never do — so the enemy's name
+    // asks this question and goes unwritten when the answer is yes.
+    //
+    // The projection is orthographic, so "toward the camera" is one direction
+    // for the whole arena (IsoCamera::EyeDirection) and the test is one ray
+    // marched along it against the level's boxes: the standard slab
+    // intersection, starting at the soldier so a box behind them doesn't count
+    // and running to infinity because the eye is outside everything. A near-zero
+    // component of the direction — an orbit that lines the camera up with an
+    // axis — is nudged rather than special-cased, which keeps a slab that should
+    // read as infinite from arriving as a zero-times-infinity NaN.
+    bool BlockedFromEye(const std::vector<World::Collider>& colliders, const Vector3& point,
+                        const Vector3& toEye)
+    {
+        const auto inverse = [](float v) {
+            constexpr float kTiny = 1e-6f;
+            return 1.0f / (std::abs(v) < kTiny ? (v < 0.0f ? -kTiny : kTiny) : v);
+        };
+        const float inv[3] = { inverse(toEye.x), inverse(toEye.y), inverse(toEye.z) };
+        const float from[3] = { point.x, point.y, point.z };
+
+        for (const World::Collider& box : colliders)
+        {
+            const float center[3] = { box.center.x, box.center.y, box.center.z };
+            const float half[3] = { box.size.x * 0.5f, box.size.y * 0.5f, box.size.z * 0.5f };
+            float enter = 0.0f;
+            float leave = std::numeric_limits<float>::infinity();
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const float t0 = (center[axis] - half[axis] - from[axis]) * inv[axis];
+                const float t1 = (center[axis] + half[axis] - from[axis]) * inv[axis];
+                enter = std::max(enter, std::min(t0, t1));
+                leave = std::min(leave, std::max(t0, t1));
+            }
+            if (enter <= leave)
+                return true;
+        }
+        return false;
     }
 
     // Mixes `f` of the way to white. A team color is chosen to read as armor
@@ -919,6 +965,16 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         m_radarZoom /= std::pow(kRadarZoomRate, dt);
     m_radarZoom = std::clamp(m_radarZoom, kRadarZoomMin, kRadarZoomMax);
 
+    // Which way the camera has ended up facing, in the two forms the draw needs
+    // it: the vector that stands a health bar and the radar square to the view,
+    // and the one an enemy's name is tested for cover along. Read here rather
+    // than further down for the reason the radar's zoom is — a dead player is
+    // still watching a match, and can still orbit the camera while they wait,
+    // so both of these have to keep up with a screen the player is looking at
+    // even on the frames they aren't in it.
+    m_screenRight = camera.ScreenRightOnGround();
+    m_toEye = camera.EyeDirection();
+
     // Dead: the arena runs on without the player — NPCs keep fighting, shots
     // keep flying, the corpse keeps falling — but no command reaches the
     // simulation and the camera holds on the spot where the body dropped
@@ -966,7 +1022,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // command it had (Server::Impl::Step) — a player who opened the screen
     // mid-stride would watch their soldier walk out of the spawn area they
     // opened it in.
-    m_screenRight = camera.ScreenRightOnGround();
     const Command fresh =
         m_classChangeOpen
             ? Command{}
@@ -2002,9 +2057,13 @@ void Game::Render(Renderer& renderer)
 // The name under a soldier: whoever is standing in the roster row this unit
 // holds, colored by what they are to the person reading it.
 //
-// Only players have one. An AI slot's name is empty, so nothing is drawn, and
-// that is the whole of the "which of these are people" filter — it needs no
-// flag of its own, because having a name is what being a person is here.
+// Everybody gets one, the bots included, and the label says nothing at all
+// about which is which. That is the point rather than an oversight: what the
+// player needs off a body at a glance is whose side it's on and which one of
+// them it is, and "is there a person behind it" is a question for the
+// scoreboard, where there's room to answer it and time to read. An arena where
+// only the humans were labelled would be an arena that told you which soldier
+// to take seriously, which is a thing the fight should be saying, not the HUD.
 //
 // Called from inside the soldier loop rather than from a pass of its own, so a
 // name and the body it belongs to are subject to exactly one rule: whatever
@@ -2026,6 +2085,20 @@ void Game::DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) co
         return;
     const std::string& name = roster[unit.slot].name;
     if (name.empty())
+        return;
+
+    // Your own side's names carry through walls; the other side's don't, and
+    // the split is the same one the fog already draws. Where your squad is
+    // standing was never something being kept from you — that is why their
+    // bodies skip the sight test in the first place — so a squadmate behind a
+    // rock is a squadmate you can still find, and the name is the only part of
+    // them that survives the rock to say so. An enemy is the opposite case
+    // exactly: their name would be telling you something the arena is refusing
+    // to, and a label that outranks the geometry is a wallhack with a small
+    // font. So theirs is asked whether the body can actually be seen from here,
+    // and stays unwritten when it can't.
+    if (unit.team != m_team && BlockedFromEye(m_world.Colliders(),
+                                              { pos.x, kSoldierBoundsY, pos.z }, m_toEye))
         return;
 
     // Anchored to the ground the soldier is standing on rather than to the
@@ -2259,11 +2332,12 @@ void Game::RenderHud(Renderer& renderer)
             default:                       return Hud::Holder::Ai;
             }
         };
-        // What a row is called, and what it's holding. A place with a person in
-        // it is named after the person and says the class beside it; a place the
-        // AI is fielding is named after the class and says nothing beside it,
-        // because the class is the whole of what that place is and printing it
-        // twice would be the board talking to itself.
+        // What a row is called, and what it's carrying. Every place on the
+        // roster has a name — the bots are dealt one when the place is made —
+        // so this is now the same two columns for everybody, and which of the
+        // ten are people is left to the color the holder picks rather than to
+        // the shape of the row. A slot nobody has stood in yet has no class to
+        // name, and falls back to whatever it has.
         //
         // The names are pointers into the roster's own strings rather than
         // copies. That's safe for exactly as long as it needs to be — the rows

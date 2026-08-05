@@ -256,10 +256,10 @@ private:
     // The dark sheet that follows the marks, covering everything nobody on the
     // player's side can see.
     void AppendFogSheet(std::vector<Vertex>& out) const;
-    // Puts a player's name under the soldier they're driving, at `pos` — the
-    // same blended position the body was just drawn at. Draws nothing for a
-    // soldier the AI is fielding, which is what keeps the field labelled with
-    // people and only people.
+    // Puts the name of whoever holds this soldier's roster row under them, at
+    // `pos` — the same blended position the body was just drawn at. Every
+    // soldier on the field has one; nothing about the label says whether a
+    // person or a brain is behind it.
     void DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) const;
     void RenderHud(Renderer& renderer);
 
@@ -382,6 +382,13 @@ private:
     // nothing: yaw is applied before Update runs, and nothing between there and
     // the draw can turn the camera.
     Vector3 m_screenRight = Vector3::UnitX;
+    // Which way the eye lies from anywhere in the arena, taken off the camera
+    // in Update for the same reason and on the same terms as m_screenRight:
+    // Render isn't handed a camera, and nothing between the two can turn it.
+    // One direction for the whole scene because the projection is orthographic,
+    // which is what makes an enemy's name a single ray to march rather than a
+    // question about where the eye happens to be (see BlockedFromEye).
+    Vector3 m_toEye = Vector3::UnitY;
     float m_aimDist = 1e9f; // distance to the cursor's ground point; huge = unaimed (stick)
     // The swing the arc indicator draws, kept in the direction it was swung so
     // aiming away mid-swing doesn't drag it round. Presentation rather than

@@ -297,20 +297,26 @@ public:
         // What the slot is fielding. A human's is whatever class they are
         // currently holding; an AI slot's is dealt off the team's rotation and
         // is re-dealt every time the slot refills, so a squad wiped out comes
-        // back with a different makeup. On an AI row it is also the row's name,
-        // and the honest one — the class really is the whole of what that place
-        // is. Null on a slot nothing has stood in yet — the five seconds between
-        // a side being owed a soldier and getting one.
+        // back with a different makeup and the same soldiers. Null on a slot
+        // nothing has stood in yet — the five seconds between a side being owed
+        // a soldier and getting one.
         const ClassDef* cls;
-        // What the player standing here asked to be called, already cleaned to
-        // what a name may be (PlayerName::Clean) by whoever let them in. Empty
-        // on an AI slot, which has nobody to have one, and kept when a player
-        // leaves — their row is their record for the rest of the match, and a
-        // record with the name taken off it is a row that can't be accounted
-        // for. This is the whole of what the roster knows about who somebody
-        // is: the id a server issues them is the server's business, and the
-        // simulation has never needed to tell two players apart, only two
-        // places on a side.
+        // Who is standing here, as far as anybody watching is concerned. A
+        // player's is what they asked to be called, cleaned to what a name may
+        // be (PlayerName::Clean) by whoever let them in; a bot's is dealt off
+        // the pool in the same file when the place is created.
+        //
+        // It belongs to the slot rather than to the soldier for the same reason
+        // the kills do, and the bots are what make that visible: a slot's class
+        // is re-dealt every life, so a name kept on the unit would rename the
+        // row every five seconds and the board would be a list of strangers. A
+        // name outlives the soldier wearing it, and a departed player's stays on
+        // their row for the rest of the match, because a record with the name
+        // taken off it is a row that can't be accounted for.
+        //
+        // Never empty on a slot anybody has been put in. Which of them are
+        // people is not a question this string answers — Held does that — and
+        // that is deliberate: the field draws these labels without asking.
         std::string name;
         Held held;
         // The player sitting at *this* machine, so a scoreboard can mark their
@@ -644,6 +650,14 @@ private:
     // it's owed a soldier but has nowhere to put one, which today means exactly
     // one thing: somebody left, and their slot stayed behind as their score.
     int AddAiSlot(int team);
+    // A name for a place nobody is going to choose one for, off the pool in
+    // PlayerName. Never one already on this roster while there's a spare, so
+    // the ten soldiers in a match are ten different people and a player who
+    // shares a name with a bot doesn't end up with a twin. Once every name in
+    // the pool is spoken for it starts repeating rather than handing back
+    // nothing: a soldier with a name shared with somebody across the map is
+    // still better than a soldier with none.
+    std::string PickBotName();
     // Whether anybody is currently standing in `slot`. A slot with no unit is a
     // side one soldier short: the AI's are refilled on the reinforcement clock,
     // a human's when their own respawn comes due.
