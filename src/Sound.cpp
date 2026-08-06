@@ -152,7 +152,7 @@ void Sound::Play(const std::string& name, float volume, float pitch)
         m_bank->Play(name.c_str(), volume, pitch, 0.0f);
 }
 
-void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch)
+void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch, float volume)
 {
     if (!m_bank)
         return;
@@ -170,6 +170,10 @@ void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch)
     emitter.InnerRadius = 2.0f;
 
     inst->SetPitch(pitch);
+    // Voice volume and the 3D transform are separate settings on the same
+    // voice — Apply3D writes an output matrix and a frequency ratio, and never
+    // touches this — so the two multiply and the order doesn't matter.
+    inst->SetVolume(volume);
     // rhcoords=false: the game world and X3DAudio are both left-handed.
     inst->Apply3D(m_listener, emitter, false);
     inst->Play();

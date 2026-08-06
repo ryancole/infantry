@@ -155,10 +155,11 @@ struct Event
 
     enum class Type
     {
-        Fire,         // a shot left a barrel: pos, dir, damage (the report's depth)
+        Fire,         // a shot left a barrel: pos, dir, damage (the report's depth), thrown
         Hit,          // a soldier took damage: pos, dir (the blow), damage, fatal, local
         Death,        // a soldier came off the roster: pos, dir (facing), walkPhase,
                       // moveBlend, knock, team, cls — everything a corpse is built from
+        Spawn,        // a soldier went onto the field: pos, local
         Detonation,   // a shot ended: pos, radius, explodes, hitUnit
         Bounce,       // a live grenade knocked off something, hard enough to hear: pos
         ReloadStart,  // pos, local
@@ -192,6 +193,11 @@ struct Event
     float radius = 0.0f;
     bool explodes = false;
     bool hitUnit = false;
+    // The shot came off a belt rather than out of a barrel (WeaponDef::thrown),
+    // for a Fire event and nothing else. Read straight off the weapon at the
+    // muzzle, because by the time the round is in the air there is nothing left
+    // to ask: a grenade and a grenadier's shell are the same projectile.
+    bool thrown = false;
     // Which callout was shouted (Voice.h), for a Voice event and nothing else.
     // It rides the wire as itself and the sound comes back off it at the far
     // end, the same trade AbilityStart makes with `cls`: a table index is a
@@ -693,11 +699,19 @@ private:
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
     float Rand(float lo, float hi);
-    // Appends to the event list of the Tick in flight. Outside a Tick there
-    // is no audience, and anything worth saying then isn't said this way.
+    // Appends to the event list of the Tick in flight, or holds the event for
+    // the next one when there's no Tick running. Almost everything here is said
+    // from inside a tick and takes the first path; a spawn is the exception,
+    // because a soldier is handed back by the server between steps (a join, a
+    // respawn timer running out) and a soldier arriving is exactly the kind of
+    // thing the room should hear.
     void Emit(const Event& ev);
 
     Physics m_physics;
+    // Events said between ticks, waiting for one to carry them. Spliced in at
+    // the head of the next Tick's list and cleared; emptied outright by Reset,
+    // because a match that has ended has no news left to deliver.
+    std::vector<Event> m_pending;
     int m_nextUnitId = 1; // 0 never issued, so an uninitialized id matches nobody
     // The slot this client's player holds for the match, or -1 on a world
     // running one — a server holds no claim of its own — and on a client
