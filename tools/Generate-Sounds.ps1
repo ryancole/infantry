@@ -187,3 +187,88 @@ for ($i = 0; $i -lt $n; $i++) {
     $heal[$i] = 0.32 * $tone * $swell + 0.22 * $hiss
 }
 Write-Wav (Join-Path $OutDir "heal.wav") $heal
+
+# step: one boot going down on dirt. Grit off the top of a short low thump, all
+# of it over in well under a tenth of a second — a footfall is an event, not a
+# noise. The amplitude is baked in low (the way the thud's is) and for a harder
+# reason: every soldier on the field plays this twice a stride, so it has to be
+# the floor of the mix rather than anything that competes for the middle of it.
+# What varies per step is left to the game — a little detune and the volume of
+# the walk it belongs to — because two identical footfalls in a row are what
+# makes a stride sound like a machine.
+$n = [int](0.075 * $SampleRate)
+$step = [float[]]::new($n)
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $lp = 0.62 * $lp + 0.38 * (2.0 * $rng.NextDouble() - 1.0)
+    $grit = $lp * [Math]::Exp(-$t * 75.0)
+    $weight = 0.7 * [Math]::Sin(2.0 * [Math]::PI * 120.0 * $t) * [Math]::Exp(-$t * 55.0)
+    $step[$i] = 0.22 * ($grit + $weight)
+}
+Write-Wav (Join-Path $OutDir "step.wav") $step
+
+# bodyfall: a soldier arriving on the ground. Deeper and slacker than the thud
+# a round makes stopping in dirt, with the rustle of what they were wearing over
+# the top of it and gone first. It plays when the ragdoll actually lands rather
+# than when the soldier died, which is the whole point of having it: the death
+# is the tone, and this is the second, later sound of the body catching up.
+$n = [int](0.28 * $SampleRate)
+$bodyfall = [float[]]::new($n)
+$phase = 0.0
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $freq = 95.0 * [Math]::Exp(-$t * 12.0) + 48.0
+    $phase += 2.0 * [Math]::PI * $freq / $SampleRate
+    $thump = [Math]::Sin($phase) * [Math]::Exp(-$t * 14.0)
+    # Brighter noise than the thump wants, so it reads as cloth on the way down
+    # rather than as more of the same low end.
+    $lp = 0.5 * $lp + 0.5 * (2.0 * $rng.NextDouble() - 1.0)
+    $cloth = $lp * [Math]::Exp(-$t * 22.0)
+    $bodyfall[$i] = 0.55 * $thump + 0.18 * $cloth
+}
+Write-Wav (Join-Path $OutDir "bodyfall.wav") $bodyfall
+
+# spawn: a fresh soldier standing on the field. A tone that climbs a fifth and
+# settles, over the whump of boots taking their own weight — rising because it
+# is the one sound in here that reports something good, and short because it is
+# heard at the moment the player gets their hands back and nothing should be
+# playing over the top of the first thing they do with them.
+$n = [int](0.45 * $SampleRate)
+$spawn = [float[]]::new($n)
+$phase = 0.0
+$lp = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $freq = 300.0 + 200.0 * [Math]::Min(1.0, $t / 0.15)
+    $phase += 2.0 * [Math]::PI * $freq / $SampleRate
+    $tone = [Math]::Sin($phase) * [Math]::Min(1.0, $t / 0.04) * [Math]::Exp(-$t * 4.5)
+    $whump = [Math]::Sin(2.0 * [Math]::PI * 70.0 * $t) * [Math]::Exp(-$t * 16.0)
+    $lp = 0.55 * $lp + 0.45 * (2.0 * $rng.NextDouble() - 1.0)
+    $air = $lp * [Math]::Exp(-$t * 9.0)
+    $spawn[$i] = 0.34 * $tone + 0.30 * $whump + 0.12 * $air
+}
+Write-Wav (Join-Path $OutDir "spawn.wav") $spawn
+
+# throw: a grenade leaving the hand. The same trick as the blade's swing —
+# band-passed noise under a travelling envelope — pitched down into cloth and
+# given a hard front edge, because a throw starts with the arm already moving
+# and ends with the thing gone. Nothing in it cracks or reports: a grenade going
+# out is deliberately the quietest way a soldier can attack, and the loud part
+# of it arrives three seconds later somewhere else.
+$n = [int](0.14 * $SampleRate)
+$throw = [float[]]::new($n)
+$lp = 0.0
+$hp = 0.0
+$prev = 0.0
+for ($i = 0; $i -lt $n; $i++) {
+    $t = $i / $SampleRate
+    $white = 2.0 * $rng.NextDouble() - 1.0
+    $lp = 0.80 * $lp + 0.20 * $white  # duller than the blade's: cloth, not edge
+    $hp = 0.70 * ($hp + $lp - $prev)  # still off the bottom, so it isn't a thud
+    $prev = $lp
+    $env = [Math]::Min(1.0, $t / 0.025) * [Math]::Exp(-$t * 20.0)
+    $throw[$i] = 2.6 * $hp * $env
+}
+Write-Wav (Join-Path $OutDir "throw.wav") $throw

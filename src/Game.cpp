@@ -554,6 +554,10 @@ void Game::ClearBattlefield()
     m_particles.clear();
     m_splatVerts.clear();
     m_meleeFlash = 0.0f;
+    // Nobody on the field means nobody mid-stride: the next match's soldiers
+    // are heard from wherever their legs start, not from where the last
+    // match's happened to leave off.
+    m_stepPhase.clear();
 }
 
 void Game::NetPump(float dt, IsoCamera& camera)
@@ -1017,6 +1021,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
+        // The fight carries on without us: from where the body fell, the rest
+        // of it is still walking around and still worth hearing.
+        UpdateFootsteps();
         return;
     }
 
@@ -1158,6 +1165,9 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // body lies around is a fact about the picture, not the fight.
     UpdateParticles(dt);
     UpdateCorpses(dt);
+    // Footsteps are read off the same walk the renderer is about to draw, so
+    // they belong next to the rest of the presentation and not to the tick.
+    UpdateFootsteps();
 
     // Death is noticed by absence. Whatever emptied the local soldier's
     // health, the server has already reaped them on the same terms as anyone
@@ -1297,9 +1307,16 @@ void Game::ProcessEvents()
         switch (ev.type)
         {
         case Event::Type::Fire:
-            // One shared fire sample; heavier weapons play deeper. A little
-            // random detune keeps rapid fire from sounding like a loop.
-            PlaySoundAt("fire", ev.pos, 0.25f - ev.damage / 120.0f + Rand(-0.05f, 0.05f));
+            // A thrown weapon didn't fire at all: what leaves the hand is cloth
+            // and air, and a grenade going out being nearly silent is the point
+            // of it — the loud part turns up three seconds later, somewhere the
+            // thrower isn't. Everything else gets the one shared fire sample,
+            // with heavier weapons playing deeper and a little random detune so
+            // rapid fire doesn't sound like a loop.
+            if (ev.thrown)
+                PlaySoundAt("throw", ev.pos, Rand(-0.12f, 0.12f));
+            else
+                PlaySoundAt("fire", ev.pos, 0.25f - ev.damage / 120.0f + Rand(-0.05f, 0.05f));
             break;
 
         case Event::Type::Hit:
@@ -1317,6 +1334,27 @@ void Game::ProcessEvents()
             // off the roster.
             SpawnCorpse(ev.pos, ev.dir, ev.walkPhase, ev.moveBlend, TeamColor(ev.team),
                         ev.cls->color, ev.knock);
+            // No sound here: the killing blow already played one, and the body
+            // has its own to make when it gets to the ground a moment from now
+            // (UpdateCorpses). Dying and landing are two events, and playing
+            // them both on this one would be a single thicker noise.
+            break;
+
+        case Event::Type::Spawn:
+            // Your own arrival is heard at the ear rather than at your feet,
+            // the same as your reload and your callout, and for the same
+            // reason: it's the confirmation that the wait is over and the keys
+            // are yours again, so it has to land the same way every time
+            // instead of being panned by where the camera has got to.
+            //
+            // Everyone else's is a thing happening at a spawn point, and a
+            // spawn point restocking is worth hearing from across the ground in
+            // front of it — the one sound in the game that reports somebody
+            // arriving rather than something being done.
+            if (ev.local)
+                m_sound.Play("spawn");
+            else
+                PlaySoundAt("spawn", ev.pos, Rand(-0.08f, 0.08f));
             break;
 
         case Event::Type::Detonation:
@@ -1406,12 +1444,12 @@ void Game::ProcessEvents()
     m_events.clear();
 }
 
-void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch)
+void Game::PlaySoundAt(const std::string& name, const Vector3& pos, float pitch, float volume)
 {
     // Past kRange the voice would be silent anyway; skip spawning it.
     if (Vector2(pos.x - m_eyePos.x, pos.z - m_eyePos.z).LengthSquared() <
         Sound::kRange * Sound::kRange)
-        m_sound.Play3D(name, pos, pitch);
+        m_sound.Play3D(name, pos, pitch, volume);
 }
 
 float Game::Rand(float lo, float hi)
@@ -1571,6 +1609,7 @@ void Game::SpawnCorpse(const Vector3& pos, const Vector3& aimDir, float walkPhas
     corpse.teamColor = teamColor;
     corpse.classColor = classColor;
     corpse.life = kCorpseLife;
+    corpse.landed = false;
 
     XMMATRIX world[Soldier::SegmentCount];
     for (int i = 0; i < Soldier::SegmentCount; ++i)
@@ -1608,10 +1647,80 @@ void Game::UpdateCorpses(float dt)
 {
     for (size_t i = m_corpses.size(); i-- > 0;)
     {
-        m_corpses[i].life -= dt;
-        if (m_corpses[i].life <= 0.0f)
+        Corpse& corpse = m_corpses[i];
+        // The body arriving. Listened for on the pelvis alone rather than on
+        // the whole ragdoll, because a soldier killed on their feet is already
+        // touching the floor with them — the feet report a contact on the first
+        // step and would put the thump on the same instant as the death. The
+        // pelvis is most of a metre up and gets to the ground the only way it
+        // can, which is by falling, so the sound lands when the body does.
+        if (!corpse.landed && m_world.Phys().HadContact(corpse.parts[Soldier::Pelvis]))
+        {
+            corpse.landed = true;
+            const Physics::Transform at =
+                m_world.Phys().GetTransform(corpse.parts[Soldier::Pelvis]);
+            PlaySoundAt("bodyfall", Vector3(at.pos), Rand(-0.12f, 0.12f));
+        }
+
+        corpse.life -= dt;
+        if (corpse.life <= 0.0f)
             RemoveCorpse(i);
     }
+}
+
+void Game::UpdateFootsteps()
+{
+    // Soldier::Pose swings the legs on sin(walkPhase) with the two of them half
+    // a cycle apart, so a foot is at the front of its stride — down, about to
+    // take the weight — wherever that sine peaks: pi/2 for one leg and pi/2 + pi
+    // for the other. One footfall every half turn of the phase, which is what a
+    // pair of legs does.
+    constexpr float kPlant = XM_PIDIV2;
+    // Below this much of the walk pose there's no weight going through the feet
+    // worth hearing. It's the blend rather than the speed because the blend is
+    // what the legs are actually doing: a soldier who let go of the keys is
+    // still walking through their coast, and one who never really started
+    // shouldn't stamp.
+    constexpr float kQuietBlend = 0.15f;
+
+    for (const Unit& unit : m_world.Units())
+    {
+        // The local soldier's legs run on the prediction's clock, like the rest
+        // of them. Nowhere else would a snapshot of lag be as noticeable as in
+        // the sound of your own boots.
+        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
+        const Unit& src = predicted ? m_predicted : unit;
+
+        auto [it, fresh] = m_stepPhase.try_emplace(unit.id, src.walkPhase);
+        const float was = it->second;
+        it->second = src.walkPhase;
+        // A soldier we've only just laid eyes on has no stride behind them to
+        // have crossed anything with.
+        if (fresh || src.moveBlend <= kQuietBlend)
+            continue;
+        // Whether a plant was passed, not how many of them: a frame that
+        // swallowed two — a stall, a window coming back — is one footfall and
+        // not a burst.
+        if (std::floor((was - kPlant) / XM_PI) == std::floor((src.walkPhase - kPlant) / XM_PI))
+            continue;
+
+        // Detuned per step, because what gives a stride away as a recording is
+        // two identical footfalls in a row. The walk's own blend is the volume,
+        // so a soldier easing off doesn't stop mid-stride — they get quieter
+        // and then stop, which is the shape of somebody slowing down.
+        const float pitch = Rand(-0.16f, 0.16f);
+        if (unit.controller == Unit::Controller::Local)
+            m_sound.Play("step", src.moveBlend, pitch);
+        else
+            PlaySoundAt("step", src.pos, pitch, src.moveBlend);
+    }
+
+    // Strides nobody is walking any more: the dead, the departed, the far side
+    // of a rematch. Nothing goes wrong if they're kept — unit ids never come
+    // round again — but the table would grow for as long as the match does, and
+    // it's a table of who is on the field.
+    std::erase_if(m_stepPhase,
+                  [this](const auto& e) { return m_world.UnitById(e.first) == nullptr; });
 }
 
 void Game::RemoveCorpse(size_t index)

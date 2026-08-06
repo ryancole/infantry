@@ -64,6 +64,13 @@ struct WeaponDef
     // A direct hit on a soldier still detonates it on the spot.
     float bounce;
     bool explodes;           // impact plays the explosion effect + boom, not a thud
+    // Leaves a hand rather than a barrel. Only presentation reads it — a throw
+    // is cloth and air where a shot is a report — but it lives here rather than
+    // in the client because which weapons are thrown is a fact about the
+    // loadout, and there is nothing else on a Fire event that distinguishes
+    // them: the grenadier's launcher lobs an explosive shell too, and it is
+    // still a gun going off.
+    bool thrown;
 };
 
 // How a class carries itself on the ground. Split out of ClassDef for the same
@@ -330,11 +337,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // flight long before the fall would, and the zone's own launcher agrees —
     // the alive time on that row is a twenty-second safety net, not a range.
     // The zone's flamethrower ratio (0.4) has no class here to land on.
-    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true  }, Ability::kNone, Brain::Kind::Rifleman },
+    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw  | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
@@ -377,8 +384,8 @@ inline constexpr float SustainedFireRate(const WeaponDef& w)
 // reload of its own — two seconds, both halves the same — but that's the
 // pacing of a thing you carry several of, and this one is issued by the life.
 inline constexpr WeaponDef kGrenade = {
-    // fire  mag early empty speed  radius mass   lob   fuse  min   dmg    blast bnce  boom
-       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 0.0f, 30.0f, 4.0f, 0.45f, true
+    // fire  mag early empty speed  radius mass   lob   fuse  min   dmg    blast bnce  boom  thrw
+       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 0.0f, 30.0f, 4.0f, 0.45f, true, true
 };
 
 // The blade every soldier carries, swung with the melee key. Standard issue

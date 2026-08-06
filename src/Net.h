@@ -90,7 +90,14 @@ namespace Net
     // which is the thread that lets a name be drawn under the body rather than
     // only on the board. One byte in the middle of the unit record, so a build
     // from 13 reads it as half a position and puts everybody somewhere else.
-    constexpr uint8_t kProtocolVersion = 14;
+    // 15: two more things a tick can report. A soldier going onto the field is
+    // an event now (Event::Type::Spawn), which lands in the middle of the type
+    // enum rather than on the end of it, so every type after Death has moved a
+    // number — a build from 14 would take a spawn for a detonation and read the
+    // rest of the list one meaning out of step. And a Fire event says whether
+    // what left was thrown (kEvThrown), which is a spare bit in a byte that was
+    // already there and would go unread rather than misread.
+    constexpr uint8_t kProtocolVersion = 15;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -653,6 +660,7 @@ namespace Net
         kEvFatal = 1 << 0,
         kEvExplodes = 1 << 1,
         kEvHitUnit = 1 << 2,
+        kEvThrown = 1 << 3,
     };
 
     inline void WriteEvents(Writer& w, const std::vector<Event>& events)
@@ -679,6 +687,7 @@ namespace Net
             uint8_t bits = 0;
             if (ev.fatal) bits |= kEvFatal;
             if (ev.explodes) bits |= kEvExplodes;
+            if (ev.thrown) bits |= kEvThrown;
             if (ev.hitUnit) bits |= kEvHitUnit;
             w.U8(bits);
         }
@@ -710,6 +719,7 @@ namespace Net
             ev.fatal = bits & kEvFatal;
             ev.explodes = bits & kEvExplodes;
             ev.hitUnit = bits & kEvHitUnit;
+            ev.thrown = bits & kEvThrown;
             ev.local = ev.unit >= 0 && ev.unit == myUnitId;
             if (ev.type == Event::Type::AbilityStart && ev.cls)
                 ev.sound = ev.cls->ability.startSound;

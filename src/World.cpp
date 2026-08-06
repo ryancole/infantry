@@ -202,6 +202,7 @@ void World::Reset()
     m_projectiles.clear();
     m_units.clear();
     m_reinforcements.clear();
+    m_pending.clear();
     m_staged.clear();
     m_standingOverride.clear();
     m_roster.clear();
@@ -241,6 +242,13 @@ void World::StartMatch()
     for (int slot = 0; slot < static_cast<int>(m_roster.size()); ++slot)
         if (m_roster[slot].held == Slot::Held::Ai)
             SpawnAi(slot);
+
+    // Those arrivals are not news, so nobody is told about them: a match
+    // does not begin with two empty bases filling up, it begins with both sides
+    // already standing on the field. What a spawn event is for is the one that
+    // interrupts that — a reinforcement walking on to replace somebody, or a
+    // player getting their soldier back — and there is no such thing at kickoff.
+    m_pending.clear();
 }
 
 int World::SpawnRemote(const ClassDef& cls, int slot)
@@ -277,6 +285,15 @@ int World::SpawnHuman(const ClassDef& cls, int slot, Unit::Controller controller
     unit.prevWalkPhase = unit.walkPhase;
     unit.prevMoveBlend = unit.moveBlend;
     m_units.push_back(unit);
+
+    // Somebody is standing here who wasn't a moment ago. Said from outside a
+    // tick nine times out of ten — a join, a respawn timer coming due — which
+    // is the case Emit holds for the next one.
+    Event ev;
+    ev.type = Event::Type::Spawn;
+    ev.unit = unit.id;
+    ev.pos = unit.pos;
+    Emit(ev);
     return unit.id;
 }
 
@@ -480,11 +497,25 @@ void World::SpawnAi(int slot)
     unit.prevWalkPhase = unit.walkPhase;
     unit.prevMoveBlend = unit.moveBlend;
     m_units.push_back(unit);
+
+    // A reinforcement arriving, heard the same as a player's respawn: from
+    // where a fight is being had, a side restocking its base is worth knowing
+    // about, and there's nothing else in the game that reports it.
+    Event ev;
+    ev.type = Event::Type::Spawn;
+    ev.unit = unit.id;
+    ev.pos = unit.pos;
+    Emit(ev);
 }
 
 void World::Tick(std::vector<Event>& events)
 {
     m_out = &events;
+
+    // Anything said since the last tick goes out at the head of this one, in
+    // the order it was said.
+    events.insert(events.end(), m_pending.begin(), m_pending.end());
+    m_pending.clear();
 
     // Every soldier's "where I was" becomes the tick that's about to run:
     // a renderer draws between these and wherever the tick puts them.
@@ -961,6 +992,7 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
     ev.pos = from;
     ev.dir = dir;
     ev.damage = weapon.damage; // heavier weapons report deeper; see the Fire handler
+    ev.thrown = weapon.thrown; // ...unless nothing reported at all; see the same handler
     Emit(ev);
 }
 
@@ -998,6 +1030,8 @@ void World::Emit(const Event& ev)
 {
     if (m_out)
         m_out->push_back(ev);
+    else
+        m_pending.push_back(ev);
 }
 
 DirectX::SimpleMath::Vector3 World::EnemySpawn(int team) const

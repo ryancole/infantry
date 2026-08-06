@@ -54,9 +54,14 @@ public:
     // any Play3D.
     void SetListener(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT3& screenUp);
 
-    // pitch is in octaves, -1..+1; 0 plays as authored.
+    // pitch is in octaves, -1..+1; 0 plays as authored. A 3D voice's volume is
+    // set before the 3D transform and multiplies with it rather than replacing
+    // it: distance is still X3DAudio's answer, and this is how loud the thing
+    // was where it happened — a footfall under a walk that is only half wound
+    // up, against the same clip under a run.
     void Play(const std::string& name, float volume = 1.0f, float pitch = 0.0f);
-    void Play3D(const std::string& name, const DirectX::XMFLOAT3& pos, float pitch = 0.0f);
+    void Play3D(const std::string& name, const DirectX::XMFLOAT3& pos, float pitch = 0.0f,
+                float volume = 1.0f);
 
 private:
     void FeedWind(DirectX::DynamicSoundEffectInstance* instance);
