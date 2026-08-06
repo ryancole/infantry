@@ -361,9 +361,23 @@ namespace
         out.push_back({ XMFLOAT3{ bx + px, tip.y, bz + pz }, color });
     }
 
+    // The facing to draw a soldier at, between the tick that last set it and
+    // the one that just did. Shared by the bodies and by the indicators that
+    // hang off them, because an aim line growing out of a muzzle pointed
+    // somewhere else is worse than either of them being wrong alone.
+    Vector3 BlendDir(const Vector3& prev, const Vector3& cur, float t)
+    {
+        Vector3 dir = Vector3::Lerp(prev, cur, t);
+        if (dir.LengthSquared() > 1e-8f)
+            dir.Normalize();
+        else
+            dir = cur; // a half-turn's midpoint has no direction; take the newer one
+        return dir;
+    }
+
     // Draws a living soldier: the model's segments posed by the walk cycle and
     // placed at `pos` facing `aimDir`. A corpse draws the same parts, its
-    // segments posed by the ragdoll instead (see Game::Render).
+    // segments posed by the ragdoll instead (see Game::DrawCasters).
     void DrawSoldier(Renderer& renderer, const Vector3& pos, const Vector3& aimDir,
                      float walkPhase, float moveBlend, int team, const XMFLOAT4& classColor)
     {
@@ -1756,6 +1770,110 @@ void Game::AppendFogSheet(std::vector<Vertex>& out) const
     out.push_back(quad[3]);
 }
 
+// See Game.h for why this is one function called twice rather than a stretch
+// of Render. Everything here is opaque and solid; what is deliberately absent
+// is anything that would cast a shadow nobody wants to look at — the
+// projectiles and the impact debris, which are small, fast, and would strobe
+// the floor for no gain, and the grass, which is a shadow's worth of geometry
+// standing a third of a unit off the ground.
+void Game::DrawCasters(Renderer& renderer, bool labels)
+{
+    for (const World::Collider& c : m_world.Colliders())
+        if (c.debugDraw)
+            renderer.DrawShape(Shape::Box,
+                               XMMatrixScaling(c.size.x, c.size.y, c.size.z) *
+                                   XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
+                               kObstacleColor);
+
+    // The soldiers, off the World's roster. An enemy nobody on the player's
+    // side can see stays hidden — behind a wall, or simply out past what any
+    // of them can make out, they disappear until somebody on the squad gets
+    // eyes on them again. The player's own side skips the test: where
+    // your squad is standing is not something the fog was ever keeping from
+    // you, and a soldier who vanished on turning a corner would be one nobody
+    // could fight alongside. The local unit skips the frustum test too — the
+    // camera follows them, so they're always on screen. While the player is
+    // dead there's no local unit to draw: what's standing at m_eyePos is their
+    // corpse, and the view stays on it.
+    //
+    // The frustum test is the camera's rather than the sun's, which is a
+    // deliberate under-count in the shadow pass: a soldier standing just off
+    // the top of the screen could be throwing a shadow onto ground that is on
+    // it, and here they won't. What it buys is that the two passes agree about
+    // every body they draw, and what it costs is a shadow at the very edge of
+    // the view — where the fitted map is running out anyway.
+    // The moment between two ticks that this frame is a picture of. Every
+    // soldier is drawn at the blend of where the last tick left them and
+    // where this one put them; a display running faster than the simulation
+    // sees motion, not the simulation's sixty stills a second.
+    const float alpha = m_renderAlpha;
+    for (const Unit& unit : m_world.Units())
+    {
+        // In connected play the local soldier is drawn from the prediction,
+        // on the prediction's own clock — the one body on the field that
+        // answers this machine's keys instead of the wire's history.
+        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
+        const Unit& src = predicted ? m_predicted : unit;
+        const float a = predicted ? m_predAlpha : alpha;
+        const Vector3 pos = Vector3::Lerp(src.prevPos, src.pos, a);
+        if (unit.controller != Unit::Controller::Local)
+        {
+            // Cheapest rejection first: the arena is far wider than the view,
+            // so most of a large squad is usually off screen entirely.
+            if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
+                                          kSoldierBoundsRadius))
+                continue;
+            if (unit.team != m_team &&
+                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
+                continue;
+        }
+        DrawSoldier(renderer, pos, BlendDir(src.prevAimDir, src.aimDir, a),
+                    src.prevWalkPhase + (src.walkPhase - src.prevWalkPhase) * a,
+                    src.prevMoveBlend + (src.moveBlend - src.prevMoveBlend) * a,
+                    unit.team, unit.cls->color);
+        if (labels)
+            DrawName(renderer, unit, pos);
+    }
+
+    // Corpses, drawn from their ragdolls: the same model as a living soldier,
+    // with every segment placed by the physics body it was built from. Same
+    // culling as the living, tested at the pelvis — where a body ends up is the
+    // ragdoll's business, so there's no single position to key off otherwise.
+    for (const Corpse& corpse : m_corpses)
+    {
+        const Physics::Transform pelvis =
+            m_world.Phys().GetTransform(corpse.parts[Soldier::Pelvis]);
+        if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
+            continue;
+        if (!Visibility::IsPointVisibleAny(m_teamEyes, { pelvis.pos.x, pelvis.pos.z },
+                                           m_world.Occluders()))
+            continue;
+
+        // Sinking is a drawing trick, not a physical one: the bodies stay put
+        // (asleep, by then) and the model is drawn further under the floor each
+        // frame until it's gone.
+        const float sink =
+            std::max(0.0f, kCorpseSink - corpse.life) / kCorpseSink * kCorpseSinkDepth;
+
+        XMMATRIX world[Soldier::SegmentCount];
+        for (int i = 0; i < Soldier::SegmentCount; ++i)
+        {
+            const Physics::Transform t = m_world.Phys().GetTransform(corpse.parts[i]);
+            world[i] = XMMatrixRotationQuaternion(XMLoadFloat4(&t.rot)) *
+                       XMMatrixTranslation(t.pos.x, t.pos.y - sink, t.pos.z);
+        }
+        Soldier::Draw(renderer, world, corpse.teamColor, corpse.classColor);
+    }
+
+    for (const Prop& prop : m_props)
+    {
+        const XMMATRIX world = XMMatrixScaling(prop.scale, prop.scale, prop.scale) *
+                               XMMatrixRotationY(prop.yaw) *
+                               XMMatrixTranslation(prop.pos.x, prop.pos.y, prop.pos.z);
+        renderer.DrawModel(*prop.model, world);
+    }
+}
+
 void Game::Render(Renderer& renderer)
 {
     // Grayscale for as long as the player is dead, not a flash on the way
@@ -1824,99 +1942,31 @@ void Game::Render(Renderer& renderer)
 
     const XMMATRIX identity = XMMatrixIdentity();
 
+    // Who on this side can see what, settled before anything is drawn. Both
+    // passes below cull against it, and the sun is not allowed a different
+    // answer to that question than the camera has.
+    UpdateTeamEyes();
+
+    // The moment between two ticks this frame is a picture of; the indicators
+    // further down place themselves at it, the same as the bodies do.
+    const float alpha = m_renderAlpha;
+
+    // The sun, before the scene rather than after it. The depth map has to
+    // exist by the time ApplyShadows reads it, and that happens partway down
+    // this function — so the pass that fills it goes at the top, where the
+    // command list has nothing of the frame in it yet to be disturbed.
+    renderer.BeginShadowPass();
+    DrawCasters(renderer, false);
+    renderer.EndShadowPass();
+
     // The floor, first and opaque: everything else in the arena sorts against
     // the depth it writes. The grass that stands on it goes down after the
     // fog — see below, and Ground.h.
     Ground::DrawTurf(renderer, m_ground, m_scratch);
 
-    for (const World::Collider& c : m_world.Colliders())
-        if (c.debugDraw)
-            renderer.DrawShape(Shape::Box,
-                               XMMatrixScaling(c.size.x, c.size.y, c.size.z) *
-                                   XMMatrixTranslation(c.center.x, c.center.y, c.center.z),
-                               kObstacleColor);
+    DrawCasters(renderer, true);
 
-    // The soldiers, off the World's roster. An enemy nobody on the player's
-    // side can see stays hidden — behind a wall, or simply out past what any
-    // of them can make out, they disappear until somebody on the squad gets
-    // eyes on them again. The player's own side skips the test: where
-    // your squad is standing is not something the fog was ever keeping from
-    // you, and a soldier who vanished on turning a corner would be one nobody
-    // could fight alongside. The local unit skips the frustum test too — the
-    // camera follows them, so they're always on screen. While the player is
-    // dead there's no local unit to draw: what's standing at m_eyePos is their
-    // corpse, and the view stays on it.
-    UpdateTeamEyes();
     m_scratch.clear();
-    // The moment between two ticks that this frame is a picture of. Every
-    // soldier is drawn at the blend of where the last tick left them and
-    // where this one put them; a display running faster than the simulation
-    // sees motion, not the simulation's sixty stills a second.
-    const float alpha = m_renderAlpha;
-    const auto blendDir = [](const Vector3& prev, const Vector3& cur, float t) {
-        Vector3 dir = Vector3::Lerp(prev, cur, t);
-        if (dir.LengthSquared() > 1e-8f)
-            dir.Normalize();
-        else
-            dir = cur; // a half-turn's midpoint has no direction; take the newer one
-        return dir;
-    };
-    for (const Unit& unit : m_world.Units())
-    {
-        // In connected play the local soldier is drawn from the prediction,
-        // on the prediction's own clock — the one body on the field that
-        // answers this machine's keys instead of the wire's history.
-        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
-        const Unit& src = predicted ? m_predicted : unit;
-        const float a = predicted ? m_predAlpha : alpha;
-        const Vector3 pos = Vector3::Lerp(src.prevPos, src.pos, a);
-        if (unit.controller != Unit::Controller::Local)
-        {
-            // Cheapest rejection first: the arena is far wider than the view,
-            // so most of a large squad is usually off screen entirely.
-            if (!renderer.IsSphereVisible({ pos.x, kSoldierBoundsY, pos.z },
-                                          kSoldierBoundsRadius))
-                continue;
-            if (unit.team != m_team &&
-                !Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
-                continue;
-        }
-        DrawSoldier(renderer, pos, blendDir(src.prevAimDir, src.aimDir, a),
-                    src.prevWalkPhase + (src.walkPhase - src.prevWalkPhase) * a,
-                    src.prevMoveBlend + (src.moveBlend - src.prevMoveBlend) * a,
-                    unit.team, unit.cls->color);
-        DrawName(renderer, unit, pos);
-    }
-    // Corpses, drawn from their ragdolls: the same model as a living soldier,
-    // with every segment placed by the physics body it was built from. Same
-    // culling as the living, tested at the pelvis — where a body ends up is the
-    // ragdoll's business, so there's no single position to key off otherwise.
-    for (const Corpse& corpse : m_corpses)
-    {
-        const Physics::Transform pelvis =
-            m_world.Phys().GetTransform(corpse.parts[Soldier::Pelvis]);
-        if (!renderer.IsSphereVisible(pelvis.pos, kSoldierBoundsRadius))
-            continue;
-        if (!Visibility::IsPointVisibleAny(m_teamEyes, { pelvis.pos.x, pelvis.pos.z },
-                                           m_world.Occluders()))
-            continue;
-
-        // Sinking is a drawing trick, not a physical one: the bodies stay put
-        // (asleep, by then) and the model is drawn further under the floor each
-        // frame until it's gone.
-        const float sink =
-            std::max(0.0f, kCorpseSink - corpse.life) / kCorpseSink * kCorpseSinkDepth;
-
-        XMMATRIX world[Soldier::SegmentCount];
-        for (int i = 0; i < Soldier::SegmentCount; ++i)
-        {
-            const Physics::Transform t = m_world.Phys().GetTransform(corpse.parts[i]);
-            world[i] = XMMatrixRotationQuaternion(XMLoadFloat4(&t.rot)) *
-                       XMMatrixTranslation(t.pos.x, t.pos.y - sink, t.pos.z);
-        }
-        Soldier::Draw(renderer, world, corpse.teamColor, corpse.classColor);
-    }
-
     for (const World::Projectile& shot : m_world.Projectiles())
     {
         const Vector3& pos = shot.pos;
@@ -1944,20 +1994,21 @@ void Game::Render(Renderer& renderer)
 
     renderer.DrawTriangles(m_scratch.data(), static_cast<uint32_t>(m_scratch.size()), identity);
 
-    for (const Prop& prop : m_props)
-    {
-        const XMMATRIX world = XMMatrixScaling(prop.scale, prop.scale, prop.scale) *
-                               XMMatrixRotationY(prop.yaw) *
-                               XMMatrixTranslation(prop.pos.x, prop.pos.y, prop.pos.z);
-        renderer.DrawModel(*prop.model, world);
-    }
-
     // Blood, laid flat on the floor. It goes down after every opaque thing has
     // written depth, so a stain behind a wall is hidden by the wall rather than
     // painted over it, and before the fog, so blood out of sight is dimmed
     // along with the ground it's on.
     renderer.DrawTrianglesAlpha(m_splatVerts.data(), static_cast<uint32_t>(m_splatVerts.size()),
                                 identity);
+
+    // And the sun's shadows, on the last frame that is still only the world:
+    // every opaque surface has written the depth this pass reads, and nothing
+    // that isn't a surface has been laid over it yet. A pixel it darkens here
+    // is a piece of floor or a soldier's back; a pixel it darkened after the
+    // fog would be a piece of the fog, and shading the darkness is not a thing
+    // a shadow does. The blood is under it deliberately — a stain is on the
+    // ground rather than above it, and ground in shade is ground in shade.
+    renderer.ApplyShadows();
 
     // Fog of war goes on after all opaque geometry so it blends over the
     // floor while walls (which wrote depth) still punch through it. Every eye
@@ -2060,7 +2111,7 @@ void Game::Render(Renderer& renderer)
         const Unit& drawn = m_hasPredicted ? m_predicted : u;
         const float da = m_hasPredicted ? m_predAlpha : alpha;
         const Vector3 lpos = Vector3::Lerp(drawn.prevPos, drawn.pos, da);
-        const Vector3 laim = blendDir(drawn.prevAimDir, drawn.aimDir, da);
+        const Vector3 laim = BlendDir(drawn.prevAimDir, drawn.aimDir, da);
         const bool reloading = u.reloadTimer > 0.0f;
         const XMFLOAT4 aimColor = reloading ? kAimSpentColor : kAimColor;
 

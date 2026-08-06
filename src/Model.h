@@ -47,6 +47,12 @@ public:
     const D3D12_VERTEX_BUFFER_VIEW& VertexView() const { return m_vbv; }
     const D3D12_INDEX_BUFFER_VIEW& IndexView() const { return m_ibv; }
 
+    // Every index in the buffer, which is every part end to end: the loader
+    // appends them one after another, so a caller that has nothing to say
+    // about materials — the shadow pass — can draw the whole model at once
+    // instead of walking a parts list to ask each of them the same question.
+    uint32_t IndexCount() const { return m_ibv.SizeInBytes / sizeof(uint32_t); }
+
 private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_vertexBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
