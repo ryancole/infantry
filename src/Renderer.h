@@ -137,6 +137,29 @@ public:
     void DrawGroundDetail(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
                           float unseenTint);
 
+    // The sun's shadows, in three calls around the scene.
+    //
+    // BeginShadowPass aims an orthographic camera down the sun's direction at
+    // the patch of floor currently on screen and points the command list at a
+    // depth map instead of the scene. Every DrawModel, DrawShape and
+    // DrawTriangles between it and EndShadowPass then records how far the sun
+    // gets rather than drawing anything — same calls, same matrices, so what
+    // casts a shadow is submitted by the same code that draws it and the two
+    // can't drift apart. Nothing else about the renderer changes state across
+    // the pair: EndShadowPass puts the scene's targets, viewport and stencil
+    // reference back exactly as BeginFrame left them.
+    //
+    // ApplyShadows is the pass that spends it. It reads the frame's own depth
+    // buffer, works out where on the floor each pixel is standing, asks the map
+    // whether the sun reached there, and multiplies the ones it didn't down —
+    // which is why the toolkit's effects never had to learn about any of this.
+    // Call it once every opaque thing has written depth and before the fog of
+    // war goes over the top, so shadow lands on the ground and darkness lands
+    // on the shadow rather than the other way about.
+    void BeginShadowPass();
+    void EndShadowPass();
+    void ApplyShadows();
+
     // Loads a glTF model (path relative to the exe dir or the repo root).
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
@@ -222,6 +245,16 @@ private:
     void CreateShapePrimitives();
     void CreatePostProcess();
     void CreateOffscreenTargets();
+    void CreateShadowResources();
+    void CreateShadowPipelines();
+    // Where to stand the sun so its map covers the ground the camera can see.
+    // Derived from the matrix given to SetViewProj rather than handed in: what
+    // is on screen is a fact about that matrix, and asking the caller for it
+    // again would be asking them to agree with it.
+    DirectX::XMMATRIX ComputeLightViewProj() const;
+    // Sets the depth-only pipeline and this draw's matrix, for the calls that
+    // are routed into the shadow map rather than into the scene.
+    void BindShadowDraw(const DirectX::XMMATRIX& world);
     void RunPostChain();
     void WaitForGpu();
     void Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
@@ -284,6 +317,24 @@ private:
     PostTarget m_postColor;  // full res, monochrome intermediate
     PostTarget m_bloom1;     // half res, extract + blur ping-pong
     PostTarget m_bloom2;     // half res
+    // The sun's depth map and the two pipelines that write and read it. These
+    // are ours rather than the toolkit's — see src/shaders — which is why they
+    // carry root signatures of their own instead of going through an Effect.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
+    D3D12_GPU_DESCRIPTOR_HANDLE m_shadowSrv = {};
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowDepthRS;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowDepthPso;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowApplyRS;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowApplyPso;
+    // The scene's own depth, as something a shader can read. Allocated once and
+    // rebuilt in place on resize, like the post targets below.
+    D3D12_GPU_DESCRIPTOR_HANDLE m_depthSrv = {};
+    size_t m_depthSrvSlot = SIZE_MAX;
+    // Set between BeginShadowPass and EndShadowPass; what the draw calls check
+    // to decide whether they are drawing the arena or measuring it.
+    bool m_shadowPass = false;
+    DirectX::XMMATRIX m_lightViewProj = DirectX::XMMatrixIdentity();
+
     std::unique_ptr<DirectX::BasicPostProcess> m_bloomExtract;
     std::unique_ptr<DirectX::BasicPostProcess> m_bloomBlur;
     std::unique_ptr<DirectX::BasicPostProcess> m_monochromePass;

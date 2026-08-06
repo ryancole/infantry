@@ -273,6 +273,25 @@ private:
     // soldier on the field has one; nothing about the label says whether a
     // person or a brain is behind it.
     void DrawName(Renderer& renderer, const Unit& unit, const Vector3& pos) const;
+
+    // Everything in the arena solid enough to stand in the sun's way: the
+    // soldiers, the bodies they leave, the props, and whatever colliders are
+    // being drawn. Called twice a frame — once inside Renderer::BeginShadowPass
+    // to lay down the depth map, once again to draw the scene — which is the
+    // reason it is a function at all. A caster the shadow pass didn't hear
+    // about is a soldier with no shadow; one the scene didn't is a shadow with
+    // no soldier, which is worse, and the way to have neither is for both
+    // passes to be reading the same list.
+    //
+    // Note what it inherits by being the same code twice: the fog culls the
+    // shadow pass exactly as it culls the scene, so an enemy the arena is
+    // hiding casts nothing. A shadow reaching out from behind an outcrop would
+    // be the fog of war leaking through the floor.
+    //
+    // `labels` is false for the shadow pass. A name is screen text queued for
+    // the end of the frame, and queueing it twice would draw it twice.
+    void DrawCasters(Renderer& renderer, bool labels);
+
     void RenderHud(Renderer& renderer);
 
     // The whole match, behind its seam — always a replica the server's

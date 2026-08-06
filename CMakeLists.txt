@@ -85,9 +85,49 @@ set(SIM_SOURCES
     src/Visibility.cpp
 )
 
+# The shaders that are ours rather than the toolkit's. DirectXTK12's effects
+# ship their pixel shaders precompiled inside the library, with no shadow map
+# to bind and no hook to add one, so the sun's two passes — the depth map, and
+# the fullscreen pass that reads it back against the scene's depth buffer —
+# are the one part of the renderer that had to be written in HLSL.
+#
+# The Visual Studio generator hands these to MSBuild's own FXC step, which is
+# why the properties below are spelled VS_*: they are a passthrough to the
+# .vcxproj and mean nothing under Ninja or Make. That is a trade for not
+# maintaining a dxc invocation of our own, and the failure it can produce is
+# quiet — a different generator would simply not compile these and the missing
+# bytecode wouldn't surface until link. If this project ever leaves Visual
+# Studio, this is the block that has to become an add_custom_command.
+#
+# Compiled to headers rather than .cso files so the bytecode is linked into the
+# exe: shaders travel with the build that expects them, and there is nothing to
+# copy next to the binary and nothing to get out of step with it.
+set(SHADER_SOURCES
+    src/shaders/ShadowDepthVS.hlsl
+    src/shaders/FullscreenVS.hlsl
+    src/shaders/ShadowApplyPS.hlsl
+)
+
+foreach(shader ${SHADER_SOURCES})
+    get_filename_component(shader_name ${shader} NAME_WE)
+    if(shader_name MATCHES "PS$")
+        set(shader_type Pixel)
+    else()
+        set(shader_type Vertex)
+    endif()
+    set_source_files_properties(${shader} PROPERTIES
+        VS_SHADER_TYPE ${shader_type}
+        VS_SHADER_MODEL 5.1
+        VS_SHADER_ENTRYPOINT main
+        VS_SHADER_OUTPUT_HEADER_FILE "${CMAKE_BINARY_DIR}/shaders/${shader_name}.h"
+        VS_SHADER_VARIABLE_NAME "g_${shader_name}"
+    )
+endforeach()
+
 add_executable(infantry WIN32
     src/main.cpp
     src/Renderer.cpp
+    ${SHADER_SOURCES}
     src/AbilityDraw.cpp
     src/AudioMenu.cpp
     src/BindMenu.cpp
@@ -115,7 +155,7 @@ target_compile_definitions(infantry PRIVATE
     NOMINMAX
 )
 
-target_include_directories(infantry PRIVATE ${cgltf_SOURCE_DIR})
+target_include_directories(infantry PRIVATE ${cgltf_SOURCE_DIR} ${CMAKE_BINARY_DIR}/shaders)
 
 target_link_libraries(infantry PRIVATE
     DirectXTK12
