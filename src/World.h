@@ -234,18 +234,31 @@ public:
     // it gates is the class change: a soldier is what a player is committed to
     // for a life, and the ground where lives begin is the one place that
     // commitment can be revised without dying first. So it has to be a place
-    // rather than a point — eight units is room to stand, four times the
-    // scatter a squad spawns across, and on hardcorps2t it fills the notch each
-    // base sits in without reaching past the rock around it. A player who wants
-    // a different soldier walks home for it, and the walk is the price.
+    // rather than a point — eight units is room to stand, wide enough to still
+    // contain the ground a side now spawns across, and on hardcorps2t it fills
+    // the notch each base sits in without reaching past the rock around it. It
+    // stays where it is at twenty-five a side: it's sized to the map's base,
+    // not to the roster, and a zone that grew with the team would be a zone
+    // spilling out of the notch it was cut to fit. A player who wants a
+    // different soldier walks home for it, and the walk is the price.
     static constexpr float kSpawnArea = 8.0f;
-    // Soldiers a side puts on the field, the local player included. Five a side
-    // is the smallest number that makes the arena read as a fight rather than a
-    // duel: enough that a flank is covered by somebody, few enough that any one
-    // soldier going down is felt. It's a constant rather than a level property
-    // because it's a statement about the game mode, and there's only one of
-    // those so far; when a server decides team sizes, this is what it sets.
-    static constexpr int kTeamSize = 5;
+    // Soldiers a side puts on the field, the local player included. Twenty-five
+    // a side is a company rather than a squad, and it changes what the arena is:
+    // at five the whole fight was one engagement that everyone was in, and at
+    // twenty-five there are several going on at once and a player picks which
+    // one they're at. That's the trade — no single soldier's death is felt the
+    // way it was, and in exchange a flank is a place you can go and find
+    // somebody rather than a direction nobody was covering. It's a constant
+    // rather than a level property because it's a statement about the game
+    // mode, and there's only one of those so far; when a server decides team
+    // sizes, this is what it sets.
+    //
+    // Two things scale off it and are set to match: the ground a side spawns
+    // across (SpawnAi, which has to hold five times the soldiers without
+    // stacking them) and the per-soldier sight sweep in UpdateUnits, which is
+    // quadratic in the number on the field and is now doing twenty-five times
+    // the work it was.
+    static constexpr int kTeamSize = 25;
 
     // How far a soldier can see is no longer the World's to say: it is
     // ClassDef::sight, read off whoever is standing there, and the reasoning
@@ -698,6 +711,9 @@ private:
     Vector3 EnemySpawn(int team) const;
     // Clamps pos to the arena and pushes it out of solid colliders.
     void ResolveObstacles(Vector3& pos) const;
+    // Writes one attributed line per shot when INFANTRY_SHOT_LOG names a file;
+    // a no-op otherwise. See the definition for what the columns settle.
+    void LogShot(const Vector3& from, int owner, float targetDist) const;
     float Rand(float lo, float hi);
     // Appends to the event list of the Tick in flight, or holds the event for
     // the next one when there's no Tick running. Almost everything here is said

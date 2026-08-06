@@ -51,6 +51,34 @@ namespace Visibility
     {
         const Rect bounds = { -arenaHalf.x, -arenaHalf.y, arenaHalf.x, arenaHalf.y };
 
+        // Walls this eye could actually be stopped by, and no others. What comes
+        // out of the sweep is clamped to `range` at the end, so a rectangle
+        // wholly outside that circle can never be the nearest thing a ray meets
+        // — it would lose to the range every time. Skipping it here is the same
+        // answer arrived at without the work, and the work is the sweep's whole
+        // cost: an unculled rectangle contributes twelve rays to cast and four
+        // edges to test them against, and on a real map most of the rectangles
+        // are nowhere near any one soldier. hardcorps2t is a hundred and
+        // thirty-odd walls across two hundred units, against a sight range in
+        // the thirties — so this is most of them, most of the time.
+        //
+        // Measured by the nearest point of the rectangle to the eye, which is
+        // the eye's own coordinate on each axis clamped into the rectangle's
+        // span. That covers standing inside one, where the distance is zero.
+        //
+        // The one thing it gives up: a corner beyond the range used to get a ray
+        // of its own, which landed on the arc at exactly `range`, and now the
+        // arc is left to the kArcRays samples that were always going to describe
+        // it. That is a difference of well under a hundredth of a unit — the
+        // tolerance the arc is already drawn to — and it is the only difference.
+        const auto inRange = [&](const Rect& r) {
+            const float cx = std::clamp(viewer.x, r.minX, r.maxX);
+            const float cz = std::clamp(viewer.y, r.minZ, r.maxZ);
+            const float dx = cx - viewer.x;
+            const float dz = cz - viewer.y;
+            return dx * dx + dz * dz <= range * range;
+        };
+
         // Three rays per corner: dead-on plus a nudge to either side, so corners
         // produce both the near hit (on the edge) and the far hit (past the
         // corner). Cast off the rectangles rather than off the segments —
@@ -75,7 +103,11 @@ namespace Visibility
             }
         };
         for (const Rect& r : occluders)
-            corners(r);
+            if (inRange(r))
+                corners(r);
+        // The arena's own edge is filed whatever the range: it is what makes
+        // every ray hit something, and a sweep that missed it entirely would
+        // have nothing to report from a viewer standing out in the open.
         corners(bounds);
         std::sort(angles.begin(), angles.end());
 
@@ -151,7 +183,8 @@ namespace Visibility
         };
 
         for (const Rect& r : occluders)
-            fileRect(r);
+            if (inRange(r))
+                fileRect(r);
         fileRect(bounds);
 
         std::vector<XMFLOAT2> poly;

@@ -23,7 +23,21 @@ class Sound
 public:
     // Positional sounds fade linearly to silence at this distance; callers
     // can skip Play3D entirely beyond it.
-    static constexpr float kRange = 45.0f;
+    //
+    // Twenty-six, down from forty-five, and it is the same number the
+    // shortest-sighted soldier sees: you hear as far as a medic looks. What it
+    // replaces had no relation to anything — it was three and a half times what
+    // the camera showed in any direction, so a firefight two full screens away
+    // arrived at full attention with nothing on screen to explain it. That was
+    // survivable at five a side, when the odds of anyone fighting inside a
+    // forty-five unit bubble were low. At twenty-five it is never not true, and
+    // the arena sounded like a battle the player could neither see nor reach.
+    //
+    // It still reaches past the corner of the view (about 24 units at the zoom
+    // the camera opens on), which is the point: a fight about to come around
+    // the wall in front of you is worth hearing before it does. What it no
+    // longer does is report a war being fought somewhere else.
+    static constexpr float kRange = 26.0f;
 
     ~Sound();
 

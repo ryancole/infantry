@@ -2129,10 +2129,36 @@ void Game::Render(Renderer& renderer)
     // Each eye's polygon is kept rather than dropped: the fade along the edge
     // is cut from the same shape, and it can't be drawn until the grass is
     // down, so the alternative is sweeping the arena twice for the same answer.
+    // Only the eyes that can reach the screen are swept. A soldier's mask is
+    // ground they have lit, and ground off the edge of the view is ground
+    // nobody is looking at — the mark it would leave lands on pixels this frame
+    // never rasterizes. So an eye whose whole circle of sight misses the view
+    // is skipped, and skipped all the way: no polygon, so no mask and no edge
+    // band either, since both are cut from the same shape.
+    //
+    // This is what keeps the fog's cost a fact about the view rather than about
+    // the roster. A side is twenty-five soldiers spread over two hundred units
+    // and the camera holds a few dozen of them, so most of a squad is somewhere
+    // else at any moment — and the sweep is the most expensive thing this frame
+    // does per eye. It's the same test the bodies are culled by, given the
+    // eye's reach as its radius: conservative, because a sphere of that radius
+    // contains the flat disc the mask is actually drawn as, so an eye is kept
+    // whenever there is any doubt.
+    //
+    // Deliberately not applied to m_teamEyes itself, which is also what the
+    // radar reads to decide who it may show. That panel's whole job is to
+    // report contacts from across the arena — culling its eyes to the view
+    // would blind it to everything the squad can see and the player can't,
+    // which is the one thing it exists for.
     m_sightPolys.resize(m_teamEyes.size());
     for (size_t i = 0; i < m_teamEyes.size(); ++i)
     {
         const Visibility::Eye& eye = m_teamEyes[i];
+        if (!renderer.IsSphereVisible({ eye.pos.x, kFogHeight, eye.pos.y }, eye.range))
+        {
+            m_sightPolys[i].clear();
+            continue;
+        }
         m_sightPolys[i] = Visibility::ComputePolygon(eye.pos, m_world.Occluders(),
                                                      m_world.ArenaHalf(), eye.range);
         m_fogVerts.clear();

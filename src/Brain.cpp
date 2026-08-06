@@ -16,7 +16,23 @@ namespace
     // distance before it has any idea. It's a trait rather than a fact about
     // the world: a marksman's would be longer, and the body would hand it the
     // same contacts either way.
-    constexpr float kEngageRange = 22.0f;
+    //
+    // Fourteen, down from twenty-two, because the second half of that promise
+    // was not being kept. "Shorter than the player can see" was checked against
+    // the camera's twenty-six units, and twenty-six is the width of the view,
+    // not its reach — half of it, under thirteen units, was what a player could
+    // actually see in any direction. So a rifleman opened fire from most of a
+    // screen outside the frame: it had line of sight, the shot was honest, and
+    // the soldier taking it could not be looked at. Being shot from off the
+    // edge of the picture is indistinguishable from being shot by nothing.
+    //
+    // The camera now opens wider (IsoCamera::m_zoom, thirty-four across, so
+    // about sixteen and a half of ground in the nearest direction) and this
+    // number comes in under that with room to spare. Between them, a rifleman
+    // that fires on the player is a rifleman on the player's screen. It stays
+    // above kPreferredRange below, so there is still a band the soldier closes
+    // through before it settles into circling.
+    constexpr float kEngageRange = 14.0f;
     // Closer than this it stops advancing and starts circling. The whole shape
     // of the behavior is in these two numbers — walk in until here, then orbit
     // — which is why a second brain is a second pair of numbers and a different

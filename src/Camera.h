@@ -47,8 +47,27 @@ private:
     DirectX::SimpleMath::Vector3 m_focus;
     DirectX::SimpleMath::Vector3 m_target;
     float m_yaw = DirectX::XM_PIDIV4;
-    float m_zoom = 26.0f;       // visible world units across the viewport width
-    float m_zoomTarget = 26.0f;
+    // Visible world units across the viewport width. Thirty-four rather than
+    // the twenty-six it opened on for years, and the reason is that the width
+    // was never the number that mattered: under this camera the ground the
+    // screen actually holds is a rectangle of about Z by Z, so what a player
+    // can see in any direction is half of it. At twenty-six that was under
+    // thirteen units, and everything else in the game — how far a soldier
+    // sees, how close one comes before it shoots, how far a shot carries —
+    // was set against numbers two and three times that. The screen was the
+    // smallest range in the game and nothing was measured against it.
+    //
+    // The ceiling on this is the fog: the shortest-sighted classes see 26
+    // units (medic, grenadier), and once the corner of the screen reaches
+    // further than that, a player watches their own sight end in a circle
+    // painted inside the frame instead of on the walls. The corner sits at
+    // about 0.70 * Z, so 26 / 0.70 puts the limit near thirty-seven and this
+    // takes thirty-four, which leaves the shortest sight a couple of units
+    // clear of the corner. Zooming out by hand still passes it — that has
+    // always been true, and kMaxZoom is a player's business — but the view
+    // the game opens on no longer does.
+    float m_zoom = 34.0f;
+    float m_zoomTarget = 34.0f;
     uint32_t m_width = 1280;
     uint32_t m_height = 720;
 };

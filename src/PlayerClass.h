@@ -164,14 +164,25 @@ struct ClassDef
     // what's sourced here; the spread below is ours.
     //
     // Three things bound this column wherever it goes, and they're worth
-    // checking against any new row. Every value stays under earshot
-    // (Sound::kRange, forty-five), so the map you hear is always wider than
-    // the map you see and gunfire out of the dark stays a thing that happens
-    // to you. Every value stays clear of Brain::kEngageRange (twenty-two), or
-    // an NPC would be quietly capped by an eyesight number nothing reports.
-    // And every value stays wider than the screen at the zoom the camera opens
-    // on (twenty-six units across the viewport), so the fog remains a fact
-    // about walls and distance rather than a circle painted around the player.
+    // checking against any new row. All three are distances from a soldier, so
+    // all three are compared against a radius — which is the thing this comment
+    // used to get wrong, and it cost the game a bug in each of the other two.
+    // The camera's zoom is a WIDTH: at the twenty-six it opened on, a player
+    // could see under thirteen units in any direction, and both of the numbers
+    // below had been set as though they could see twenty-six. So gunfire was
+    // audible from three and a half screens away, and riflemen opened up from
+    // most of a screen outside the frame. Both are fixed at their own
+    // definitions; the arithmetic is written out at IsoCamera::m_zoom.
+    //
+    // Every value stays at or above earshot (Sound::kRange, twenty-six), so the
+    // map you hear is never wider than the map you can see into, and a shot you
+    // hear is one you could have seen coming. Every value stays clear of
+    // Brain::kEngageRange (fourteen), or an NPC would be quietly capped by an
+    // eyesight number nothing reports. And every value stays past the corner of
+    // the screen at the zoom the camera opens on (thirty-four across, putting
+    // the corner near twenty-four), so the fog remains a fact about walls and
+    // distance rather than a circle painted around the player — that last one
+    // is what caps the zoom, since the shortest sight here is twenty-six.
     float sight;
     WeaponDef primary;
     Ability::Def ability;
