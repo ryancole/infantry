@@ -4,6 +4,10 @@
 #include <windows.h>
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 
 using namespace DirectX;
 
@@ -24,6 +28,39 @@ namespace
     // the device has stopped consuming buffers at all.
     constexpr int kDrainSteps = 100;
     constexpr DWORD kDrainStepMs = 10;
+
+    // A comma-separated list of sounds to keep silent, from INFANTRY_MUTE.
+    // "all" silences every sample in the bank; "wind" silences the generated
+    // ambience, which is not a sample and answers to nothing else.
+    //
+    // This exists to answer "what am I hearing" by elimination, which is the
+    // only way to answer it when the thing you can hear leaves no other trace.
+    // Naming a sound here stops it at the one place every sound goes out, so
+    // what is left is what remains audible — and turning the whole bank off
+    // while a noise carries on is how you learn the noise was never a sample.
+    bool Muted(const char* name)
+    {
+        static const std::string list = [] {
+            const char* env = std::getenv("INFANTRY_MUTE");
+            return std::string(env ? env : "");
+        }();
+        if (list.empty())
+            return false;
+        // Matched between commas so "fire" can't be found inside another name.
+        for (size_t at = 0; (at = list.find(name, at)) != std::string::npos; at += 1)
+        {
+            const bool startOk = at == 0 || list[at - 1] == ',';
+            const size_t end = at + std::strlen(name);
+            if (startOk && (end == list.size() || list[end] == ','))
+                return true;
+        }
+        return false;
+    }
+
+    bool MutedSample(const std::string& name)
+    {
+        return Muted("all") || Muted(name.c_str());
+    }
 }
 
 Sound::~Sound()
@@ -42,10 +79,14 @@ void Sound::Init()
 
     m_bank = std::make_unique<WaveBank>(m_engine.get(), L"assets/sounds/sounds.xwb");
 
-    m_wind = std::make_unique<DynamicSoundEffectInstance>(
-        m_engine.get(), [this](DynamicSoundEffectInstance* i) { FeedWind(i); }, kWindRate, 1, 16);
-    m_wind->SetVolume(kWindVolume);
-    m_wind->Play();
+    if (!Muted("wind"))
+    {
+        m_wind = std::make_unique<DynamicSoundEffectInstance>(
+            m_engine.get(), [this](DynamicSoundEffectInstance* i) { FeedWind(i); }, kWindRate, 1,
+            16);
+        m_wind->SetVolume(kWindVolume);
+        m_wind->Play();
+    }
 }
 
 // The engine is the last thing to go, and nothing may still be pointing into
@@ -146,14 +187,45 @@ void Sound::SetListener(const XMFLOAT3& pos, const XMFLOAT3& screenUp)
     m_listener.SetOrientation(screenUp, XMFLOAT3{ 0.0f, 1.0f, 0.0f });
 }
 
+// Every sample the game asks for, named and timestamped from launch. Off
+// unless INFANTRY_SOUND_LOG names a file to write.
+//
+// It answers the question you cannot answer by listening: what was that. A
+// sound heard without its cause on screen is one the player has to identify by
+// ear, and a gunshot, a spawn and a grenade bounce are not that easy to tell
+// apart through a speaker. So the log names it, says whether it played at the
+// ear (2D — your own doing) or somewhere in the world (3D — everyone else's),
+// and gives the spot it played at, which places it against the arena. The wind
+// loop is not here: it is a generated voice rather than a sample, it starts at
+// Init and never stops, and it is the one sound that has no event behind it.
+static void LogSound(const char* how, const std::string& name, float x, float z)
+{
+    static const char* const path = std::getenv("INFANTRY_SOUND_LOG");
+    if (!path)
+        return;
+    static std::FILE* f = std::fopen(path, "w");
+    static const ULONGLONG t0 = GetTickCount64();
+    if (!f)
+        return;
+    std::fprintf(f, "%8.2fs  %-2s  %-12s  at (%7.1f,%7.1f)\n",
+                 (GetTickCount64() - t0) / 1000.0, how, name.c_str(), x, z);
+    std::fflush(f);
+}
+
 void Sound::Play(const std::string& name, float volume, float pitch)
 {
+    LogSound("2D", name, 0.0f, 0.0f);
+    if (MutedSample(name))
+        return;
     if (m_bank)
         m_bank->Play(name.c_str(), volume, pitch, 0.0f);
 }
 
 void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch, float volume)
 {
+    LogSound("3D", name, pos.x, pos.z);
+    if (MutedSample(name))
+        return;
     if (!m_bank)
         return;
     auto inst = m_bank->CreateInstance(name.c_str(), SoundEffectInstance_Use3D |

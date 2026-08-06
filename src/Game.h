@@ -251,13 +251,6 @@ private:
                      const Vector3& knock);
     void UpdateCorpses(float dt);
     void RemoveCorpse(size_t index);
-    // Puts a footfall under every soldier who is walking. Worked out here from
-    // the walk the renderer is already drawing rather than reported by the
-    // simulation, for the same reason the blood and the ragdolls are: a stride
-    // is an animation, the server neither has one nor needs one, and a pair of
-    // boots twice a second from fifty soldiers is a lot of wire to spend on
-    // something this side can read straight off the phase it's about to draw.
-    void UpdateFootsteps();
     // Positional one-shot SFX: panned and attenuated relative to the player.
     // `volume` scales the clip before that attenuation, for sounds whose
     // loudness at the source is not fixed.
@@ -505,12 +498,6 @@ private:
 
     std::vector<Particle> m_particles;
     std::vector<Corpse> m_corpses; // oldest first, so the cap sheds the stalest body
-    // Where in its stride each soldier was when it was last looked at, by unit
-    // id — the previous edge a footfall is spotted against. It can't be read
-    // off Unit::prevWalkPhase instead: that pair is one tick apart, and a
-    // display running faster than the wire would see the same crossing in it
-    // several frames running and stamp several times for one step.
-    std::unordered_map<int, float> m_stepPhase;
     std::vector<Vertex> m_fogVerts; // reused per frame
     // What each eye can see, as the polygon the sweep returned. Rebuilt every
     // frame and held only for the length of one: the mask is cut from it on the
