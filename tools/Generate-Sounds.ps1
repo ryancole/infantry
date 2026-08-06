@@ -188,25 +188,82 @@ for ($i = 0; $i -lt $n; $i++) {
 }
 Write-Wav (Join-Path $OutDir "heal.wav") $heal
 
-# step: one boot going down on dirt. Grit off the top of a short low thump, all
-# of it over in well under a tenth of a second — a footfall is an event, not a
-# noise. The amplitude is baked in low (the way the thud's is) and for a harder
-# reason: every soldier on the field plays this twice a stride, so it has to be
-# the floor of the mix rather than anything that competes for the middle of it.
-# What varies per step is left to the game — a little detune and the volume of
-# the walk it belongs to — because two identical footfalls in a row are what
-# makes a stride sound like a machine.
-$n = [int](0.075 * $SampleRate)
+# step: a boot settling into grass. Every soldier on the field plays this twice
+# a stride, so it has to be the floor of the mix rather than anything that
+# competes for the middle of it. What varies per step is left to the game — a
+# little detune and the volume of the walk it belongs to — because two identical
+# footfalls in a row are what makes a stride sound like a machine.
+#
+# This used to be built the way `fire` is built, and that was the whole problem:
+# low-passed noise over a low sine, differing from the rifle only in being
+# shorter and quieter. Two sounds made from one recipe are one sound, and a
+# quiet fast gunshot is still a gunshot — with the runtime's detune on top,
+# a company crossing open ground read as a firefight.
+#
+# So none of the three things that made it a gunshot survive here.
+#
+# No tone. The sine was the give-away: a pitched thump is a thing striking a
+# thing, and it is what the ear files under "shot". What weight there is comes
+# from heavily low-passed noise instead, which has the body without the ring.
+#
+# High rather than low. Grass is air and blade edges — the hiss above a couple
+# of kHz, not the rumble below. It's taken as the noise minus a slow follower,
+# which leaves what the follower can't keep up with.
+#
+# And no impulse. A sample that starts at full amplitude on its first frame is a
+# click, however soft the rest of it is. This is a scatter of overlapping little
+# brushes at random offsets, so it arrives as several blades giving way rather
+# than one impact, and an attack ramp covers the very first frames so the onset
+# can't step from silence.
+#
+# Its own RNG, so the shared stream is untouched and every other wav in here
+# stays byte-identical; the shared one is advanced below by exactly what the old
+# implementation drew, which is what keeps that true.
+$stepRng = [Random]::new(6421)
+$n = [int](0.11 * $SampleRate)
 $step = [float[]]::new($n)
-$lp = 0.0
+$follow = 0.0
+$body = 0.0
+
+# The brushes. Spread over the first third of the sample so the rustle builds
+# and tails off instead of landing all at once.
+$grains = 7
+$grainAt = [double[]]::new($grains)
+$grainAmp = [double[]]::new($grains)
+for ($g = 0; $g -lt $grains; $g++) {
+    $grainAt[$g] = $stepRng.NextDouble() * 0.038
+    $grainAmp[$g] = 0.35 + 0.65 * $stepRng.NextDouble()
+}
+
 for ($i = 0; $i -lt $n; $i++) {
     $t = $i / $SampleRate
-    $lp = 0.62 * $lp + 0.38 * (2.0 * $rng.NextDouble() - 1.0)
-    $grit = $lp * [Math]::Exp(-$t * 75.0)
-    $weight = 0.7 * [Math]::Sin(2.0 * [Math]::PI * 120.0 * $t) * [Math]::Exp(-$t * 55.0)
-    $step[$i] = 0.22 * ($grit + $weight)
+    $white = 2.0 * $stepRng.NextDouble() - 1.0
+
+    # Everything the slow follower can't track: the airy top of the rustle.
+    $follow = 0.74 * $follow + 0.26 * $white
+    $hiss = $white - $follow
+
+    # What the boot itself weighs, as noise rather than a note.
+    $body = 0.90 * $body + 0.10 * $white
+    $weight = $body * [Math]::Exp(-$t * 52.0)
+
+    # The brushes, each decaying on its own clock from wherever it started.
+    $rustle = 0.0
+    for ($g = 0; $g -lt $grains; $g++) {
+        $d = $t - $grainAt[$g]
+        if ($d -ge 0.0) { $rustle += $grainAmp[$g] * [Math]::Exp(-$d * 78.0) }
+    }
+    $rustle /= $grains
+
+    $onset = 1.0 - [Math]::Exp(-$t * 320.0)
+    $step[$i] = 0.20 * $onset * (1.7 * $hiss * $rustle + 0.30 * $weight)
 }
 Write-Wav (Join-Path $OutDir "step.wav") $step
+
+# The draws the old step took off the shared stream, so everything synthesized
+# after this point is bit-for-bit what it was before the rewrite. Remove this
+# and the wavs below change for no reason anybody reading the diff could guess.
+for ($i = 0; $i -lt [int](0.075 * $SampleRate); $i++) { [void]$rng.NextDouble() }
 
 # bodyfall: a soldier arriving on the ground. Deeper and slacker than the thud
 # a round makes stopping in dirt, with the rustle of what they were wearing over

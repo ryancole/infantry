@@ -554,10 +554,6 @@ void Game::ClearBattlefield()
     m_particles.clear();
     m_splatVerts.clear();
     m_meleeFlash = 0.0f;
-    // Nobody on the field means nobody mid-stride: the next match's soldiers
-    // are heard from wherever their legs start, not from where the last
-    // match's happened to leave off.
-    m_stepPhase.clear();
 }
 
 void Game::NetPump(float dt, IsoCamera& camera)
@@ -1021,9 +1017,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
         ProcessEvents();
         UpdateParticles(dt);
         UpdateCorpses(dt);
-        // The fight carries on without us: from where the body fell, the rest
-        // of it is still walking around and still worth hearing.
-        UpdateFootsteps();
         return;
     }
 
@@ -1165,9 +1158,6 @@ void Game::Update(float dt, const Input& input, IsoCamera& camera)
     // body lies around is a fact about the picture, not the fight.
     UpdateParticles(dt);
     UpdateCorpses(dt);
-    // Footsteps are read off the same walk the renderer is about to draw, so
-    // they belong next to the rest of the presentation and not to the tick.
-    UpdateFootsteps();
 
     // Death is noticed by absence. Whatever emptied the local soldier's
     // health, the server has already reaped them on the same terms as anyone
@@ -1668,60 +1658,16 @@ void Game::UpdateCorpses(float dt)
     }
 }
 
-void Game::UpdateFootsteps()
-{
-    // Soldier::Pose swings the legs on sin(walkPhase) with the two of them half
-    // a cycle apart, so a foot is at the front of its stride — down, about to
-    // take the weight — wherever that sine peaks: pi/2 for one leg and pi/2 + pi
-    // for the other. One footfall every half turn of the phase, which is what a
-    // pair of legs does.
-    constexpr float kPlant = XM_PIDIV2;
-    // Below this much of the walk pose there's no weight going through the feet
-    // worth hearing. It's the blend rather than the speed because the blend is
-    // what the legs are actually doing: a soldier who let go of the keys is
-    // still walking through their coast, and one who never really started
-    // shouldn't stamp.
-    constexpr float kQuietBlend = 0.15f;
-
-    for (const Unit& unit : m_world.Units())
-    {
-        // The local soldier's legs run on the prediction's clock, like the rest
-        // of them. Nowhere else would a snapshot of lag be as noticeable as in
-        // the sound of your own boots.
-        const bool predicted = m_hasPredicted && unit.controller == Unit::Controller::Local;
-        const Unit& src = predicted ? m_predicted : unit;
-
-        auto [it, fresh] = m_stepPhase.try_emplace(unit.id, src.walkPhase);
-        const float was = it->second;
-        it->second = src.walkPhase;
-        // A soldier we've only just laid eyes on has no stride behind them to
-        // have crossed anything with.
-        if (fresh || src.moveBlend <= kQuietBlend)
-            continue;
-        // Whether a plant was passed, not how many of them: a frame that
-        // swallowed two — a stall, a window coming back — is one footfall and
-        // not a burst.
-        if (std::floor((was - kPlant) / XM_PI) == std::floor((src.walkPhase - kPlant) / XM_PI))
-            continue;
-
-        // Detuned per step, because what gives a stride away as a recording is
-        // two identical footfalls in a row. The walk's own blend is the volume,
-        // so a soldier easing off doesn't stop mid-stride — they get quieter
-        // and then stop, which is the shape of somebody slowing down.
-        const float pitch = Rand(-0.16f, 0.16f);
-        if (unit.controller == Unit::Controller::Local)
-            m_sound.Play("step", src.moveBlend, pitch);
-        else
-            PlaySoundAt("step", src.pos, pitch, src.moveBlend);
-    }
-
-    // Strides nobody is walking any more: the dead, the departed, the far side
-    // of a rematch. Nothing goes wrong if they're kept — unit ids never come
-    // round again — but the table would grow for as long as the match does, and
-    // it's a table of who is on the field.
-    std::erase_if(m_stepPhase,
-                  [this](const auto& e) { return m_world.UnitById(e.first) == nullptr; });
-}
+// Footsteps used to be read off the walk here and played per stride plant. They
+// are gone for now, and the reason is worth keeping: at twenty-five a side a
+// company crossing open ground is around thirty footfalls a second inside one
+// earshot, which does not read as walking. It reads as a firefight — the sample
+// was built on the same recipe as the rifle, and thirty a second of anything
+// percussive is a texture rather than an event. Shortening its carry and
+// rebuilding the sample as a grass rustle both helped and neither was enough.
+// What it wants is a budget — a cap on how many may sound at once, nearest
+// first — and that is a bigger idea than a constant. See git for the version
+// that was here; step.wav and its synthesis are still in the tree, waiting.
 
 void Game::RemoveCorpse(size_t index)
 {
@@ -2129,10 +2075,36 @@ void Game::Render(Renderer& renderer)
     // Each eye's polygon is kept rather than dropped: the fade along the edge
     // is cut from the same shape, and it can't be drawn until the grass is
     // down, so the alternative is sweeping the arena twice for the same answer.
+    // Only the eyes that can reach the screen are swept. A soldier's mask is
+    // ground they have lit, and ground off the edge of the view is ground
+    // nobody is looking at — the mark it would leave lands on pixels this frame
+    // never rasterizes. So an eye whose whole circle of sight misses the view
+    // is skipped, and skipped all the way: no polygon, so no mask and no edge
+    // band either, since both are cut from the same shape.
+    //
+    // This is what keeps the fog's cost a fact about the view rather than about
+    // the roster. A side is twenty-five soldiers spread over two hundred units
+    // and the camera holds a few dozen of them, so most of a squad is somewhere
+    // else at any moment — and the sweep is the most expensive thing this frame
+    // does per eye. It's the same test the bodies are culled by, given the
+    // eye's reach as its radius: conservative, because a sphere of that radius
+    // contains the flat disc the mask is actually drawn as, so an eye is kept
+    // whenever there is any doubt.
+    //
+    // Deliberately not applied to m_teamEyes itself, which is also what the
+    // radar reads to decide who it may show. That panel's whole job is to
+    // report contacts from across the arena — culling its eyes to the view
+    // would blind it to everything the squad can see and the player can't,
+    // which is the one thing it exists for.
     m_sightPolys.resize(m_teamEyes.size());
     for (size_t i = 0; i < m_teamEyes.size(); ++i)
     {
         const Visibility::Eye& eye = m_teamEyes[i];
+        if (!renderer.IsSphereVisible({ eye.pos.x, kFogHeight, eye.pos.y }, eye.range))
+        {
+            m_sightPolys[i].clear();
+            continue;
+        }
         m_sightPolys[i] = Visibility::ComputePolygon(eye.pos, m_world.Occluders(),
                                                      m_world.ArenaHalf(), eye.range);
         m_fogVerts.clear();

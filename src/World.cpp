@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace DirectX;
 using namespace DirectX::SimpleMath;
@@ -471,6 +473,15 @@ void World::SpawnAi(int slot)
     // so a squad arriving at once doesn't stack on one tile. A squadmate turns
     // up where the player turns up and a hostile across the arena, because the
     // spawn a soldier comes from is a fact about the side they're on.
+    //
+    // Four units either way rather than two, which is the room kTeamSize's
+    // twenty-five need: four times the ground for five times the soldiers, so
+    // it is a little tighter than five a side was rather than five times worse,
+    // and a side coming up to strength at kickoff spreads instead of arriving as
+    // one heap the separation pass then has to shove apart. Not wider than that,
+    // because it stays inside kSpawnArea — a corner of this box is 5.7 units out
+    // against that zone's 8 — and a reinforcement has to land somewhere it could
+    // change class from, same as it always could.
     Unit unit = {};
     unit.id = m_nextUnitId++;
     unit.cls = &kClassDefs[m_nextAiClass[team]];
@@ -480,8 +491,8 @@ void World::SpawnAi(int slot)
     unit.team = team;
     unit.slot = slot;
     unit.pos = m_teamSpawns[team];
-    unit.pos.x += Rand(-2.0f, 2.0f);
-    unit.pos.z += Rand(-2.0f, 2.0f);
+    unit.pos.x += Rand(-4.0f, 4.0f);
+    unit.pos.z += Rand(-4.0f, 4.0f);
     ResolveObstacles(unit.pos);
     unit.aimDir = { -1.0f, 0.0f, 0.0f };
     unit.hp = kMaxHealth;
@@ -965,9 +976,81 @@ Ability::Scene World::AbilityScene(Unit& user)
     return { { user.pos, &user.hp }, user.aimDir, kMaxHealth, &m_abilityAllies };
 }
 
+// Every shot in the game, attributed. Off unless INFANTRY_SHOT_LOG names a file
+// to write, so it costs a null check in normal play and nothing else.
+//
+// What it exists to answer is "who fired that, and at what" — the question you
+// cannot ask from inside the game, because the honest answer to a shot you can
+// neither see nor place is indistinguishable from a bug. So it writes the three
+// things that settle it: where the shooter was standing relative to its own
+// spawn, what the nearest enemy was and how far, and whether that enemy was
+// actually in line of sight. A shot logged from inside a spawn area with no
+// hostile within engage range is a real fault; anything else is a soldier doing
+// its job somewhere the player could not watch it.
+void World::LogShot(const Vector3& from, int owner, float targetDist) const
+{
+    static const char* const path = std::getenv("INFANTRY_SHOT_LOG");
+    if (!path)
+        return;
+    static std::FILE* f = std::fopen(path, "w");
+    if (!f)
+        return;
+
+    const int team = SlotTeam(owner);
+    const Unit* shooter = nullptr;
+    for (const Unit& u : m_units)
+        if (u.slot == owner)
+            shooter = &u;
+
+    // How far the shooter is standing from the spawn it came from, so a shot
+    // fired out of a base is obvious on the page rather than something you work
+    // out from coordinates.
+    float fromSpawn = -1.0f;
+    if (team >= 0 && team < static_cast<int>(m_teamSpawns.size()))
+        fromSpawn = Vector2(from.x - m_teamSpawns[team].x, from.z - m_teamSpawns[team].z).Length();
+
+    // The nearest living hostile, and whether this shooter could actually see
+    // it — the same sight test the brain was given when it decided to fire.
+    const Unit* target = nullptr;
+    float best = 0.0f;
+    for (const Unit& o : m_units)
+    {
+        if (o.hp <= 0.0f || o.team == team)
+            continue;
+        const float d = Vector2(o.pos.x - from.x, o.pos.z - from.z).Length();
+        if (!target || d < best)
+        {
+            target = &o;
+            best = d;
+        }
+    }
+    const bool los =
+        target && Visibility::IsPointVisible({ from.x, from.z }, { target->pos.x, target->pos.z },
+                                             m_occluders);
+
+    const char* holder = "?";
+    if (owner >= 0 && owner < static_cast<int>(m_roster.size()))
+        holder = m_roster[owner].held == Slot::Held::Ai      ? "AI"
+                 : m_roster[owner].held == Slot::Held::Human ? "HUMAN"
+                                                             : "LEFT";
+
+    std::fprintf(f,
+                 "t+%6.1fs %-5s team %d slot %3d %-9s at (%7.1f,%6.1f) spawn%+7.1f%s | "
+                 "aimed %5.1f | nearest enemy %s los %s%s\n",
+                 kMatchLength - m_matchTime, holder, team, owner,
+                 shooter && shooter->cls ? shooter->cls->name : "?", from.x, from.z, fromSpawn,
+                 fromSpawn >= 0.0f && fromSpawn <= kSpawnArea ? " <<IN-SPAWN" : "", targetDist,
+                 target ? std::to_string(best).substr(0, 5).c_str() : "NONE ",
+                 target ? (los ? "YES" : "NO ") : "-  ",
+                 target && best > 14.0f ? "  <<BEYOND-ENGAGE" : "");
+    std::fflush(f);
+}
+
 void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector3& dir, int owner,
                       float targetDist)
 {
+    LogShot(from, owner, targetDist);
+
     Vector3 pos = from + dir * kMuzzleOffset;
     pos.y = kMuzzleHeight;
 
@@ -1143,10 +1226,13 @@ void World::UpdateUnits(float dt)
         // shows up as contacts it can report rather than as shots it takes.
         //
         // It runs a sight test per candidate, which makes this quadratic in the
-        // number of soldiers on the field; at two squads of five that's a
-        // hundred segment tests a tick, which is cheaper than the bookkeeping
-        // to avoid it. The number to watch it against is kTeamSize, and it will
-        // want revisiting long before this arena holds a proper Infantry zone.
+        // number of soldiers on the field. At two squads of five that was a
+        // hundred segment tests a tick and not worth the bookkeeping to avoid;
+        // at twenty-five a side it's two and a half thousand, which is the same
+        // arithmetic arriving at a different answer. It still fits in a tick,
+        // and it is now the largest single thing the simulation does — the next
+        // team size that gets asked for is the one that needs a broadphase here
+        // rather than a loop over everybody.
         m_contacts.clear();
         const Vector2 unitXZ = { unit.pos.x, unit.pos.z };
         const auto sight = [&](const Vector3& pos) {

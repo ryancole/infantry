@@ -93,10 +93,14 @@ namespace
     constexpr float kRadarMaxHeight = 264.0f;
     // A soldier is 0.8 units across and would be a single pixel drawn to
     // scale, so the blips are exaggerated to about six units wide. That's the
-    // trade every radar makes: positions stay true, sizes stop being. Ten of
-    // them on a panel this size is a readable scatter rather than a clump.
-    constexpr float kBlipRadius = 5.0f;
-    constexpr float kBlipCore = 2.4f; // the class mark inside it
+    // trade every radar makes: positions stay true, sizes stop being. At five a
+    // side ten of them were a readable scatter; at twenty-five they're smaller,
+    // because fifty of the old size is a panel with a colored smear at each end
+    // of it and no positions left in the middle. Four units across is still
+    // several times life size — a body is still findable — and the exaggeration
+    // is now only as much as the panel can carry.
+    constexpr float kBlipRadius = 3.4f;
+    constexpr float kBlipCore = 1.6f; // the class mark inside it, at the same share of a smaller dot
     constexpr float kBlipArrow = 10.0f; // how far the player's heading reaches
     constexpr XMFLOAT4 kRadarField = { 0.00f, 0.00f, 0.00f, 0.30f };
     // The rock the middle is navigated around, in the slate the arena floor is
@@ -822,12 +826,13 @@ void Hud::Render(Renderer& renderer, const State& st)
     // --- Roster ---
     //
     // Top right: the match clock, then two rows, your side over theirs, each a
-    // soldier icon in that side's color, how many of it are standing, a pip per
-    // slot on the roster, and what that side has killed. The pips are what make
-    // the strength readable without reading — five lit is a squad, two lit and
-    // three dark is a squad in trouble — and they're the same pips the magazine
-    // and the blade already use, because "how many of a fixed number are left"
-    // is the same question in all three places.
+    // soldier icon in that side's color, how many of it are standing, a strip
+    // for how much of the side that is, and what that side has killed. The strip
+    // is what makes the strength readable without reading — a side down to a
+    // third is a side in trouble, and that lands before the number beside it has
+    // been read — and it's the same strip the magazine and the blade already
+    // draw, pips or bar by the same rule, because "how many of a fixed number
+    // are left" is the same question in all three places.
     //
     // The clock and the kills are in here rather than in a panel of their own
     // because they're the same glance as the strength: who is winning, by how
@@ -879,9 +884,17 @@ void Hud::Render(Renderer& renderer, const State& st)
     const float clockSize = kRosterClockSize * s;
     const float clockW = renderer.MeasureScreenText(clockText, clockSize);
 
-    const bool drawPips = st.teamSize > 0 && st.teamSize <= kMaxPips;
+    // A side's strength, drawn the way the magazine already decides between its
+    // two shapes: countable numbers get a pip each, and above that it's one
+    // continuous bar. Twenty-five pips in this panel's width would be a bar with
+    // twenty-four gaps chewed out of it, and reading "nineteen up" off it would
+    // mean counting — which is the one thing the strip exists to save. The count
+    // beside it is the exact figure either way; the bar is only there to be read
+    // without reading.
+    const bool drawStrength = st.teamSize > 0;
+    const bool drawPips = drawStrength && st.teamSize <= kMaxPips;
     const float rosterContentW = rosterIcon + rosterGap + countW +
-                                 (drawPips ? rosterGap + pipsW : 0.0f) + rosterGap + scoreW;
+                                 (drawStrength ? rosterGap + pipsW : 0.0f) + rosterGap + scoreW;
     // The clock is centered over the rows and can't be allowed to spill out of
     // the panel it's centered in, however wide the digits are.
     const float rosterW = std::max(rosterContentW, clockW) + pad * 2.0f;
@@ -937,14 +950,31 @@ void Hud::Render(Renderer& renderer, const State& st)
             rosterX + rosterW - pad - renderer.MeasureScreenText(scores[i], rosterScore),
             rowTop + (rowH - rosterScore) * 0.5f, rosterScore, side.color);
 
-        if (!drawPips)
+        if (!drawStrength)
             continue;
 
-        const float pipW = (pipsW - kPipGap * s * (st.teamSize - 1)) / st.teamSize;
-        const float pipY = rowTop + (rowH - barH) * 0.5f;
-        for (int p = 0; p < st.teamSize; ++p)
-            AppendRoundRect(tris, rx + p * (pipW + kPipGap * s), pipY, pipW, barH, barH * 0.35f,
-                            p < side.up ? side.color : kTrack);
+        const float barY = rowTop + (rowH - barH) * 0.5f;
+        if (drawPips)
+        {
+            const float pipW = (pipsW - kPipGap * s * (st.teamSize - 1)) / st.teamSize;
+            for (int p = 0; p < st.teamSize; ++p)
+                AppendRoundRect(tris, rx + p * (pipW + kPipGap * s), barY, pipW, barH,
+                                barH * 0.35f, p < side.up ? side.color : kTrack);
+            continue;
+        }
+
+        // The track first and the fill over it, so a side ground down reads as
+        // the room it has lost rather than as a shorter bar with nothing to
+        // measure it against. The fill is clamped: the standing count comes off
+        // the World and the team size off a constant, and a bar that ran past
+        // its own track if those two ever disagreed would be the wrong way to
+        // find that out.
+        const float fill =
+            std::clamp(static_cast<float>(side.up) / static_cast<float>(st.teamSize), 0.0f, 1.0f);
+        AppendRoundRect(tris, rx, barY, pipsW, barH, barH * 0.35f, kTrack);
+        if (fill > 0.0f)
+            AppendRoundRect(tris, rx, barY, std::max(pipsW * fill, barH), barH, barH * 0.35f,
+                            side.color);
     }
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
@@ -1297,8 +1327,9 @@ void Hud::RenderRadar(Renderer& renderer, const Radar& radar)
         // because which side a soldier is on is the only thing that decides
         // whether to shoot, and the class mark on top of it. Lifted toward
         // white on the way in for the same reason the roster's icons are —
-        // armor is chosen to hold up at arena distance, and this is a ten-pixel
-        // dot on a near-black panel.
+        // armor is chosen to hold up at arena distance, and this is a seven-pixel
+        // dot on a near-black panel — and the smaller it got, the more of the
+        // lift it needs.
         AppendClippedDisc(tris, cx, cy, blipR, fieldX, fieldY, fieldRight, fieldBottom,
                           Lift(blip.team, kSideLift));
         AppendClippedDisc(tris, cx, cy, coreR, fieldX, fieldY, fieldRight, fieldBottom,
