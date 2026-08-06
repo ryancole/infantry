@@ -252,11 +252,22 @@ private:
     // Rebuilds m_teamEyes for the frame about to be drawn.
     void UpdateTeamEyes();
     // One eye's share of the fog: the ground it can see, as a fan of triangles
-    // back to it. Marked rather than painted — see Renderer::MarkSeen.
-    void AppendSight(const Visibility::Eye& eye, std::vector<Vertex>& out) const;
+    // back to it. Marked rather than painted — see Renderer::MarkSeen. The
+    // polygon is passed in rather than computed here because the fade below is
+    // cut from the same one, and sweeping the arena twice for it would be the
+    // most expensive thing this class does per frame.
+    void AppendSight(const std::vector<DirectX::XMFLOAT2>& poly, const Visibility::Eye& eye,
+                     std::vector<Vertex>& out) const;
     // The dark sheet that follows the marks, covering everything nobody on the
     // player's side can see.
     void AppendFogSheet(std::vector<Vertex>& out) const;
+    // The share of full darkness the ground at `p` should be carrying, and one
+    // eye's band of the geometry that carries it. Together they are the soft
+    // edge on the fog: see Renderer::DrawFogEdge, and the definitions, for why
+    // the fade is a question about the ground rather than about an eye.
+    float FogEdgeFade(const DirectX::XMFLOAT2& p) const;
+    void AppendFogEdge(const std::vector<DirectX::XMFLOAT2>& poly, const Visibility::Eye& eye,
+                       std::vector<Vertex>& out) const;
     // Puts the name of whoever holds this soldier's roster row under them, at
     // `pos` — the same blended position the body was just drawn at. Every
     // soldier on the field has one; nothing about the label says whether a
@@ -461,6 +472,11 @@ private:
     std::vector<Particle> m_particles;
     std::vector<Corpse> m_corpses; // oldest first, so the cap sheds the stalest body
     std::vector<Vertex> m_fogVerts; // reused per frame
+    // What each eye can see, as the polygon the sweep returned. Rebuilt every
+    // frame and held only for the length of one: the mask is cut from it on the
+    // way past, and the fade along its edge several draws later.
+    std::vector<std::vector<DirectX::XMFLOAT2>> m_sightPolys;
+    std::vector<Vertex> m_edgeVerts; // the whole squad's fade, reused per frame
     std::vector<Prop> m_props;
     std::unordered_map<std::string, std::unique_ptr<Model>> m_models;
     // The floor and the grass on it, built once from the level and never

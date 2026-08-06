@@ -26,13 +26,13 @@
 //   turf   — flat at y = 0, opaque, laid down with the rest of the scene. It
 //            writes depth, so everything above it sorts against it, and the
 //            fog of war dims it exactly the way it dimmed the grid.
-//   blades — a few hundredths of a unit to a third of one tall, and therefore
-//            standing *above* the fog sheet's plane. Drawn flat with the turf
-//            they would punch straight through the darkness and speckle the
-//            unseen half of the map with lit green, so they go down after the
-//            fog instead, through Renderer::DrawTrianglesSeen — grass grows
-//            only on ground the player's side can actually see, which is the
-//            same rule every other visible thing in the arena already obeys.
+//   blades — a third of a unit tall, and therefore standing *above* the fog
+//            sheet's plane. Drawn with the turf they would punch straight
+//            through the darkness and speckle the unseen half of the map with
+//            lit green, so they go down after the fog instead, through
+//            Renderer::DrawGroundDetail, which dims them by hand to whatever
+//            the sheet leaves the floor. The grass under the fog is as dark as
+//            the ground it grows in and no darker.
 namespace Ground
 {
     // One square of ground: its two layers of geometry, and the sphere the
@@ -67,6 +67,12 @@ namespace Ground
     // and batching what survives through `scratch` (the caller's reusable
     // buffer, cleared on entry and left empty). Call DrawTurf with the opaque
     // scene and DrawGrass after the fog of war has been laid down.
+    //
+    // `unseenTint` is how much of itself the fog leaves the ground — one minus
+    // the sheet's alpha — and it is passed in rather than kept here because
+    // the fog's darkness is the Game's number: the two have to agree, and the
+    // way to make them agree is to have only one of them.
     void DrawTurf(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch);
-    void DrawGrass(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch);
+    void DrawGrass(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch,
+                   float unseenTint);
 }

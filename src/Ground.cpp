@@ -183,10 +183,11 @@ namespace
 
     // Culls the field against the viewport and hands what survives to the
     // renderer in as few batches as the vertex cap allows. `grass` picks the
-    // layer and with it the pass: turf is ordinary opaque geometry, blades are
-    // drawn only where the fog's mark says the player's side can see.
+    // layer and with it the pass: turf is ordinary opaque geometry laid down
+    // with the scene, blades are ground detail the fog has to be applied to by
+    // hand (see Ground.h).
     void DrawChunks(Renderer& renderer, const Ground::Field& field, std::vector<Vertex>& scratch,
-                    bool grass)
+                    bool grass, float unseenTint)
     {
         const XMMATRIX identity = XMMatrixIdentity();
         const auto flush = [&] {
@@ -194,7 +195,7 @@ namespace
                 return;
             const auto count = static_cast<uint32_t>(scratch.size());
             if (grass)
-                renderer.DrawTrianglesSeen(scratch.data(), count, identity);
+                renderer.DrawGroundDetail(scratch.data(), count, identity, unseenTint);
             else
                 renderer.DrawTriangles(scratch.data(), count, identity);
             scratch.clear();
@@ -346,10 +347,11 @@ Ground::Field Ground::Build(const XMFLOAT2& arenaHalf, const std::vector<Visibil
 
 void Ground::DrawTurf(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch)
 {
-    DrawChunks(renderer, field, scratch, false);
+    DrawChunks(renderer, field, scratch, false, 1.0f);
 }
 
-void Ground::DrawGrass(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch)
+void Ground::DrawGrass(Renderer& renderer, const Field& field, std::vector<Vertex>& scratch,
+                       float unseenTint)
 {
-    DrawChunks(renderer, field, scratch, true);
+    DrawChunks(renderer, field, scratch, true, unseenTint);
 }

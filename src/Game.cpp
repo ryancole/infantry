@@ -24,6 +24,20 @@ namespace
 
     constexpr float kFogHeight = 0.02f; // just above the turf, under the grass
     constexpr float kFogFar = 6.0f;     // shadow reach, in arena-half units
+    // How far in from the far edge of an eye's reach the ground starts going
+    // dark, as a share of that reach: sight ends in a fade rather than on a
+    // line. A share rather than a fixed distance, so a sniper's edge is drawn
+    // wider than a medic's for the same reason the arc it runs along is
+    // longer — it is the same edge, seen from further back.
+    //
+    // Only the arc gets it. Where a wall ended the sight instead, the boundary
+    // runs away from the eye rather than across it, and a shadow's edge should
+    // be as sharp as the thing casting it.
+    constexpr float kFogFeather = 0.12f;
+    // The band rides above the grass (which stands to 0.42) and below anything
+    // tall enough to punch through the fog on purpose, so the blades fade with
+    // the ground they're in instead of staying lit on darkening earth.
+    constexpr float kFogEdgeHeight = 0.45f;
 
     // Bounding sphere used to skip soldiers that fall outside the viewport.
     // Generous on purpose: it has to cover the model at full stride, and
@@ -152,7 +166,15 @@ namespace
     // stayed in one place.
     constexpr XMFLOAT4 kBloodColor = { 0.62f, 0.06f, 0.07f, 1.0f };
     constexpr XMFLOAT4 kSplatColor = { 0.30f, 0.03f, 0.04f, 0.85f };
-    constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.85f };
+    // The fog's darkness. It hides nothing on its own — a soldier, a shot, a
+    // corpse out of sight is culled outright and never submitted, and the tall
+    // landmarks (rock, trees) stand above the sheet and stay lit — so what this
+    // number decides is only how much of the terrain reads through it. At 0.85
+    // the ground under it was 15% of itself, which was fine when that ground
+    // was a grid and is not now that it's a field: zoomed out to the whole map,
+    // the fought-over four fifths of the arena went black. Blending is
+    // premultiplied, so the ground survives at (1 - alpha).
+    constexpr XMFLOAT4 kFogColor = { 0.01f, 0.02f, 0.04f, 0.62f };
     constexpr XMFLOAT4 kHudColor = { 0.85f, 0.90f, 0.95f, 1.0f };
     constexpr XMFLOAT4 kHudHintColor = { 0.45f, 0.52f, 0.62f, 1.0f };
     // A player's name, under the boots of the soldier they're driving. Green
@@ -1615,10 +1637,9 @@ void Game::UpdateTeamEyes()
 // gaps: darkness doesn't union. Drawn per soldier it would double up wherever
 // two of them see the same ground, and it would cover ground one of them sees
 // perfectly well.
-void Game::AppendSight(const Visibility::Eye& eye, std::vector<Vertex>& out) const
+void Game::AppendSight(const std::vector<XMFLOAT2>& poly, const Visibility::Eye& eye,
+                       std::vector<Vertex>& out) const
 {
-    const std::vector<XMFLOAT2> poly =
-        Visibility::ComputePolygon(eye.pos, m_world.Occluders(), m_world.ArenaHalf(), eye.range);
     if (poly.size() < 3)
         return;
 
@@ -1630,6 +1651,85 @@ void Game::AppendSight(const Visibility::Eye& eye, std::vector<Vertex>& out) con
         out.push_back(center);
         out.push_back({ XMFLOAT3{ a.x, kFogHeight, a.y }, kFogColor });
         out.push_back({ XMFLOAT3{ b.x, kFogHeight, b.y }, kFogColor });
+    }
+}
+
+// How much of the fog's full darkness belongs at a point on the ground: none
+// at kFogFeather of the way in from the edge of somebody's reach, all of it at
+// the edge itself.
+//
+// The whole squad is asked, not the eye whose band this is, and that is what
+// makes the bands agree with each other. They overlap wherever two soldiers'
+// ranges do, and only one of them is allowed to paint each pixel (see
+// Renderer::DrawFogEdge) — so the answer has to be a fact about the ground
+// rather than about who is looking at it, or which band got there first would
+// be visible as a seam. Distance over reach rather than distance: a sniper
+// standing next to a medic should lift the fade, not have its own shorter one
+// argue with theirs.
+float Game::FogEdgeFade(const XMFLOAT2& p) const
+{
+    float nearest = std::numeric_limits<float>::max();
+    for (const Visibility::Eye& eye : m_teamEyes)
+    {
+        const float dx = p.x - eye.pos.x;
+        const float dz = p.y - eye.pos.y;
+        nearest = std::min(nearest, std::sqrt(dx * dx + dz * dz) / eye.range);
+    }
+    return std::clamp((nearest - (1.0f - kFogFeather)) / kFogFeather, 0.0f, 1.0f);
+}
+
+// One eye's share of that fade: a band inside the boundary of the same polygon
+// the mask was cut from, running from nothing at kFogFeather in to the fog's
+// full darkness at the edge. Following the polygon rather than drawing a plain
+// ring is what keeps a wall's shadow sharp for free — the inner edge is the
+// outer one pulled toward the eye, so along a boundary that already runs away
+// from the eye the band has no width at all, and only the arc gets one.
+//
+// Which is also why most of the polygon is skipped. On a map with this many
+// walls the great majority of it is wall, and a band of nothing is still
+// thousands of vertices to build and submit.
+void Game::AppendFogEdge(const std::vector<XMFLOAT2>& poly, const Visibility::Eye& eye,
+                         std::vector<Vertex>& out) const
+{
+    if (poly.size() < 3)
+        return;
+
+    const float inner = 1.0f - kFogFeather;
+    const float lit = eye.range * inner; // nearer than this, the range wasn't what stopped the eye
+    const auto reach = [&](const XMFLOAT2& p) {
+        const float dx = p.x - eye.pos.x;
+        const float dz = p.y - eye.pos.y;
+        return std::sqrt(dx * dx + dz * dz);
+    };
+    const auto pull = [&](const XMFLOAT2& p) {
+        return XMFLOAT2{ eye.pos.x + (p.x - eye.pos.x) * inner,
+                         eye.pos.y + (p.y - eye.pos.y) * inner };
+    };
+    // Premultiplied blending, so the color is scaled along with the alpha.
+    const auto vert = [&](const XMFLOAT2& p) {
+        const float s = FogEdgeFade(p);
+        return Vertex{ XMFLOAT3{ p.x, kFogEdgeHeight, p.y },
+                       XMFLOAT4{ kFogColor.x * s, kFogColor.y * s, kFogColor.z * s,
+                                 kFogColor.w * s } };
+    };
+
+    for (size_t i = 0; i < poly.size(); ++i)
+    {
+        const XMFLOAT2& a = poly[i];
+        const XMFLOAT2& b = poly[(i + 1) % poly.size()];
+        if (reach(a) < lit && reach(b) < lit)
+            continue;
+
+        const Vertex va = vert(a);
+        const Vertex vb = vert(b);
+        const Vertex vai = vert(pull(a));
+        const Vertex vbi = vert(pull(b));
+        out.push_back(vai);
+        out.push_back(va);
+        out.push_back(vb);
+        out.push_back(vai);
+        out.push_back(vb);
+        out.push_back(vbi);
     }
 }
 
@@ -1865,10 +1965,18 @@ void Game::Render(Renderer& renderer)
     // squad's worth of fans over a real map's occluders can outgrow the batch,
     // and the mark cares about neither order nor overlap — and then one dark
     // sheet lands on everything left unmarked.
-    for (const Visibility::Eye& eye : m_teamEyes)
+    //
+    // Each eye's polygon is kept rather than dropped: the fade along the edge
+    // is cut from the same shape, and it can't be drawn until the grass is
+    // down, so the alternative is sweeping the arena twice for the same answer.
+    m_sightPolys.resize(m_teamEyes.size());
+    for (size_t i = 0; i < m_teamEyes.size(); ++i)
     {
+        const Visibility::Eye& eye = m_teamEyes[i];
+        m_sightPolys[i] = Visibility::ComputePolygon(eye.pos, m_world.Occluders(),
+                                                     m_world.ArenaHalf(), eye.range);
         m_fogVerts.clear();
-        AppendSight(eye, m_fogVerts);
+        AppendSight(m_sightPolys[i], eye, m_fogVerts);
         renderer.MarkSeen(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()), identity);
     }
     m_fogVerts.clear();
@@ -1876,13 +1984,37 @@ void Game::Render(Renderer& renderer)
     renderer.DrawTrianglesUnseen(m_fogVerts.data(), static_cast<uint32_t>(m_fogVerts.size()),
                                  identity);
 
-    // And the grass, on the other side of the same mark. It stands a third of
-    // a unit off the floor, which is above the plane the fog is a sheet at, so
-    // laid down with the turf it would stay lit through the darkness and
-    // speckle the unseen half of the map green. Drawn here instead it grows
-    // only where the squad can see, which is the rule everything else in the
-    // arena already keeps.
-    Ground::DrawGrass(renderer, m_ground, m_scratch);
+    // And the grass, against the same mark. It stands a third of a unit off
+    // the floor, which is above the plane the fog is a sheet at, so laid down
+    // with the turf it would stay lit through the darkness and speckle the
+    // unseen half of the map green. Drawn here instead, the mark sorts it into
+    // the half that is drawn whole and the half that is dimmed to whatever the
+    // sheet just left the ground — which is the same arithmetic off the same
+    // constant, so grass under the fog is exactly as dark as the ground it
+    // grows in.
+    Ground::DrawGrass(renderer, m_ground, m_scratch, 1.0f - kFogColor.w);
+
+    // The seam between the two: a band inside the boundary that carries the
+    // darkness in rather than starting it at a line. It comes after the grass
+    // and rides above it, so the blades fade with the ground they're standing
+    // in; it comes before every overlay below, so the aim line and the rings
+    // are drawn over it at full strength and stay readable out to the edge of
+    // sight. It also spends the mark it reads — nothing after this may ask the
+    // stencil anything.
+    m_edgeVerts.clear();
+    for (size_t i = 0; i < m_teamEyes.size(); ++i)
+        AppendFogEdge(m_sightPolys[i], m_teamEyes[i], m_edgeVerts);
+    // A squad's worth of bands can outgrow the batch, and unlike the mask this
+    // one can't simply be drawn per eye — the bands overlap, and it's the
+    // order they're submitted in that decides which of them paints the shared
+    // ground. So it goes down in whole quads, in submission order, however many
+    // draws that takes.
+    constexpr size_t kEdgeChunk = Renderer::kBatchVertices - Renderer::kBatchVertices % 6;
+    for (size_t off = 0; off < m_edgeVerts.size(); off += kEdgeChunk)
+    {
+        const size_t n = std::min(kEdgeChunk, m_edgeVerts.size() - off);
+        renderer.DrawFogEdge(m_edgeVerts.data() + off, static_cast<uint32_t>(n), identity);
+    }
 
     // What the player's ability lets them see that nobody else does — for the
     // medic, squadmate health over the heads of the wounded. Which soldiers are
