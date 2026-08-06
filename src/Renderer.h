@@ -94,6 +94,49 @@ public:
     void MarkSeen(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
     void DrawTrianglesUnseen(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
 
+    // The soft edge on that darkness. Alpha triangles drawn where the mark
+    // *is* — over ground the side can see — carrying their own alpha per
+    // vertex, so the far edge of sight can be handed a band that fades in
+    // rather than a line the ground changes brightness across. A gradient is
+    // the one thing a stencil can't be: it holds a yes or a no, and this is
+    // the pass that puts the in-between back.
+    //
+    // It clears the mark as it paints, which is what makes a squad's worth of
+    // these safe to lay down one after another. Darkness still doesn't union,
+    // and these bands overlap wherever two soldiers' ranges do; consuming each
+    // pixel means the first band to reach it is the only one that paints it.
+    // What makes that sound rather than arbitrary is the caller's business:
+    // every band works its alpha out from the whole squad's reach rather than
+    // from its own, so they all agree about any pixel they share and which one
+    // arrives first stops mattering.
+    //
+    // Nothing may read the mark after this — it is the frame's last stencil
+    // pass, and it leaves the mark behind it wiped.
+    void DrawFogEdge(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world);
+
+    // Opaque triangles that stand a little off the floor and therefore have to
+    // be fogged by hand — the grass, today, and anything else that is ground
+    // detail rather than a landmark.
+    //
+    // The fog is a flat sheet at a fixed height, which works for everything
+    // lying on the floor and for everything tall enough to be meant to punch
+    // through it. Between those two is a gap: a blade a third of a unit tall is
+    // nearer the eye than the darkness, so it would stay lit through it and
+    // speckle the unseen half of the map. Skipping it there instead is worse
+    // again — the ground under the fog is meant to read as ground, and ground
+    // with the grass cut out of it doesn't.
+    //
+    // So it is drawn twice against the same mark, after the fog: once whole
+    // where the mark is, and once through `unseenTint` where it isn't. Pass the
+    // fraction of itself the fog leaves the floor — one minus the sheet's alpha
+    // — and detail dims exactly as much as the ground it grows in.
+    //
+    // Depth is tested and not written, so a wall or a soldier in front still
+    // hides it and nothing drawn afterwards — the aim line, the rings — gets
+    // chewed up by it.
+    void DrawGroundDetail(const Vertex* verts, uint32_t count, const DirectX::XMMATRIX& world,
+                          float unseenTint);
+
     // Loads a glTF model (path relative to the exe dir or the repo root).
     std::unique_ptr<Model> LoadModel(const std::string& path);
     void DrawModel(const Model& model, const DirectX::XMMATRIX& world);
@@ -161,9 +204,14 @@ public:
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
 
+    // The most vertices one of the batched draws above will take. A call over
+    // it is dropped rather than split, so anything building geometry by the
+    // thousand — the blood on the floor, the grass on it — has to bound itself
+    // against this or feed it in pieces.
+    static constexpr size_t kBatchVertices = 16384;
+
 private:
     static constexpr uint32_t kFrameCount = 2;
-    static constexpr size_t kBatchVertices = 16384;
     static constexpr size_t kSrvHeapSize = 256;
 
     void CreateSizedResources();
@@ -204,6 +252,11 @@ private:
     // The fog's mask and the sheet that reads it; see MarkSeen.
     std::unique_ptr<DirectX::BasicEffect> m_seenEffect;
     std::unique_ptr<DirectX::BasicEffect> m_unseenEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_fogEdgeEffect;
+    // DrawGroundDetail's pair: the same opaque state, one testing the fog's
+    // mark for equal and one for not.
+    std::unique_ptr<DirectX::BasicEffect> m_detailSeenEffect;
+    std::unique_ptr<DirectX::BasicEffect> m_detailUnseenEffect;
     std::unique_ptr<DirectX::BasicEffect> m_modelEffect;
     std::unique_ptr<DirectX::NormalMapEffect> m_texModelEffect;
     // Overlay geometry: no depth (nothing is bound by then) and straight-alpha

@@ -1,4 +1,3 @@
-- grass
 - shadows
 - more SFX (walking, dying, spawning, throwing grenade, knife swing, etc)
 - steam friend code join

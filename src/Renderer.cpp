@@ -159,6 +159,9 @@ void Renderer::Shutdown()
     m_alphaLineEffect.reset();
     m_seenEffect.reset();
     m_unseenEffect.reset();
+    m_fogEdgeEffect.reset();
+    m_detailSeenEffect.reset();
+    m_detailUnseenEffect.reset();
     m_modelEffect.reset();
     m_texModelEffect.reset();
     m_screenTriEffect.reset();
@@ -289,6 +292,49 @@ void Renderer::CreateEffects()
         CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     m_unseenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
                                                    unseenDesc);
+
+    // The fade along the edge of that darkness (DrawFogEdge): the same blend
+    // as the sheet, drawn where the mark is, and spending it — the pass op
+    // wipes the mark so no second band can paint the same pixel. Only on a
+    // pixel it actually reaches: a depth fail keeps the mark, or a band
+    // crossing behind a wall would consume ground the wall is standing in
+    // front of and the band behind it would come out with a hole in it.
+    D3D12_DEPTH_STENCIL_DESC fogEdgeStencil = markStencil;
+    fogEdgeStencil.FrontFace = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                 D3D12_STENCIL_OP_ZERO, D3D12_COMPARISON_FUNC_EQUAL };
+    fogEdgeStencil.BackFace = fogEdgeStencil.FrontFace;
+
+    const EffectPipelineStateDescription fogEdgeDesc(
+        &Vertex::InputLayout, CommonStates::AlphaBlend, fogEdgeStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_fogEdgeEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                    fogEdgeDesc);
+
+    // And the pair that reads the mark for solid geometry (DrawGroundDetail):
+    // the same state twice, sorted by the mark into the half that is drawn
+    // whole and the half that is drawn dimmed. Depth is tested and not
+    // written, because everything here is decoration standing on ground that
+    // has already had its say about what's in front of what.
+    D3D12_DEPTH_STENCIL_DESC detailSeenStencil = markStencil;
+    detailSeenStencil.FrontFace = { D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                    D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_EQUAL };
+    detailSeenStencil.BackFace = detailSeenStencil.FrontFace;
+
+    D3D12_DEPTH_STENCIL_DESC detailUnseenStencil = detailSeenStencil;
+    detailUnseenStencil.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
+    detailUnseenStencil.BackFace = detailUnseenStencil.FrontFace;
+
+    const EffectPipelineStateDescription detailSeenDesc(
+        &Vertex::InputLayout, CommonStates::Opaque, detailSeenStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_detailSeenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                       detailSeenDesc);
+
+    const EffectPipelineStateDescription detailUnseenDesc(
+        &Vertex::InputLayout, CommonStates::Opaque, detailUnseenStencil,
+        CommonStates::CullNone, rtState, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    m_detailUnseenEffect = std::make_unique<BasicEffect>(m_device.Get(), EffectFlags::VertexColor,
+                                                         detailUnseenDesc);
 
     const EffectPipelineStateDescription modelDesc(
         &VertexPositionNormalTexture::InputLayout, CommonStates::Opaque, CommonStates::DepthDefault,
@@ -761,6 +807,24 @@ void Renderer::MarkSeen(const Vertex* verts, uint32_t count, const XMMATRIX& wor
 void Renderer::DrawTrianglesUnseen(const Vertex* verts, uint32_t count, const XMMATRIX& world)
 {
     DrawBatch(verts, count, world, m_unseenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void Renderer::DrawFogEdge(const Vertex* verts, uint32_t count, const XMMATRIX& world)
+{
+    DrawBatch(verts, count, world, m_fogEdgeEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+// Two passes over one buffer. BasicEffect's vertex-color variant multiplies
+// the vertex through the effect's diffuse, so the dimmed half costs a constant
+// rather than a second set of vertices in a second color.
+void Renderer::DrawGroundDetail(const Vertex* verts, uint32_t count, const XMMATRIX& world,
+                                float unseenTint)
+{
+    m_detailSeenEffect->SetDiffuseColor(g_XMOne);
+    DrawBatch(verts, count, world, m_detailSeenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    m_detailUnseenEffect->SetDiffuseColor(XMVectorReplicate(unseenTint));
+    DrawBatch(verts, count, world, m_detailUnseenEffect.get(), D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 void Renderer::DrawBatch(const Vertex* verts, uint32_t count, const XMMATRIX& world,

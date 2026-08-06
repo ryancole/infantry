@@ -95,6 +95,7 @@ add_executable(infantry WIN32
     src/Camera.cpp
     src/ClassSelect.cpp
     src/Game.cpp
+    src/Ground.cpp
     src/Hud.cpp
     src/JoinMenu.cpp
     src/MainMenu.cpp
