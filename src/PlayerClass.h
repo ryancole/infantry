@@ -72,9 +72,12 @@ enum class TracerId : uint8_t
 //
 // Length is set against how far the round travels in a frame, so the streak
 // reads as continuous rather than as a strobing dash: the sniper's bolt covers
-// about 1.3 units between frames at sixty, the marine's about 0.85, the
+// about 1.6 units between frames at sixty, the marine's about 0.85, the
 // medic's about 0.5. Each is drawn a little shorter than that, so the round is
-// a mark on its own line rather than a solid rod filling it.
+// a mark on its own line rather than a solid rod filling it. The bolt is the
+// one that has to be watched — it is the fastest thing on the field by half
+// again, and its length tracks projectileSpeed rather than any judgement about
+// how a sniper round ought to look.
 //
 // None is what a thrown grenade carries, and nothing reads it: a fused round
 // is drawn by its blink instead (see the client's ProjectileColor), because a
@@ -86,7 +89,7 @@ inline constexpr TracerDef kTracers[static_cast<size_t>(TracerId::Count)] = {
     /* None  */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.00f, 0.00f },
     /* Rifle */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.60f, 0.075f },
     /* Pdw   */ { { 0.30f, 1.00f, 0.35f, 1.0f },     0.42f, 0.060f },
-    /* Bolt  */ { { 0.70f, 0.88f, 1.00f, 1.0f },     0.95f, 0.055f },
+    /* Bolt  */ { { 0.70f, 0.88f, 1.00f, 1.0f },     1.20f, 0.055f },
     /* Shell */ { { 1.00f, 0.52f, 0.14f, 1.0f },     0.00f, 0.00f },
 };
 
@@ -117,7 +120,8 @@ struct WeaponDef
     // up buys is not ammunition — it's the shorter wait, and the right to take
     // it in a lull instead of in the middle of the next fight. Getting that
     // wrong twice over is what an empty magazine costs. A magazine of one only
-    // ever empties, so those weapons never pay anything but reloadEmpty.
+    // ever empties, so such a weapon never pays anything but reloadEmpty —
+    // which is the grenadier's launcher and nothing else in the table.
     float reloadEarly;       // seconds to swap a magazine with rounds left
     float reloadEmpty;       // seconds to swap one that ran dry
     float projectileSpeed;   // horizontal muzzle speed
@@ -277,46 +281,90 @@ struct ClassDef
 };
 
 inline constexpr ClassDef kClassDefs[kClassCount] = {
-    // Two shapes of weapon, and the magazine is what tells them apart.
+    // Three shapes of weapon, and the magazine is what tells them apart.
     //
-    // The automatics (marine, medic) get roughly the same window of fire out of
-    // a magazine — 3.5 to 6 seconds — whatever their cadence, and then have to
-    // stop for about as long again. Their decision is when to spend the pause,
-    // which is why the reload key exists, and the pair of reload numbers is
-    // what makes it a real decision rather than a formality: topping up costs
-    // the marine 3.5 seconds and the medic 3, while being caught dry costs 5
-    // and 6. The medic has the wider gap and so the most to gain by changing a
-    // magazine in a lull — a PDW that runs out in the middle of something
-    // takes twice as long to replace as one changed before it did, which is a
-    // hard price for a class that has to be somewhere. The marine's gap is the
-    // narrowest, which is the same as saying it's the class least punished for
-    // firing until the click.
+    // The automatics (marine, medic) hold a magazine for about the same short
+    // while — the marine just under three seconds of fire, the medic just under
+    // two — and inside it they are the same weapon. Twelve points every 0.12
+    // seconds and ten every 0.10 both come to a hundred a second, so nothing
+    // that happens in a firefight tells the two classes' shooting apart. The
+    // medic simply delivers the same damage in smaller, faster pieces, which is
+    // what the class is: it hits softer per round and pulls the trigger more
+    // often, and those cancel.
     //
-    // The single-shot pair (sniper, grenadier) reload after every shot, so
-    // there's no burst to ration and no decision to make: fireInterval never
-    // gets to matter, the early number can never be paid at all, and the empty
-    // reload alone is the cadence. Both are weapons that end a soldier in one
-    // or two hits, and a magazine let them do it to a whole squad on one breath
-    // — five bolts at 85 damage inside four and a half seconds, four shells at
-    // 40 and a 2.2 blast inside three. What they get instead is one shot that
-    // has to count, and a wait long enough that missing it is felt. The sniper
-    // waits longest, as it did when it carried five: the deadliest shot in the
-    // game pays the highest price for the next one.
+    // What doesn't cancel is what happens when one of them runs out. Topping up
+    // costs the marine 3.5 seconds and the medic 3, but being caught dry costs
+    // the marine 6 and the medic fifteen — and fifteen seconds is a quarter of
+    // a minute standing in the open with nothing in your hands. So the medic's
+    // twenty rounds aren't a supply of ammunition, they're a countdown to a
+    // decision, and the reload key is most of the class: a PDW changed in a
+    // lull costs a fifth of one caught empty. That is where the medic actually
+    // pays for its parity — over a long fight SustainedFireRate has it at about
+    // twelve damage a second against the marine's thirty-four, a third, all of
+    // it lost to the pause rather than to the shooting. The marine's gap is the
+    // narrowest in the table, which is the same as saying it's the class least
+    // punished for firing until the click.
     //
-    // The reload column is the second one with a source, after sight. The zone
-    // lists both halves for every weapon it issues, and the four rows below
-    // take its numbers unaltered — assault rifle 3.5/5, PDW 3/6, grenade
-    // launcher 3.2/6.5, sniper rifle 5/7. That is between two and a half and
-    // nearly four times what this game used to charge (the marine waited 2.1
-    // seconds, the sniper 2.4), and taking it at face value is a deliberate
-    // bet: that the wait is meant to be long enough to be a thing that happens
-    // to you rather than a hitch in the shooting, and that a sniper firing once
-    // every seven seconds is a sniper whose misses matter. Nothing else in the
-    // table has been moved to soften it, so this is the change that will be
-    // felt first if any of it is wrong. Two of the zone's rows have nowhere to
-    // land here: the ripper gun is 4/6 and no class carries one, and the hand
-    // grenade's 2/2 is a reload for a weapon that gets issued by the life
-    // instead (kGrenade below, which never reloads).
+    // The sniper is its own shape: three bolts, fired one at a time, and then
+    // the longest wait in the game. It carried a single round for a while on
+    // the theory that a class this deadly wanted one shot that had to count,
+    // and the theory was wrong in a way worth writing down, because it's the
+    // kind of mistake this table invites. A magazine of one isn't a hard
+    // version of a small magazine — it's a different mechanic. It deletes the
+    // decision the reload key exists for, since a weapon that empties on every
+    // shot can only ever pay reloadEmpty, and it makes a miss cost exactly what
+    // a hit costs, so the class's whole skill expression collapses into the
+    // seven-second wait. Three restores it: a bolt that misses is now a bolt
+    // you can answer with, and a sniper sitting on two rounds in a lull has a
+    // real question to ask — spend 5 seconds now, or risk paying 7 later.
+    //
+    // Three is also the zone's number, and it's the size that makes sense of
+    // the 85 damage sitting beside it. Against a hundred-point soldier that's
+    // two bolts a body, so a magazine is a kill and a follow-up for whoever
+    // steps out to look — enough to punish a pair caught in the open, and not
+    // enough for the squad the old comment here was afraid of. What holds it in
+    // check isn't scarcity of rounds, it's everything else the class pays: the
+    // slowest legs in the table, six units of dead ground in front of the
+    // muzzle, and 2.2 seconds to empty against seven to refill. Over a long
+    // fight SustainedFireRate puts it at about twenty-eight damage a second,
+    // under the marine's thirty-four, from the weapon that hits seven times
+    // harder per round.
+    //
+    // The grenadier is the last shape and the only true single-shot left: one
+    // shell, reloaded after every firing, which is the zone's own number too —
+    // the launcher holds one there as well. For that row alone fireInterval
+    // never gets to matter, the early reload can never be paid, and the empty
+    // reload is the whole cadence.
+    //
+    // The reload column has a source, and so does the magazine beside it. The
+    // zone lists both halves of a reload for every weapon it issues, and the
+    // rows below take its numbers unaltered — assault rifle 3.5/6, PDW 3/15,
+    // grenade launcher 3.2/6.5, sniper rifle 5/7 — along with its magazines,
+    // which is where every magazine below comes from bar none — the marine's
+    // 25, the medic's 20, the sniper's 3, the grenadier's 1. Against what this
+    // game used to charge the reloads are most of a threefold rise (the marine
+    // waited 2.1 seconds where it now waits 6, the sniper 2.4 where it waits
+    // 7), and taking it at face value is a deliberate bet: that the wait is
+    // meant to be long enough to be a thing that happens to you rather than a
+    // hitch in the shooting, and that a sniper who empties in 2.2 seconds and
+    // spends 7 getting it back is a sniper whose misses matter.
+    //
+    // So there is nothing left in this table that overrules the zone. That is
+    // worth keeping true, and worth being suspicious of the next time a number
+    // here feels wrong: twice now the row that felt wrong was the row that had
+    // been guessed, and the file had the answer both times.
+    //
+    // The PDW's fifteen is the number to doubt first, and the thing to know
+    // before doubting it is that it isn't a misreading. The zone's other
+    // fast-firing gun, the light machinegun, is 4/15 as well — so a punishing
+    // dry reload is that zone's standing price for a high rate of fire, paid by
+    // every weapon that has one, rather than a quirk of the row the medic
+    // happens to carry. Nothing else in the table has been moved to soften any
+    // of it. Two of the zone's rows have nowhere to land here: the ripper gun
+    // is 4/6 and no class carries one, and the hand grenade's 2/2 is a reload
+    // for a weapon that gets issued by the life instead (kGrenade below, which
+    // never reloads).
+    //
     // Weight is its own axis, and it does not follow top speed. The medic is
     // the light one at both ends — quickest onto its speed and quickest off it
     // — because a class whose job is crossing open ground to reach someone
@@ -394,47 +442,71 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // nothing at all. Violet and amber are as far from each other as those were,
     // as far from the marine's green and the medic's white, and neither can be
     // mistaken for a team.
-    // Reach is the third column with a source, and the first to come out of the
-    // zone's item table rather than its prose. Every projectile in
+    //
+    // Reach has a source too, and unlike sight it is read rather than derived:
+    // it comes out of the same two rows of hardcorps2.itm the reloads and the
+    // magazines do, which is also where the cadences come from — the assault
+    // rifle's fire delay is 12 hundredths and the PDW's 10, and those are the
+    // 0.12 and the 0.10 in the rows below. Every projectile in
     // hardcorps2.itm carries a muzzle velocity and an alive time — the server
     // repo's Docs/Itm names the columns, and its own aiming code fixes the unit
     // at thousandths of a pixel per ten-millisecond tick — and what survives the
-    // trip is a set of ratios rather than distances. The sniper rifle reaches
-    // about 1.6 times the assault rifle; the PDW about 0.6. The absolute
-    // numbers don't transfer, since that game measured across a map five
+    // trip is a set of ratios rather than distances. A range is the two columns
+    // multiplied — speed times how long the round lives — and reading it off
+    // either column alone is the mistake this paragraph used to make. It had
+    // the sniper at 1.6, which is 400/250, the alive times divided. That looked
+    // right because the PDW's 0.6 really is 150/250, and the PDW gets away with
+    // it: the zone gives that weapon and the assault rifle the same muzzle
+    // velocity, 15000, so the speeds cancel and the times alone happen to be
+    // the answer. The sniper's is 18000, and the moment the speeds differ the
+    // shortcut breaks. Multiplied out properly the rifle reaches 1.92 times the
+    // assault rifle, not 1.6, and the PDW's 0.6 stands.
+    //
+    // Neither friction nor gravity muddies this: horizontal friction is 10000
+    // on every projectile in the zone and gravity is 0 on all three flat
+    // shooters, so speed times time really is the distance. The absolute
+    // numbers still don't transfer, since that game measured across a map five
     // hundred tiles wide, but the spread does, and it's tighter than this table
-    // had: our sniper was reaching 2.4 times the marine.
+    // had before any of it: our sniper was once reaching 2.4 times the marine.
     //
     // Reach here isn't a stat, it's a consequence. A round leaves the muzzle
     // level at 0.6 up and dies where it meets the floor, so how far it gets is
     // its speed times the same fall — about a third of a second for all of
     // them, a hair longer for the thinner rounds. That makes projectileSpeed
     // the only lever there is, and the speeds below are set so the reaches land
-    // on the zone's ratios: marine 16.8 units, medic 10.1, sniper 27.
+    // on the zone's ratios: marine 16.8 units, medic 10.1, sniper 32.3.
     //
     // The sniper is what the other two were fitted around, rather than the
-    // marine everything else in this table is read against. Its 27 units is
-    // already load-bearing: the sight of 38 exists so LONG RANGE can see the
-    // whole of what it shoots at, and the dead ground of 6 was measured against
-    // a reach that long. Anchoring on the marine instead would have cut the
-    // bolt to 18 and left both of those paragraphs describing a class that no
-    // longer existed. The price is paid by the marine, whose round is now half
-    // again as fast (34 -> 51) and reaches half again as far — the largest
-    // single change in this table, and the first thing to look at if the
-    // shooting starts feeling wrong. Against the AI it reads as a fix: a
-    // rifleman opens fire at Brain::kEngageRange (22) and now covers most of
-    // that ground instead of half of it. The medic still can't reach
-    // kPreferredRange (11), the distance its own brain circles at, which is a
-    // thing that was already true and isn't made worse here.
+    // marine everything else in this table is read against, and its reach is
+    // load-bearing in both directions. The sight of 38 exists so LONG RANGE can
+    // see the whole of what it shoots at, and correcting 1.6 to 1.92 spends
+    // most of the room that was left: 32.3 against 38 leaves under six units of
+    // margin where there were eleven. That is the number to watch if the ratio
+    // moves again — a bolt that outranges the eye would put the class back to
+    // firing into fog it has to be told about, which is the thing the 38 was
+    // raised to end. The dead ground of 6 is unaffected, since it was measured
+    // against the things a soldier meets rather than against the reach.
+    //
+    // The price of anchoring here is paid by the marine, whose round is half
+    // again as fast (34 -> 51) and reaches half again as far — still the
+    // largest single change in this table, and the first thing to look at if
+    // the shooting starts feeling wrong. Against the AI it reads as a fix: a
+    // rifleman opens fire at Brain::kEngageRange (14) and now covers that
+    // ground with room to spare where it used to fall short. The medic still
+    // can't reach kPreferredRange (11), the distance its own brain circles at,
+    // which is a thing that was already true and isn't made worse here.
     //
     // The grenadier sits out of it. Its shell is lobbed, so the arc ends the
     // flight long before the fall would, and the zone's own launcher agrees —
     // the alive time on that row is a twenty-second safety net, not a range.
-    // The zone's flamethrower ratio (0.4) has no class here to land on.
+    // The zone's flamethrower has no class here to land on either way; its
+    // ratio is 0.07, not the 0.4 this line used to give it, which was the same
+    // divided-alive-times slip as the sniper's — that weapon crawls out at 2500
+    // against the rifle's 15000, and dividing the times alone hid all of it.
     // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw   tracer            | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 25, 3.50f, 6.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.10f, 20, 3.00f,15.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  3, 5.00f, 7.00f, 96.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
     { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false, TracerId::Shell }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
