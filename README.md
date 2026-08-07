@@ -53,8 +53,8 @@ Dependencies are fetched and built automatically by CMake (`FetchContent`) on fi
 | Mouse | Aim |
 | Left mouse / `Space` | Fire |
 | `R` | Reload (automatic when the magazine empties, and quicker before it does) |
-| `F` | Throw grenade (every class, one per life) |
-| `V` | Melee swing (every class, three charges then a recovery) |
+| `Q` | Throw grenade (every class, one per life) |
+| `E` | Melee swing (every class, three charges then a recovery) |
 | `Shift` | Hold steady (slow walk, much slower turn) |
 | `F5` | Shout for a medic (heard by both sides, out to earshot) |
 | Mouse wheel | Zoom the camera |

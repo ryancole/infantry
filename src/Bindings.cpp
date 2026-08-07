@@ -36,9 +36,9 @@ namespace
         { "move_right",   "STRAFE RIGHT", Key('D') },
         { "fire",         "FIRE",         Mouse(0) },
         { "reload",       "RELOAD",       Key('R') },
-        { "grenade",      "GRENADE",      Key('F') },
-        { "melee",        "MELEE",        Key('V') },
-        { "ability",      "ABILITY",      Key('Q') },
+        { "grenade",      "GRENADE",      Key('Q') },
+        { "melee",        "MELEE",        Key('E') },
+        { "ability",      "ABILITY",      Key('F') },
         { "steady",       "STEADY",       Key(VK_SHIFT) },
         // F5, because that is where Infantry's callouts were and because the
         // three keys after it are where the next three are going. It is the

@@ -18,7 +18,7 @@
 // the game can disagree with itself about what R does.
 //
 // So gameplay asks for an *action* and never names a key: Down(input,
-// Action::Grenade) rather than input.KeyPressed('F'). The binding behind it is
+// Action::Grenade) rather than input.KeyPressed('Q'). The binding behind it is
 // data, it round-trips through a TOML file the player can hand-edit, and the
 // HUD draws its key caps off the same table the simulation reads. There is one
 // answer to "what throws a grenade" and everything gets it from here.
