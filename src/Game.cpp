@@ -285,17 +285,23 @@ namespace
         return { c.x + (1.0f - c.x) * f, c.y + (1.0f - c.y) * f, c.z + (1.0f - c.z) * f, c.w };
     }
 
-    // How a projectile in flight is drawn: tracers are a steady bright dot,
+    // How a projectile in flight is drawn: a round wears the color its weapon
+    // gave it (PlayerClass.h's tracer table, which rode down with the shot),
     // while a fused grenade blinks its casing and then holds bright for the
     // last moment before it goes off, so anyone watching can time it. Phase
     // comes from the fuse itself, so there's no clock to keep per grenade.
-    XMFLOAT4 ProjectileColor(float life, bool fused)
+    //
+    // The fuse wins over the class, and has to: a live grenade at your feet is
+    // a different question from a bullet going past, and the blink is the only
+    // thing on the field that answers it. A grenadier's shell keeps its own
+    // color because it isn't fused — it goes off where it lands.
+    XMFLOAT4 ProjectileColor(const World::Projectile& shot)
     {
-        if (!fused)
-            return kProjectileColor;
-        if (life <= kGrenadeFlashLife)
+        if (!shot.fused)
+            return GetTracer(shot.tracer).color;
+        if (shot.life <= kGrenadeFlashLife)
             return kGrenadeLiveColor;
-        return std::fmod(life, kGrenadeBlinkPeriod) > kGrenadeBlinkPeriod * 0.5f
+        return std::fmod(shot.life, kGrenadeBlinkPeriod) > kGrenadeBlinkPeriod * 0.5f
                    ? kGrenadeLiveColor
                    : kGrenadeCasingColor;
     }
@@ -2027,13 +2033,38 @@ void Game::Render(Renderer& renderer)
         const Vector3& pos = shot.pos;
         if (Visibility::IsPointVisibleAny(m_teamEyes, { pos.x, pos.z }, m_world.Occluders()))
         {
-            // Per-shot radius, not the class's: a thrown grenade is a fatter
-            // projectile than most primaries fire.
-            const float d = shot.radius * 2.0f;
-            renderer.DrawShape(Shape::Sphere,
-                               XMMatrixScaling(d, d, d) *
-                                   XMMatrixTranslation(pos.x, pos.y, pos.z),
-                               ProjectileColor(shot.life, shot.fused));
+            // Two shapes, and the weapon's tracer length picks between them.
+            //
+            // A streak is a thin box laid along the round's own heading — the
+            // medic's green sliver, the marine's amber dash, the sniper's long
+            // pale bolt — because a rifle round crossing open ground is a
+            // direction before it's an object, and a ball says nothing about
+            // which way it's going or who sent it. Its size is the tracer
+            // table's, not the projectile's: how a round looks is a choice, and
+            // the radius it's tested at is a rule.
+            //
+            // A ball is what's left: the lobbed shell, and a live grenade
+            // bouncing at your feet. Those are bodies you watch arrive rather
+            // than lines you read, and they get the per-shot radius, not the
+            // class's — a thrown grenade is a fatter projectile than most
+            // primaries fire.
+            const TracerDef& look = GetTracer(shot.tracer);
+            if (!shot.fused && look.length > 0.0f)
+            {
+                renderer.DrawShape(Shape::Box,
+                                   XMMatrixScaling(look.width, look.width, look.length) *
+                                       XMMatrixRotationY(shot.yaw) *
+                                       XMMatrixTranslation(pos.x, pos.y, pos.z),
+                                   look.color);
+            }
+            else
+            {
+                const float d = shot.radius * 2.0f;
+                renderer.DrawShape(Shape::Sphere,
+                                   XMMatrixScaling(d, d, d) *
+                                       XMMatrixTranslation(pos.x, pos.y, pos.z),
+                                   ProjectileColor(shot));
+            }
         }
     }
 

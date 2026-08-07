@@ -5,6 +5,7 @@
 
 #include <DirectXMath.h>
 #include <cstddef>
+#include <cstdint>
 
 // The soldier archetypes a player must pick from before spawning. Pure data,
 // so the selection screen and gameplay code share one source of truth. Stats
@@ -19,6 +20,82 @@ enum class ClassId
 };
 
 inline constexpr size_t kClassCount = 4;
+
+// What a round looks like on its way to the target. Every shot in the game was
+// the same amber ball until now, which meant the only thing the air could tell
+// you was that somebody was shooting — not who, or with what. These make a
+// round readable in flight, which matters most for the shot you didn't see
+// fired: the streak crossing in front of you says which class is out there and
+// therefore what is about to be asked of you.
+//
+// `length` is the round smeared along its own line of flight, and it's the
+// field that decides what kind of thing is being drawn. Zero is a ball at the
+// projectile's own radius — a body you watch arrive, which is what a lobbed or
+// thrown thing is — and anything above it is a streak, which reads as a
+// direction more than an object. `width` is deliberately its own number rather
+// than the hit radius doubled: how thin a tracer looks is presentation, and
+// tying it to the size the round is tested at would make a visual choice a
+// balance one.
+struct TracerDef
+{
+    DirectX::XMFLOAT4 color;
+    float length; // units along the line of flight; 0 draws the round as a ball
+    float width;  // units across it; unread when length is 0
+};
+
+// Which of those a round is, in one byte. The client is told this per shot
+// (Net::SnapProjectile) and an index into a short fixed table is the cheapest
+// honest way to say it — the alternative is shipping a color and two floats
+// with every round in the air. It rides on the shot rather than being looked
+// up from the shooter for the same reason the damage does: a round outlives
+// the soldier who fired it, and outlives the class they were.
+enum class TracerId : uint8_t
+{
+    None,  // no streak: the round is drawn as a ball, in the table's own color
+    Rifle, // marine
+    Pdw,   // medic
+    Bolt,  // sniper
+    Shell, // grenadier
+    Count,
+};
+
+// The looks themselves. Four of the five are what a class's primary sends, so
+// this table is read down the same way kClassDefs is: these are colors chosen
+// against each other, and against the two sides they'll be seen over.
+//
+// They are not the class marks from kClassDefs::color, and shouldn't drift
+// toward them. A mark is a small thing worn on a body you can already see, and
+// it only has to be distinct at rest; a tracer is a fast thing crossing open
+// ground and it has to be distinct at a glance, in the dark, over grass. The
+// medic's mark is near-white and its round is green, and that's the shape of
+// the difference rather than an inconsistency.
+//
+// Length is set against how far the round travels in a frame, so the streak
+// reads as continuous rather than as a strobing dash: the sniper's bolt covers
+// about 1.3 units between frames at sixty, the marine's about 0.85, the
+// medic's about 0.5. Each is drawn a little shorter than that, so the round is
+// a mark on its own line rather than a solid rod filling it.
+//
+// None is what a thrown grenade carries, and nothing reads it: a fused round
+// is drawn by its blink instead (see the client's ProjectileColor), because a
+// live grenade bouncing at your feet is a different question from a bullet and
+// must not be answered in the same shape. It's here as the safe default a
+// zero-initialized shot lands on.
+inline constexpr TracerDef kTracers[static_cast<size_t>(TracerId::Count)] = {
+    //                color                          len    width
+    /* None  */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.00f, 0.00f },
+    /* Rifle */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.60f, 0.075f },
+    /* Pdw   */ { { 0.30f, 1.00f, 0.35f, 1.0f },     0.42f, 0.060f },
+    /* Bolt  */ { { 0.70f, 0.88f, 1.00f, 1.0f },     0.95f, 0.055f },
+    /* Shell */ { { 1.00f, 0.52f, 0.14f, 1.0f },     0.00f, 0.00f },
+};
+
+inline constexpr const TracerDef& GetTracer(TracerId id)
+{
+    return kTracers[static_cast<size_t>(id) < static_cast<size_t>(TracerId::Count)
+                        ? static_cast<size_t>(id)
+                        : 0];
+}
 
 // One weapon's projectile behavior, split out of ClassDef so the grenade every
 // soldier carries can be described by the same data as a class's primary and
@@ -71,6 +148,12 @@ struct WeaponDef
     // them: the grenadier's launcher lobs an explosive shell too, and it is
     // still a gun going off.
     bool thrown;
+    // What the round looks like crossing the ground between two soldiers. The
+    // only field here that nothing in the simulation reads — but it belongs in
+    // the weapon rather than the client for the same reason `thrown` does:
+    // which weapon is being fired at you is a fact about the loadout, and the
+    // shot is the only thing that can carry it to the person being shot at.
+    TracerId tracer;
 };
 
 // How a class carries itself on the ground. Split out of ClassDef for the same
@@ -348,11 +431,11 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // flight long before the fall would, and the zone's own launcher agrees —
     // the alive time on that row is a twenty-second safety net, not a range.
     // The zone's flamethrower ratio (0.4) has no class here to land on.
-    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw  | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false }, Ability::kNone, Brain::Kind::Rifleman },
-    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false }, Ability::kNone, Brain::Kind::Rifleman },
+    // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw   tracer            | ability         brain
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 30, 3.50f, 5.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.30f, 20, 3.00f, 6.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  1, 5.00f, 7.00f, 80.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
+    { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false, TracerId::Shell }, Ability::kNone, Brain::Kind::Rifleman },
 };
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
@@ -395,8 +478,8 @@ inline constexpr float SustainedFireRate(const WeaponDef& w)
 // reload of its own — two seconds, both halves the same — but that's the
 // pacing of a thing you carry several of, and this one is issued by the life.
 inline constexpr WeaponDef kGrenade = {
-    // fire  mag early empty speed  radius mass   lob   fuse  min   dmg    blast bnce  boom  thrw
-       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 0.0f, 30.0f, 4.0f, 0.45f, true, true
+    // fire  mag early empty speed  radius mass   lob   fuse  min   dmg    blast bnce  boom  thrw  tracer
+       0.0f,  0,  0.0f, 0.0f,  7.0f, 0.20f, 0.80f, 8.0f, 3.0f, 0.0f, 30.0f, 4.0f, 0.45f, true, true, TracerId::None
 };
 
 // The blade every soldier carries, swung with the melee key. Standard issue

@@ -1068,7 +1068,8 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
                                                         weapon.projectileMass, weapon.bounce),
                               weapon.projectileLife, pos, pos, from, weapon.minRange, owner,
                               SlotTeam(owner), weapon.damage, weapon.projectileRadius,
-                              weapon.blastRadius, weapon.bounce > 0.0f, weapon.explodes });
+                              weapon.blastRadius, weapon.bounce > 0.0f, weapon.explodes,
+                              weapon.tracer, std::atan2(dir.x, dir.z) });
 
     Event ev;
     ev.type = Event::Type::Fire;
@@ -1680,6 +1681,8 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
         shot.prevPos = sp.pos;
         shot.radius = sp.radius;
         shot.fused = sp.fused;
+        shot.tracer = sp.tracer;
+        shot.yaw = sp.yaw;
         m_projectiles.push_back(shot);
     }
 }

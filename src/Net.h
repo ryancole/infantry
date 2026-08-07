@@ -97,7 +97,14 @@ namespace Net
     // rest of the list one meaning out of step. And a Fire event says whether
     // what left was thrown (kEvThrown), which is a spare bit in a byte that was
     // already there and would go unread rather than misread.
-    constexpr uint8_t kProtocolVersion = 15;
+    // 16: a round in the air says what kind of round it is. Every shot record
+    // gains the look its weapon gave it and the heading it left the muzzle on
+    // (PlayerClass.h's TracerId, and an angle), so a client can draw a medic's
+    // green sliver differently from a sniper's bolt instead of drawing every
+    // class the same amber ball. Three real bytes in the middle of a record
+    // that repeats per shot, so a build from 15 reads the first round and then
+    // takes a tracer id for the next one's position — the whole air, wrong.
+    constexpr uint8_t kProtocolVersion = 16;
     // Channel 0 carries the messages that must arrive (join, welcome,
     // respawn); channel 1 carries the streams that would rather be fresh
     // than complete (commands, snapshots, events).
@@ -167,6 +174,23 @@ namespace Net
     inline float DqPhase(uint16_t v)
     {
         return static_cast<float>(v) * (6.2831853f / 65535.0f);
+    }
+
+    // An angle in one byte, for the angles that only have to look right rather
+    // than be right. A round's heading is one: it decides which way a tracer
+    // lies and nothing else, and a degree and a half of slop on a streak the
+    // width of a finger is invisible at any range it's seen from. Anything the
+    // simulation reads back gets QAngle above instead.
+    inline uint8_t QAngle8(float rad) // [-pi, pi], atan2's own range
+    {
+        constexpr float kTau = 6.2831853f;
+        float turns = rad / kTau + 0.5f; // -pi..pi -> 0..1
+        return static_cast<uint8_t>(std::lround(std::clamp(turns, 0.0f, 1.0f) * 255.0f));
+    }
+    inline float DqAngle8(uint8_t v)
+    {
+        constexpr float kTau = 6.2831853f;
+        return (static_cast<float>(v) / 255.0f - 0.5f) * kTau;
     }
 
     inline uint8_t QUnorm8(float v)
@@ -368,6 +392,11 @@ namespace Net
         float radius;
         float life;
         bool fused;
+        // How to draw it, and which way round. Neither is simulation, so both
+        // are quantized as coarsely as the eye will allow: a tracer a degree
+        // and a half off its own line is a tracer nobody can tell is off.
+        TracerId tracer;
+        float yaw;
     };
 
     // The receiving player's own loadout — the HUD's half of the snapshot —
@@ -553,6 +582,8 @@ namespace Net
             w.U8(static_cast<uint8_t>(std::lround(shot.radius * 64.0f)));
             w.U16(static_cast<uint16_t>(std::clamp(std::lround(shot.life * 256.0f), 0l, 65535l)));
             w.U8(shot.fused ? 1 : 0);
+            w.U8(static_cast<uint8_t>(shot.tracer));
+            w.U8(QAngle8(shot.yaw));
         }
     }
 
@@ -631,6 +662,12 @@ namespace Net
             s.radius = static_cast<float>(r.U8()) / 64.0f;
             s.life = static_cast<float>(r.U16()) / 256.0f;
             s.fused = r.U8() != 0;
+            // An id from a build that knows a look this one doesn't falls back
+            // to the plain ball rather than indexing off the end of the table.
+            const uint8_t look = r.U8();
+            s.tracer = look < static_cast<uint8_t>(TracerId::Count) ? static_cast<TracerId>(look)
+                                                                   : TracerId::None;
+            s.yaw = DqAngle8(r.U8());
             snap.projectiles.push_back(s);
         }
         snap.own.has = r.U8() != 0;
