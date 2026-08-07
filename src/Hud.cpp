@@ -113,7 +113,8 @@ namespace
     constexpr float kHintGap = 15.0f; // hint row -> panel
     constexpr float kHintKeyPad = 7.0f;
     constexpr float kHintTextGap = 7.0f;
-    constexpr float kHintSpacing = 24.0f;
+    constexpr float kHintSpacing = 24.0f; // one hint -> the next, along a row
+    constexpr float kHintRowGap = 9.0f;   // one hint -> the next, down a column
 
     // Minimum module widths, so the bars underneath health and ammo have room
     // to be read as bars and the two counters stay narrow.
@@ -500,9 +501,9 @@ namespace
         float width = 0.0f; // filled in during layout
     };
 
-    // As many key caps as the row will take. There are seven today; the ceiling
-    // is here so the layout has a fixed amount of stack to work in, not because
-    // the number means anything.
+    // As many key caps as the column will take. There are six today; the
+    // ceiling is here so the layout has a fixed amount of stack to work in, not
+    // because the number means anything.
     constexpr size_t kMaxHints = 10;
 
     // --- Key caps ---
@@ -510,12 +511,11 @@ namespace
     // A row of "this control does this": a rounded cap with whatever the player
     // has the control bound to, then what it does, muted, and on to the next.
     //
-    // Two readouts draw one now — the loadout's row under the cluster, and the
-    // radar's pair over the corner — so the rule for laying one out lives here
-    // and each caller says only where its row starts. Splitting the measure
-    // from the draw is what lets a caller center its row (the loadout) or
-    // butt it up against the edge of its own panel (the radar) without either
-    // of them knowing how a cap is built.
+    // Two readouts draw them now, and they want different shapes: the loadout's
+    // are a column stacked into the bottom right corner, the radar's pair a row
+    // over the corner opposite. The cap itself is built the same way for both,
+    // so that rule lives here once and each caller says only where its block
+    // goes.
     //
     // The cap is at least as wide as it is tall, so a one-character key stays a
     // square rather than becoming a slot.
@@ -525,41 +525,74 @@ namespace
         return std::max(renderer.MeasureScreenText(key, size) + kHintKeyPad * s * 2.0f, capH);
     }
 
-    float HintsWidth(Renderer& renderer, const Hud::Hint* hints, size_t count, float s)
+    float CapHeight(float s) { return kHintSize * s + kHintKeyPad * s * 2.0f; }
+
+    // One cap, top-left at (x, y). CapWidth says how wide it will come out, so
+    // a caller placing it from its right edge can ask before it draws.
+    void DrawCap(Renderer& renderer, std::vector<Vertex>& tris, const char* key, float x, float y,
+                 float s, float fade)
     {
-        if (count == 0)
-            return 0.0f;
         const float size = kHintSize * s;
-        float width = kHintSpacing * s * static_cast<float>(count - 1);
-        for (size_t i = 0; i < count; ++i)
-            width += CapWidth(renderer, hints[i].key, size, s) + kHintTextGap * s +
-                     renderer.MeasureScreenText(hints[i].label, size);
-        return width;
+        const float capH = CapHeight(s);
+        const float capW = CapWidth(renderer, key, size, s);
+        AppendRoundRect(tris, x, y, capW, capH, capH * 0.28f, Fade(kTrack, fade));
+        renderer.DrawScreenText(key, x + (capW - renderer.MeasureScreenText(key, size)) * 0.5f,
+                                y + kHintKeyPad * s, size, Fade(kValueColor, fade));
     }
 
-    // Draws the row with its top-left at (x, y); the height is CapHeight below.
-    void DrawHints(Renderer& renderer, std::vector<Vertex>& tris, const Hud::Hint* hints,
-                   size_t count, float x, float y, float s, float fade)
+    // A row of hints, left to right, with its top-left at (x, y); the height is
+    // CapHeight. Cap then label, because a row is read the way it's laid out.
+    void DrawHintRow(Renderer& renderer, std::vector<Vertex>& tris, const Hud::Hint* hints,
+                     size_t count, float x, float y, float s, float fade)
     {
         const float size = kHintSize * s;
-        const float capH = size + kHintKeyPad * s * 2.0f;
+        const float capH = CapHeight(s);
         for (size_t i = 0; i < count; ++i)
         {
-            const float capW = CapWidth(renderer, hints[i].key, size, s);
-            AppendRoundRect(tris, x, y, capW, capH, capH * 0.28f, Fade(kTrack, fade));
-            renderer.DrawScreenText(
-                hints[i].key,
-                x + (capW - renderer.MeasureScreenText(hints[i].key, size)) * 0.5f,
-                y + kHintKeyPad * s, size, Fade(kValueColor, fade));
-
-            x += capW + kHintTextGap * s;
+            DrawCap(renderer, tris, hints[i].key, x, y, s, fade);
+            x += CapWidth(renderer, hints[i].key, size, s) + kHintTextGap * s;
             renderer.DrawScreenText(hints[i].label, x, y + (capH - size) * 0.5f, size,
                                     Fade(kMutedColor, fade));
             x += renderer.MeasureScreenText(hints[i].label, size) + kHintSpacing * s;
         }
     }
 
-    float CapHeight(float s) { return kHintSize * s + kHintKeyPad * s * 2.0f; }
+    // A column of hints stacked up from the bottom right: the block's right
+    // edge sits at `right` and its last entry's underside at `bottom`, so it
+    // grows upward off a corner that stays put however many entries there are.
+    //
+    // Mirrored from the row — label first, then the cap hard against the right
+    // edge. Both columns that make are the ones worth having: the caps line up
+    // on the screen edge they're pinned to, and the labels end on a straight
+    // edge of their own just inside them, so the eye reads inward to the key
+    // rather than across a ragged margin. The widest cap sets the gutter,
+    // which is what keeps that label edge straight when the keys aren't all
+    // the same length.
+    void DrawHintColumn(Renderer& renderer, std::vector<Vertex>& tris, const Hud::Hint* hints,
+                        size_t count, float right, float bottom, float s, float fade)
+    {
+        if (count == 0)
+            return;
+        const float size = kHintSize * s;
+        const float capH = CapHeight(s);
+        const float pitch = capH + kHintRowGap * s;
+
+        float gutter = 0.0f;
+        for (size_t i = 0; i < count; ++i)
+            gutter = std::max(gutter, CapWidth(renderer, hints[i].key, size, s));
+        const float labelRight = right - gutter - kHintTextGap * s;
+        const float top = bottom - (static_cast<float>(count) * pitch - kHintRowGap * s);
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            const float y = top + static_cast<float>(i) * pitch;
+            DrawCap(renderer, tris, hints[i].key,
+                    right - CapWidth(renderer, hints[i].key, size, s), y, s, fade);
+            renderer.DrawScreenText(hints[i].label,
+                                    labelRight - renderer.MeasureScreenText(hints[i].label, size),
+                                    y + (capH - size) * 0.5f, size, Fade(kMutedColor, fade));
+        }
+    }
 
     // A countdown as minutes and seconds. Rounded up, so it reaches 0:01 for
     // the last second and only says 0:00 when the match really is over.
@@ -811,17 +844,31 @@ void Hud::Render(Renderer& renderer, const State& st)
 
     // --- Key hints ---
     //
-    // Above the panel as small key caps instead of the old right-aligned line
-    // of text: centered with everything else, and short enough to stop
-    // competing with the readouts for the eye. Which bindings are worth the
-    // space is settled before they get here (Hud::State::hints); this end knows
-    // only how to lay a row of caps out, and stops at kMaxHints of them so a
-    // caller can't quietly widen the row past the screen.
+    // A column stacked into the bottom right corner rather than a row over the
+    // panel. The row grew with the kit and was starting to cost the cluster its
+    // width — every cap added pushed the whole thing wider under a readout that
+    // has to stay findable in one glance — and a list that reads top to bottom
+    // takes as many entries as the class has without touching anything else.
+    // Off to the side it also stops sitting between the loadout and the
+    // crosshair, which is the strip of screen the eye crosses most.
+    //
+    // The corner is the anchor: the block's right edge and its underside are
+    // fixed, and the list grows upward off them. So the entry a hand goes to
+    // most is the one nearest the loadout it acts on, and a cap that comes and
+    // goes (the class change, on your own spawn) is added at the *top*, where
+    // it can't shift the ones already learned — which is why the game hands
+    // that one over first. Bottom-aligned with the loadout panel and inset by
+    // the same margin as the radar in the corner opposite, so the three sit on
+    // one line across the foot of the screen.
+    //
+    // Which bindings are worth the space is settled before they get here
+    // (Hud::State::hints); this end knows only how to lay a column of caps out,
+    // and stops at kMaxHints of them so a caller can't quietly run it off the
+    // top of the screen.
 
     const size_t hintCount = std::min(st.hintCount, kMaxHints);
-    const float hintsW = HintsWidth(renderer, st.hints, hintCount, s);
-    DrawHints(renderer, tris, st.hints, hintCount, std::floor((w - hintsW) * 0.5f),
-              panelY - kHintGap * s - CapHeight(s), s, fade);
+    DrawHintColumn(renderer, tris, st.hints, hintCount, std::floor(w - kSideMargin * s),
+                   std::floor(h - kBottomMargin * s), s, fade);
 
     // --- Roster ---
     //
@@ -1361,15 +1408,15 @@ void Hud::RenderRadar(Renderer& renderer, const Radar& radar)
         clipped(head, 3, Lift(blip.cls, kSideLift));
     }
 
-    // The zoom keys, on the same caps the loadout's row uses, sat over the
+    // The zoom keys, on the same caps the loadout's column uses, sat over the
     // panel's top edge and left-aligned with it — near enough the thing they
     // act on to be read as belonging to it, and out of the box rather than
     // over the ground, which at this size is the difference between a label
     // and an obstruction. OUT before IN, because that is the order the keys sit
     // in on the board and reading them the other way round would make the row
     // an instruction to be memorized rather than a picture of the two keys.
-    DrawHints(renderer, tris, radar.hints, radar.hintCount, panelX,
-              panelY - kHintGap * s - CapHeight(s), s, 1.0f);
+    DrawHintRow(renderer, tris, radar.hints, radar.hintCount, panelX,
+                panelY - kHintGap * s - CapHeight(s), s, 1.0f);
 
     renderer.DrawScreenTriangles(tris.data(), static_cast<uint32_t>(tris.size()));
 }

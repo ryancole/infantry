@@ -2501,10 +2501,11 @@ void Game::RenderHud(Renderer& renderer)
     hud.accent = m_class->color;
     hud.alive = m_phase == Phase::Playing;
 
-    // The key-cap row. The ability leads it, named after what it does rather
-    // than after the slot it sits in — FIELD DRESSING says more about the class
-    // than ABILITY ever would, and it's the only cap here a player might not
-    // already know. The rest is the standard kit every soldier carries.
+    // The key-cap column, in the order it reads down the corner. The kit every
+    // soldier carries is at the bottom, nearest the loadout it spends, and the
+    // two entries that aren't always there are stacked above it — because the
+    // column is pinned at that bottom corner and grows upward, so anything that
+    // can come and go has to be at the top or it shoves the rest around.
     //
     // The caps are the player's own bindings, so a rebind is on the HUD the
     // moment they leave the settings screen and nothing here has to be told.
@@ -2515,27 +2516,31 @@ void Game::RenderHud(Renderer& renderer)
         hints[hintCount] = { m_hintKeys[hintCount].c_str(), label };
         ++hintCount;
     };
+    // The class change, but only where it would work: standing on your own
+    // spawn, or waiting to come back from it. A cap that was always up would be
+    // a cap that lies five minutes out of every six, and one that appears
+    // exactly when the key goes live is how the rule gets taught — the player
+    // walks home for something else, the column grows a key they didn't know
+    // they had, and that is the whole of the explanation. It only teaches that
+    // if the rest of the column holds still while it does, which is what puts
+    // it first.
+    if (CanChangeClass())
+        addHint(m_binds.Label(Act::ClassChange), "CHANGE CLASS");
+    // Then the ability, named after what it does rather than after the slot it
+    // sits in — FIELD DRESSING says more about the class than ABILITY ever
+    // would, and it's the only cap here a player might not already know. It's
+    // above the standard kit because a class without one leaves the entry out,
+    // and that absence shouldn't move RELOAD.
     if (hud.ability)
         addHint(m_binds.Label(Act::Ability), m_class->ability.name);
     addHint(m_binds.Label(Act::Reload), "RELOAD");
     addHint(m_binds.Label(Act::Grenade), "GRENADE");
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
-    // The cap is the word that gets shouted, off the callout table rather than
-    // spelled again here — the same deal the ability cap has with its class.
-    // MEDIC over VOICE for the same reason FIELD DRESSING beat ABILITY: a
-    // player wants to know what the key does to the match, not what kind of
-    // key it is.
-    addHint(m_binds.Label(Act::VoiceMedic), kVoiceDefs[static_cast<size_t>(VoiceId::Medic)].name);
-    addHint(m_binds.Label(Act::Scoreboard), "SCORES");
-    // The class change, but only where it would work: standing on your own
-    // spawn, or waiting to come back from it. A cap that was always up would be
-    // a cap that lies five minutes out of every six, and one that appears
-    // exactly when the key goes live is how the rule gets taught — the player
-    // walks home for something else, the row grows a key they didn't know they
-    // had, and that is the whole of the explanation.
-    if (CanChangeClass())
-        addHint(m_binds.Label(Act::ClassChange), "CHANGE CLASS");
+    // The medic callout and the scoreboard had caps here and lost them. Both
+    // are still bound and still in the settings screen; neither is a thing the
+    // player is deciding between while being shot at, which is what this list
+    // is for. A list that has everything on it is a list nobody reads.
 
     hud.hints = hints;
     hud.hintCount = hintCount;

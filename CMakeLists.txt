@@ -173,13 +173,6 @@ target_link_libraries(infantry PRIVATE
 )
 target_include_directories(infantry PRIVATE ${enet_SOURCE_DIR}/include)
 
-# Ship models next to the exe so they can be loaded at runtime.
-add_custom_command(TARGET infantry POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/assets
-        $<TARGET_FILE_DIR:infantry>/assets
-)
-
 # The dedicated server: the same Server the client embeds, with a console loop
 # around it and no renderer, no audio, no window. Note what's absent from its
 # link line — d3d12, dxgi, user32, xaudio2 — which is the point of the target:
@@ -207,9 +200,22 @@ target_link_libraries(infantry_server PRIVATE
 )
 target_include_directories(infantry_server PRIVATE ${enet_SOURCE_DIR}/include)
 
-# The server reads the same level files the client does.
-add_custom_command(TARGET infantry_server POST_BUILD
+# Ship the models, fonts, sounds and level files next to the exes so they can be
+# loaded at runtime. Both binaries need them — the server reads the same levels
+# the client does — and both are written to the same place, so this is one job
+# rather than one per target. It has to be: the two exes have nothing to say to
+# each other, so a parallel build runs them at the same time, and two copies
+# walking one directory tree is a race. It shows up as the copy failing to stat
+# a directory the other process is in the middle of creating, which reads as
+# "No such file or directory" about a path that plainly exists.
+#
+# A target the exes depend on rather than a POST_BUILD step on each, so the
+# copy happens once and is finished before either binary is around to want it.
+add_custom_target(assets
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/assets
-        $<TARGET_FILE_DIR:infantry_server>/assets
+        ${CMAKE_BINARY_DIR}/$<CONFIG>/assets
+    COMMENT "Copying assets next to the binaries"
 )
+add_dependencies(infantry assets)
+add_dependencies(infantry_server assets)
