@@ -391,6 +391,19 @@ public:
         bool fused;      // rides out `life` bouncing off the world instead of
                          // dying on its first contact; the fuse detonates it
         bool explodes;   // grenade: impact gets the big fireball, not a puff
+        // What the round looks like in the air, and which way round to draw it.
+        // Presentation only — nothing in the simulation reads either — but they
+        // ride on the shot for the same reason `damage` does: the round outlives
+        // the soldier who fired it and the class they were, and by the time it
+        // is drawn there may be nobody left to ask.
+        //
+        // `yaw` is the heading it left the muzzle on rather than the one it is
+        // travelling now, which are the same thing for everything that draws a
+        // streak: those fly level and straight. The two that don't — the lobbed
+        // shell and the bouncing grenade — are drawn as balls, and a ball has no
+        // heading to be wrong about.
+        TracerId tracer;
+        float yaw;
     };
 
     // Builds the arena out of the level: the floor and colliders go into the

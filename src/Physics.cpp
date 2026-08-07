@@ -185,7 +185,8 @@ void Physics::AddStaticBox(const XMFLOAT3& center, const XMFLOAT3& size)
 }
 
 Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3& vel,
-                                             float radius, float mass, float restitution)
+                                             float radius, float mass, float restitution,
+                                             float gravityFactor)
 {
     JPH::BodyCreationSettings settings(
         new JPH::SphereShape(radius),
@@ -198,6 +199,11 @@ Physics::BodyHandle Physics::SpawnProjectile(const XMFLOAT3& pos, const XMFLOAT3
     // a real restitution and keeps ricocheting until its fuse ends it.
     settings.mRestitution = restitution;
     settings.mFriction = 0.4f;
+    // 0 for a bullet, which flies dead level until its fuse ends it. The drop
+    // used to be what stopped a round, and that made reach a consequence of
+    // gravity rather than a property of the weapon — see WeaponReach and the
+    // reach paragraphs in PlayerClass.h.
+    settings.mGravityFactor = gravityFactor;
     settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     settings.mMassPropertiesOverride.mMass = mass;
 

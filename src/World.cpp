@@ -1056,7 +1056,8 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
 
     // Grenades keep their fixed upward lob (constant arc height and flight
     // time) and vary horizontal speed to land on the aim point; bullets fire
-    // level at full speed, so max range comes from gravity.
+    // level at full speed and feel no gravity at all, so their reach is
+    // projectileSpeed times projectileLife and nothing else (WeaponReach).
     const Vector3 vel =
         dir * ShotSpeed(weapon, targetDist) + Vector3(0.0f, weapon.lobVelocity, 0.0f);
     // The dead ground is measured from the soldier, not from the muzzle the
@@ -1065,10 +1066,12 @@ void World::SpawnShot(const WeaponDef& weapon, const Vector3& from, const Vector
     // muzzle offset as well would make the rule a fraction shorter than the
     // one the aim line draws.
     m_projectiles.push_back({ m_physics.SpawnProjectile(pos, vel, weapon.projectileRadius,
-                                                        weapon.projectileMass, weapon.bounce),
+                                                        weapon.projectileMass, weapon.bounce,
+                                                        ShotArcs(weapon) ? 1.0f : 0.0f),
                               weapon.projectileLife, pos, pos, from, weapon.minRange, owner,
                               SlotTeam(owner), weapon.damage, weapon.projectileRadius,
-                              weapon.blastRadius, weapon.bounce > 0.0f, weapon.explodes });
+                              weapon.blastRadius, weapon.bounce > 0.0f, weapon.explodes,
+                              weapon.tracer, std::atan2(dir.x, dir.z) });
 
     Event ev;
     ev.type = Event::Type::Fire;
@@ -1084,17 +1087,32 @@ float World::PredictShotStop(const WeaponDef& weapon, const Vector3& from, const
 {
     const float speed = ShotSpeed(weapon, targetDist);
     const float radius = weapon.projectileRadius;
+    const bool arcs = ShotArcs(weapon);
     // Coarser than the physics tick, but the arc is smooth and the boxes are
     // fat relative to per-step travel, so the indicator lands within a step.
     constexpr float kStep = 1.0f / 120.0f;
     for (float t = kStep; t < weapon.projectileLife; t += kStep)
     {
         const float ht = kMuzzleOffset + speed * t;
-        const float y = kMuzzleHeight + weapon.lobVelocity * t - 0.5f * kGravity * t * t;
-        if (y <= radius) // came back down to the ground
+        // A level round holds the muzzle height for its whole life; only a
+        // lobbed one is brought down by gravity, and only it can end on the
+        // floor. That used to be every weapon here, and it was also what kept
+        // this loop short — a bullet died in a third of a second. Now a bullet
+        // runs its whole fuse, so the arena check below is what bounds it.
+        const float y = arcs ? kMuzzleHeight + weapon.lobVelocity * t - 0.5f * kGravity * t * t
+                             : kMuzzleHeight;
+        if (arcs && y <= radius) // came back down to the ground
             return ht;
 
         const Vector3 p(from.x + dir.x * ht, y, from.z + dir.z * ht);
+        // Off the map is as far as any indicator needs to go, and it's the same
+        // edge UpdateProjectiles kills a real shot at — a round that leaves the
+        // arena is gone whatever its fuse says. Without this a sniper's four
+        // seconds would march 157 units past every collider on the level, every
+        // frame, to draw a line that stopped at the wall anyway.
+        if (std::abs(p.x) > m_arenaHalf.x || std::abs(p.z) > m_arenaHalf.y)
+            return ht;
+
         for (const Collider& c : m_colliders)
             if (std::abs(p.x - c.center.x) <= c.size.x * 0.5f + radius &&
                 std::abs(p.y - c.center.y) <= c.size.y * 0.5f + radius &&
@@ -1680,6 +1698,8 @@ void World::ApplySnapshot(const Net::Snapshot& snap, int myUnitId)
         shot.prevPos = sp.pos;
         shot.radius = sp.radius;
         shot.fused = sp.fused;
+        shot.tracer = sp.tracer;
+        shot.yaw = sp.yaw;
         m_projectiles.push_back(shot);
     }
 }

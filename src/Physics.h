@@ -25,13 +25,20 @@ public:
     // Static world collision (floor, bunkers). size is the full extent.
     void AddStaticBox(const DirectX::XMFLOAT3& center, const DirectX::XMFLOAT3& size);
 
-    // Dynamic sphere under gravity; uses continuous collision so fast shots
-    // don't tunnel through thin geometry. `restitution` is the fraction of
-    // impact speed a bounce keeps: 0 stops the body dead where it lands (shots
-    // that die on their first contact), while a grenade rebounds off walls and
-    // floor until its fuse runs out.
+    // Dynamic sphere; uses continuous collision so fast shots don't tunnel
+    // through thin geometry. `restitution` is the fraction of impact speed a
+    // bounce keeps: 0 stops the body dead where it lands (shots that die on
+    // their first contact), while a grenade rebounds off walls and floor until
+    // its fuse runs out.
+    //
+    // `gravityFactor` is how much of the world's gravity the body feels, and 0
+    // is the ordinary case rather than the exotic one: a bullet flies level and
+    // is ended by its own fuse, so how far it reaches is a number the weapon
+    // states rather than a thing the floor decides. Only what is thrown or
+    // lobbed passes 1 and arcs.
     BodyHandle SpawnProjectile(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT3& vel,
-                               float radius, float mass, float restitution = 0.0f);
+                               float radius, float mass, float restitution = 0.0f,
+                               float gravityFactor = 1.0f);
 
     // A corpse limb: a dynamic box that collides with the static world and
     // nothing else, so a ragdoll can't stop a bullet, shove a soldier, or have
