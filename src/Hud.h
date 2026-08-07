@@ -8,8 +8,9 @@
 #include <cstddef>
 
 // The heads-up display: a bottom-centered cluster of icon + value modules for
-// what this soldier is carrying, and a roster in the top-right corner for how
-// the two sides are doing. Both drawn in screen space over the finished frame.
+// what this soldier is carrying, a column of key caps in the bottom-right
+// corner for what spends it, and a roster in the top-right corner for how the
+// two sides are doing. All drawn in screen space over the finished frame.
 //
 // They're apart because they answer different questions and are read at
 // different moments. The loadout is about you and is glanced at mid-fight; the
@@ -90,11 +91,16 @@ namespace Hud
         DirectX::XMFLOAT4 allyColor;
         DirectX::XMFLOAT4 enemyColor;
 
-        // The key-cap row above the panel, in draw order. It arrives whole
-        // rather than being assembled here because half of it is now the
-        // player's bindings and the other half — which of them are worth the
-        // space, and what the ability on this class is called — is the game's;
-        // neither is a fact this file can look up.
+        // The key-cap column in the bottom right corner, in draw order — first
+        // entry at the top. It arrives whole rather than being assembled here
+        // because half of it is now the player's bindings and the other half —
+        // which of them are worth the space, and what the ability on this class
+        // is called — is the game's; neither is a fact this file can look up.
+        //
+        // Order matters more than it did when this was a row. The column is
+        // pinned at its bottom corner and grows upward, so an entry that comes
+        // and goes belongs *first*: arriving at the top, it lengthens the list
+        // without moving a cap the player has already learned the position of.
         const Hint* hints;
         size_t hintCount;
         DirectX::XMFLOAT4 accent; // class color, for the panel's edge light
@@ -266,9 +272,9 @@ namespace Hud
         // The controls that move the zoom, as the same key caps the loadout
         // draws, sat over the panel. A zoom nobody knows about is a zoom that
         // stays where it started, and this is the only readout on screen whose
-        // controls are neither under a finger already nor on the row beneath
-        // the loadout — so it says so itself, next to the thing they act on,
-        // which is the only place the answer is any use.
+        // controls are neither under a finger already nor in the column in the
+        // corner opposite — so it says so itself, next to the thing they act
+        // on, which is the only place the answer is any use.
         //
         // They arrive as caps rather than as two key names for the same reason
         // State::hints does: what a control is spelled is the player's
