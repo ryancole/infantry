@@ -70,14 +70,20 @@ enum class TracerId : uint8_t
 // medic's mark is near-white and its round is green, and that's the shape of
 // the difference rather than an inconsistency.
 //
-// Length is set against how far the round travels in a frame, so the streak
-// reads as continuous rather than as a strobing dash: the sniper's bolt covers
-// about 1.6 units between frames at sixty, the marine's about 0.85, the
-// medic's about 0.5. Each is drawn a little shorter than that, so the round is
-// a mark on its own line rather than a solid rod filling it. The bolt is the
-// one that has to be watched — it is the fastest thing on the field by half
-// again, and its length tracks projectileSpeed rather than any judgement about
-// how a sniper round ought to look.
+// Length has a floor and then a choice. The floor is how far the round travels
+// between frames — draw it shorter and the streak comes apart into a dash
+// strobing across the field — and at sixty that's about 0.55 units for both
+// automatics and 0.66 for the bolt. They are that close together because the
+// zone gives the assault rifle and the PDW the identical muzzle velocity and
+// the sniper rifle only a fifth more; what makes the sniper reach twice as far
+// is that its round lives four seconds rather than two and a half, and living
+// longer doesn't show in a streak.
+//
+// So above the floor it's a choice, and the choice is to keep some spread
+// anyway. Speed no longer tells these three apart, which leaves color, width
+// and length to do it between them, and a class should be identifiable from
+// the round going past whether or not the physics happens to distinguish them
+// this month.
 //
 // None is what a thrown grenade carries, and nothing reads it: a fused round
 // is drawn by its blink instead (see the client's ProjectileColor), because a
@@ -87,9 +93,9 @@ enum class TracerId : uint8_t
 inline constexpr TracerDef kTracers[static_cast<size_t>(TracerId::Count)] = {
     //                color                          len    width
     /* None  */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.00f, 0.00f },
-    /* Rifle */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.60f, 0.075f },
-    /* Pdw   */ { { 0.30f, 1.00f, 0.35f, 1.0f },     0.42f, 0.060f },
-    /* Bolt  */ { { 0.70f, 0.88f, 1.00f, 1.0f },     1.20f, 0.055f },
+    /* Rifle */ { { 1.00f, 0.80f, 0.20f, 1.0f },     0.65f, 0.075f },
+    /* Pdw   */ { { 0.30f, 1.00f, 0.35f, 1.0f },     0.55f, 0.060f },
+    /* Bolt  */ { { 0.70f, 0.88f, 1.00f, 1.0f },     0.95f, 0.055f },
     /* Shell */ { { 1.00f, 0.52f, 0.14f, 1.0f },     0.00f, 0.00f },
 };
 
@@ -444,14 +450,25 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // move with them and the rates do not; bringing the rates along is what
     // holds the coast where it is.
     //
-    // Sight is the newest column and the one that most changes what a class
-    // is, because it decides how much of the map a soldier brings back to the
-    // squad. The sniper's thirty-eight is the only number in it with a source:
-    // the zone's class list gives that class "enhanced viewing distance and
-    // LOS", and thirty-eight is what that has to mean on this ground — the
-    // bolt drops into the dirt around thirty-six units out, so for the first
-    // time LONG RANGE can see the whole of what it shoots at rather than
-    // firing into fog it has to be told about. The marine keeps the thirty
+    // Sight is the column that most changes what a class is, because it decides
+    // how much of the map a soldier brings back to the squad. The sniper's
+    // thirty-eight is the only number in it with a source: the zone's class
+    // list gives that class "enhanced viewing distance and LOS", and
+    // thirty-eight is what that has to mean on this ground.
+    //
+    // It used to mean something more than that, and it's worth recording that
+    // it doesn't any more. The 38 was set so LONG RANGE could see the whole of
+    // what it shoots at rather than firing into fog it has to be told about,
+    // back when a bolt dropped into the dirt around thirty-six units out. Reach
+    // is now four times that, so every class in the table outranges its own
+    // eyes — the marine by fifty units, the sniper by a hundred and twenty. See
+    // the reach paragraphs below for why that is the honest arrangement rather
+    // than a regression, but the consequence lands here: sight has stopped
+    // being a bound on what a soldier can kill and gone back to being purely
+    // what it says, which is how much of the map that soldier is worth as a
+    // pair of eyes. Shooting at what somebody else has spotted is a normal act
+    // now rather than an edge case, and every one of these four numbers should
+    // be read that way. The marine keeps the thirty
     // everything else was tuned against and stays the class the others are
     // read against here too. The medic and the grenadier give four units of it
     // up, for opposite reasons that come to the same price: the medic is fast
@@ -518,51 +535,105 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     //
     // Neither friction nor gravity muddies this: horizontal friction is 10000
     // on every projectile in the zone and gravity is 0 on all three flat
-    // shooters, so speed times time really is the distance. The absolute
-    // numbers still don't transfer, since that game measured across a map five
-    // hundred tiles wide, but the spread does, and it's tighter than this table
-    // had before any of it: our sniper was once reaching 2.4 times the marine.
+    // shooters, so speed times time really is the distance.
     //
-    // Reach here isn't a stat, it's a consequence. A round leaves the muzzle
-    // level at 0.6 up and dies where it meets the floor, so how far it gets is
-    // its speed times the same fall — about a third of a second for all of
-    // them, a hair longer for the thinner rounds. That makes projectileSpeed
-    // the only lever there is, and the speeds below are set so the reaches land
-    // on the zone's ratios: marine 16.8 units, medic 10.1, sniper 32.3.
+    // And the distances transfer, which this paragraph spent a long time
+    // believing they didn't. The chain is short and every link is checkable.
+    // Muzzle velocity is thousandths of a pixel per ten-millisecond tick, which
+    // the server's own lead-aiming code states outright (Helpers/Math.cs,
+    // computeLeadFireAngle). A tile is sixteen pixels, which its level reader
+    // states just as plainly (Assets/Lvl/LvlInfo.cs, which finds a tile by
+    // dividing a coordinate by 16). And a tile is 0.35 of our units, which is
+    // this project's own conversion, taken off the trench widths when the map
+    // was traced rather than guessed — see the README. Multiply those together
+    // and one raw velocity unit is 0.021875 units per second, so the zone's
+    // 15000 is 32.8 units a second and its 250-tick fuse is two and a half of
+    // them. That's a reach of 82 units, and it isn't an interpretation.
     //
-    // The sniper is what the other two were fitted around, rather than the
-    // marine everything else in this table is read against, and its reach is
-    // load-bearing in both directions. The sight of 38 exists so LONG RANGE can
-    // see the whole of what it shoots at, and correcting 1.6 to 1.92 spends
-    // most of the room that was left: 32.3 against 38 leaves under six units of
-    // margin where there were eleven. That is the number to watch if the ratio
-    // moves again — a bolt that outranges the eye would put the class back to
-    // firing into fog it has to be told about, which is the thing the 38 was
-    // raised to end. The dead ground of 6 is unaffected, since it was measured
-    // against the things a soldier meets rather than against the reach.
+    // Every reach in this table was short by the same factor, 4.9, which is the
+    // most reassuring shape that kind of error can have: the ratios were right
+    // and only the scale was wrong. The rows now carry the zone's own two
+    // columns unaltered — speed and life, exactly as it stores them — and the
+    // reaches fall out at marine 82, medic 49.2, sniper 157.5.
     //
-    // The price of anchoring here is paid by the marine, whose round is half
-    // again as fast (34 -> 51) and reaches half again as far — still the
-    // largest single change in this table, and the first thing to look at if
-    // the shooting starts feeling wrong. Against the AI it reads as a fix: a
-    // rifleman opens fire at Brain::kEngageRange (14) and now covers that
-    // ground with room to spare where it used to fall short. The medic still
-    // can't reach kPreferredRange (11), the distance its own brain circles at,
-    // which is a thing that was already true and isn't made worse here.
+    // Getting there meant giving up the trick this game used to make range. A
+    // round used to leave the muzzle level at 0.6 up and die where it met the
+    // floor, so reach was speed times the same third of a second for everyone,
+    // and projectileSpeed was the only lever there was. That model cannot say
+    // what the zone says. Its rifle and its PDW have the identical muzzle
+    // velocity and differ in reach by two thirds, purely because one round
+    // lives 2.5 seconds and the other 1.5 — a difference the floor erases,
+    // since a falling round's life is decided by the drop and never by its
+    // fuse. Reproducing the ratio under gravity meant lying about the speeds,
+    // which is why the marine's round was 51 units a second when the zone says
+    // 32.8. So bullets now fly dead level (Physics::SpawnProjectile takes a
+    // gravity factor, and everything that isn't lobbed passes 0) and are ended
+    // by projectileLife. Reach stopped being a consequence and became a stat:
+    // WeaponReach is just the two columns multiplied, which is what it should
+    // always have been.
     //
-    // The grenadier sits out of it. Its shell is lobbed, so the arc ends the
-    // flight long before the fall would, and the zone's own launcher agrees —
-    // the alive time on that row is a twenty-second safety net, not a range.
+    // The visible half of that is that rounds are slower and go much farther.
+    // The marine's is down from 51 units a second to 32.8 and the sniper's from
+    // 96 to 39.4, so a bolt is no longer a thing that vanishes between frames —
+    // and the sniper is no longer the fastest round in the game, only the
+    // longest-lived. Speed has stopped being what distinguishes these three at
+    // all, which is why the tracer table above no longer leans on it.
+    //
+    // What this buys and what it costs are the same fact: every class now
+    // outranges its own eyes, by a lot. A marine sees 30 units and shoots 82; a
+    // sniper sees 38 and shoots 157, which is most of the length of the map.
+    // Firing at what you cannot see is now ordinary, and the counterplay to
+    // being shot at from out of the fog is to move rather than to answer. That
+    // is what the source describes and, for what it's worth, what the original
+    // game did — rounds left the screen — but it is a real change in what a
+    // firefight is, and it is the thing to look at first if the shooting starts
+    // feeling wrong. The lever is projectileLife, not speed: cutting fuses
+    // shortens reach while leaving the muzzle velocities the zone's.
+    //
+    // Two smaller consequences worth having written down. The AI is unaffected
+    // in the direction that matters — a rifleman opens fire at
+    // Brain::kEngageRange (14) and every primary now covers that several times
+    // over, where the medic used to fall short of even kPreferredRange (11).
+    // And the sniper's dead ground of 6 is untouched, since it was measured
+    // against the things a soldier meets rather than against the reach; if
+    // anything a minimum range matters more now that the maximum is gone.
+    //
+    // The grenadier sits out of all of it, and now sits out of it structurally
+    // rather than by luck: its shell is the only primary that still feels
+    // gravity, because lobVelocity is what decides that (ShotArcs) and it is
+    // the only row with one. The arc ends that flight long before a fuse could,
+    // which is why its life and speed stayed where they were while the other
+    // three took the zone's — those two numbers are a range on a level round
+    // and merely an upper bound on a lobbed one. The zone's own launcher agrees
+    // about which it is: the alive time on that row is a twenty-second safety
+    // net, not a range.
     // The zone's flamethrower has no class here to land on either way; its
     // ratio is 0.07, not the 0.4 this line used to give it, which was the same
     // divided-alive-times slip as the sniper's — that weapon crawls out at 2500
     // against the rifle's 15000, and dividing the times alone hid all of it.
     // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw   tracer            | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 25, 1.50f, 7.50f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.10f, 20, 1.75f, 3.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
-    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  3, 5.00f, 7.00f, 96.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 25, 1.50f, 7.50f, 32.8f, 0.11f, 0.40f, 0.0f, 2.5f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.10f, 20, 1.75f, 3.00f, 32.8f, 0.09f, 0.30f, 0.0f, 1.5f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
+    { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  3, 5.00f, 7.00f, 39.4f, 0.07f, 0.25f, 0.0f, 4.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
     { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false, TracerId::Shell }, Ability::kNone, Brain::Kind::Rifleman },
 };
+
+// Whether a weapon's shot arcs, and lobVelocity is the whole of the answer.
+// Everything that leaves a barrel flies dead level and is ended by its own
+// fuse; only what is lobbed or thrown feels gravity at all. The simulation and
+// the aim indicator both ask this and they must not be able to disagree, which
+// is why it's a function here rather than the same comparison written twice.
+inline constexpr bool ShotArcs(const WeaponDef& w) { return w.lobVelocity > 0.0f; }
+
+// How far a shot gets before its fuse ends it, ignoring anything it might hit
+// on the way. For a level round this is the reach, full stop — which is the
+// point of flying level, and the thing this table spent a long time not being
+// able to say. An arcing shot returns the distance it would cover if the
+// ground never came up to meet it, so it's an upper bound rather than a range.
+inline constexpr float WeaponReach(const WeaponDef& w)
+{
+    return w.projectileSpeed * w.projectileLife;
+}
 
 // Shots per second a weapon actually keeps up: the cadence inside a magazine
 // and the reload that follows it, averaged over one full magazine. Once a class
