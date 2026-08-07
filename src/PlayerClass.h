@@ -292,18 +292,34 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // what the class is: it hits softer per round and pulls the trigger more
     // often, and those cancel.
     //
-    // What doesn't cancel is what happens when one of them runs out. Topping up
-    // costs the marine 3.5 seconds and the medic 3, but being caught dry costs
-    // the marine 6 and the medic fifteen — and fifteen seconds is a quarter of
-    // a minute standing in the open with nothing in your hands. So the medic's
-    // twenty rounds aren't a supply of ammunition, they're a countdown to a
-    // decision, and the reload key is most of the class: a PDW changed in a
-    // lull costs a fifth of one caught empty. That is where the medic actually
-    // pays for its parity — over a long fight SustainedFireRate has it at about
-    // twelve damage a second against the marine's thirty-four, a third, all of
-    // it lost to the pause rather than to the shooting. The marine's gap is the
-    // narrowest in the table, which is the same as saying it's the class least
-    // punished for firing until the click.
+    // Where they part is the reload, and it's the reverse of what the source
+    // had. The marine tops up quickest of anyone — 1.5 seconds — and pays 7.5
+    // for being caught dry, five times over. The medic pays 1.75 either way it
+    // matters, 3 seconds when the magazine runs out, and the gap between its
+    // two numbers is the narrowest in the table. So the harsh magazine now sits
+    // on the heavy class and the forgiving one on the light class, which is
+    // where the two of them belong: a rifleman firing a twenty-five round
+    // magazine to the click has made a choice and can be made to live with it,
+    // while a medic is somewhere it had to run to and cannot be rooted there by
+    // its own gun.
+    //
+    // The arithmetic of that is worth stating plainly, because it inverts the
+    // order these two classes sat in for the whole life of this table.
+    // SustainedFireRate now puts the medic ahead: about forty-one damage a
+    // second against the marine's twenty-nine, half again as much, from the
+    // weapon that hits softer per round. Nothing about the shooting causes it —
+    // the burst rates are still identical — it is entirely that the marine's
+    // dry reload is two and a half times the medic's and that a magazine fired
+    // to the end is always replaced dry. A marine who never empties beats a
+    // medic comfortably; a marine who holds the trigger down loses to one.
+    //
+    // That is a real trade rather than an oversight, and it is the marine's
+    // reload key that carries it. ALL ROUNDER is the only class in the table
+    // whose sustained output moves that much on how it's played, and the whole
+    // of the difference is whether the pause gets spent in a lull at 1.5 or in
+    // the open at 7.5. If it turns out the marine simply feels weak, that is
+    // the number, and 7.5 is the one to move — not the cadence, and not the
+    // damage, both of which are the zone's and both of which are fine.
     //
     // The sniper is its own shape: three bolts, fired one at a time, and then
     // the longest wait in the game. It carried a single round for a while on
@@ -326,9 +342,20 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // check isn't scarcity of rounds, it's everything else the class pays: the
     // slowest legs in the table, six units of dead ground in front of the
     // muzzle, and 2.2 seconds to empty against seven to refill. Over a long
-    // fight SustainedFireRate puts it at about twenty-eight damage a second,
-    // under the marine's thirty-four, from the weapon that hits seven times
-    // harder per round.
+    // fight SustainedFireRate puts it at about twenty-eight damage a second —
+    // which, after everything above, is now level with the marine's twenty-nine
+    // and well under the medic's forty-one, from the weapon that hits seven
+    // times harder per round than either.
+    //
+    // This row has not moved through any of it, and the reloads around it have
+    // moved three times, so the sniper has drifted from the class that spent
+    // the most of a fight reloading to one of two that do. That's worth reading
+    // as it stands rather than as a column to tidy: a sniper level with a
+    // marine on damage over a long fight, while ending a body in two rounds at
+    // twice the range, is not obviously wrong. Left alone deliberately — the
+    // seven-second wait is the price the paragraph above says the class pays,
+    // and every reload change so far came out of somebody playing the class and
+    // finding the pause wrong. This one hasn't had that yet.
     //
     // The grenadier is the last shape and the only true single-shot left: one
     // shell, reloaded after every firing, which is the zone's own number too —
@@ -336,31 +363,58 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // never gets to matter, the early reload can never be paid, and the empty
     // reload is the whole cadence.
     //
-    // The reload column has a source, and so does the magazine beside it. The
-    // zone lists both halves of a reload for every weapon it issues, and the
-    // rows below take its numbers unaltered — assault rifle 3.5/6, PDW 3/15,
-    // grenade launcher 3.2/6.5, sniper rifle 5/7 — along with its magazines,
-    // which is where every magazine below comes from bar none — the marine's
-    // 25, the medic's 20, the sniper's 3, the grenadier's 1. Against what this
-    // game used to charge the reloads are most of a threefold rise (the marine
-    // waited 2.1 seconds where it now waits 6, the sniper 2.4 where it waits
-    // 7), and taking it at face value is a deliberate bet: that the wait is
-    // meant to be long enough to be a thing that happens to you rather than a
-    // hitch in the shooting, and that a sniper who empties in 2.2 seconds and
-    // spends 7 getting it back is a sniper whose misses matter.
+    // The magazine column comes from the zone entire — the marine's 25, the
+    // medic's 20, the sniper's 3, the grenadier's 1 — and so did the reloads
+    // beside it, until they were played. The zone lists both halves for every
+    // weapon it issues: assault rifle 3.5/6, PDW 3/15, grenade launcher
+    // 3.2/6.5, sniper rifle 5/7. Two of those four still stand — the sniper's
+    // and the grenadier's, untouched. The automatics have had theirs replaced
+    // outright, and they are the first numbers in this table to overrule the
+    // source on nothing but how it felt to play.
     //
-    // So there is nothing left in this table that overrules the zone. That is
-    // worth keeping true, and worth being suspicious of the next time a number
-    // here feels wrong: twice now the row that felt wrong was the row that had
-    // been guessed, and the file had the answer both times.
+    // Which is the right reason, and is worth saying plainly so the next person
+    // doesn't quietly restore them. Taking the zone's reloads at face value was
+    // written down here as a deliberate bet — that the wait was meant to be a
+    // thing that happens to you rather than a hitch in the shooting — and the
+    // bet was explicitly the one to look at first if any of this felt wrong. It
+    // did, in the direction the bet risked: the pauses were long enough to stop
+    // being tension and start being downtime, and a fight kept emptying out
+    // while both sides stood around waiting to be armed again. Everything below
+    // came out of playing it, in three passes.
     //
-    // The PDW's fifteen is the number to doubt first, and the thing to know
-    // before doubting it is that it isn't a misreading. The zone's other
-    // fast-firing gun, the light machinegun, is 4/15 as well — so a punishing
-    // dry reload is that zone's standing price for a high rate of fire, paid by
-    // every weapon that has one, rather than a quirk of the row the medic
-    // happens to carry. Nothing else in the table has been moved to soften any
-    // of it. Two of the zone's rows have nowhere to land here: the ripper gun
+    // First both automatics were halved, which fixed the downtime. That left
+    // the medic still holding the zone's PDW shape at 1.5/7.5, and so still
+    // reloading slower than the marine it runs rings around — a contradiction
+    // the moment it's played, since FAST SUPPORT was quick everywhere except
+    // the one moment it had to stand still. So the medic took the marine's
+    // gentler pair. And then the pair the medic had been carrying turned out to
+    // be the one that felt right on a rifleman, so the marine took that: the
+    // long dry reload went to the class that can afford to be caught by it.
+    //
+    // The two ended up crossed over, and that's the whole design rather than an
+    // accident of the order they were edited in. The zone's harshest magazine
+    // is now on the heavy class and its most forgiving on the light one. If
+    // these move again the thing to keep is which way round they sit — the
+    // medic must not end up paying both a longer pause and a more frequent one,
+    // which is being charged twice for one idea, and is exactly the state the
+    // three passes above were walking away from.
+    //
+    // The PDW's fifteen is the number that got dropped, and it's worth
+    // recording that dropping it was never about doubting the reading. The
+    // zone's other fast-firing gun, the light machinegun, is 4/15 as well — a
+    // punishing dry reload is that zone's standing price for a high rate of
+    // fire, paid by every weapon that has one, and it is exactly what it looks
+    // like. It just isn't a price this medic can pay. That zone hung the PDW on
+    // whoever wanted it; here it is welded to the class built to be the first
+    // one somewhere, and the same number that reads as a fair tax on a rate of
+    // fire reads as a punishment for being the support class when there is only
+    // one weapon it can be attached to. Its five-to-one wasn't thrown away
+    // though — it came off the PDW and went onto the assault rifle, where the
+    // class carrying it can afford the wait. What the zone was right about was
+    // the shape; what it couldn't know is which of our four soldiers should
+    // wear it.
+    //
+    // Two of the zone's rows have nowhere to land here: the ripper gun
     // is 4/6 and no class carries one, and the hand grenade's 2/2 is a reload
     // for a weapon that gets issued by the life instead (kGrenade below, which
     // never reloads).
@@ -504,8 +558,8 @@ inline constexpr ClassDef kClassDefs[kClassCount] = {
     // divided-alive-times slip as the sniper's — that weapon crawls out at 2500
     // against the rifle's 15000, and dividing the times alone hid all of it.
     // name         blurb              color                          | speed accel  stop | sight | fire   mag early empty speed  radius mass   lob   life  min   dmg    blast bnce  boom   thrw   tracer            | ability         brain
-    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 25, 3.50f, 6.00f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
-    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.10f, 20, 3.00f,15.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
+    { "MARINE",    "ALL ROUNDER",      { 0.25f, 0.85f, 0.35f, 1.0f }, {  4.50f,  8.0f, 20.0f }, 30.0f, { 0.12f, 25, 1.50f, 7.50f, 51.0f, 0.11f, 0.40f, 0.0f, 3.0f, 0.0f, 12.0f, 0.0f, 0.0f, false, false, TracerId::Rifle }, Ability::kNone, Brain::Kind::Rifleman },
+    { "MEDIC",     "FAST SUPPORT",     { 0.90f, 0.90f, 0.95f, 1.0f }, {  5.50f, 11.0f, 24.0f }, 26.0f, { 0.10f, 20, 1.75f, 3.00f, 29.0f, 0.09f, 0.30f, 0.0f, 3.0f, 0.0f, 10.0f, 0.0f, 0.0f, false, false, TracerId::Pdw   }, kFieldDressing, Brain::Kind::Rifleman },
     { "SNIPER",    "LONG RANGE",       { 0.62f, 0.40f, 0.96f, 1.0f }, {  3.50f,  6.5f, 22.0f }, 38.0f, { 1.10f,  3, 5.00f, 7.00f, 96.0f, 0.07f, 0.25f, 0.0f, 3.0f, 6.0f, 85.0f, 0.0f, 0.0f, false, false, TracerId::Bolt  }, Ability::kNone, Brain::Kind::Rifleman },
     { "GRENADIER", "LOBBED GRENADES",  { 0.98f, 0.70f, 0.12f, 1.0f }, {  3.75f,  6.0f, 13.0f }, 26.0f, { 0.90f,  1, 3.20f, 6.50f, 16.0f, 0.22f, 1.60f, 7.5f, 2.5f, 0.0f, 40.0f, 2.2f, 0.0f, true,  false, TracerId::Shell }, Ability::kNone, Brain::Kind::Rifleman },
 };
