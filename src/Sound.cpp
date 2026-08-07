@@ -13,11 +13,31 @@ using namespace DirectX;
 
 namespace
 {
-    // Linear falloff to silence at CurveDistanceScaler (= Sound::kRange),
-    // instead of X3DAudio's default inverse curve, which never reaches zero
-    // and would make the far-range cull in callers audible as a pop.
-    X3DAUDIO_DISTANCE_CURVE_POINT kFalloffPoints[2] = { { 0.0f, 1.0f }, { 1.0f, 0.0f } };
-    X3DAUDIO_DISTANCE_CURVE kFalloffCurve = { kFalloffPoints, 2 };
+    // Falloff to silence at CurveDistanceScaler (= Sound::kRange). X3DAudio's
+    // own inverse curve never reaches zero, which would make the far-range cull
+    // in callers audible as a pop, so the shape is spelled out here instead —
+    // and once you are spelling it out, a straight line is the wrong answer.
+    //
+    // A line spends its dynamic range in the wrong place. Under a linear drop a
+    // shot at two units and a shot at eight arrive within two decibels of each
+    // other, and two decibels is not a distance — it is the same sound twice.
+    // That is what makes a positional mix read as a global one: everything
+    // inside the part of the arena you are actually fighting in is the same
+    // loudness, so the only cue left is the pan, and pan alone says which side
+    // without ever saying how far.
+    //
+    // These points approximate an inverse curve dragged down to meet zero at
+    // the range limit. The first eight units — the fight you are in — now cover
+    // about seven decibels, so near and not-so-near are audibly different
+    // things. The tail past halfway is deliberately thin but not silent: a
+    // firefight at twenty units should be a rumour you can place, not a
+    // participant.
+    X3DAUDIO_DISTANCE_CURVE_POINT kFalloffPoints[] = {
+        { 0.00f, 1.00f }, { 0.08f, 0.68f }, { 0.19f, 0.44f }, { 0.31f, 0.30f },
+        { 0.50f, 0.17f }, { 0.75f, 0.07f }, { 1.00f, 0.00f },
+    };
+    X3DAUDIO_DISTANCE_CURVE kFalloffCurve = { kFalloffPoints,
+                                              static_cast<UINT32>(std::size(kFalloffPoints)) };
 
     constexpr int kWindRate = 22050;         // Hz, mono 16-bit
     constexpr size_t kWindSamples = 4096;    // per generated buffer (~185 ms)
@@ -74,8 +94,19 @@ void Sound::Init()
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     m_engine = std::make_unique<AudioEngine>(AudioEngine_EnvironmentalReverb |
                                              AudioEngine_ReverbUseFilters);
-    // Open-air arena: a long, soft tail rather than a room echo.
-    m_engine->SetReverb(Reverb_Mountains);
+    // Open-air arena: a short, dry outdoor tail rather than a room echo.
+    //
+    // This was Mountains, which is the preset for standing in a valley and
+    // hearing the far wall answer you back — a long tail, late and wide. The
+    // reverb submix is not panned, so whatever goes into it comes back out of
+    // both speakers from nowhere in particular, and Mountains sent a great deal
+    // in. Every shot grew a diffuse halo that outlasted the dry sound that
+    // caused it, and the halo is the part with no direction, so the longer it
+    // ran the less the mix sounded like it was made of places. Plain is the
+    // same outdoors with the far wall taken away: enough air to stop the clips
+    // sounding like they were fired inside the speaker, little enough that the
+    // dry, panned, distance-scaled part is what you actually hear.
+    m_engine->SetReverb(Reverb_Plain);
 
     m_bank = std::make_unique<WaveBank>(m_engine.get(), L"assets/sounds/sounds.xwb");
 
@@ -239,7 +270,17 @@ void Sound::Play3D(const std::string& name, const XMFLOAT3& pos, float pitch, fl
     emitter.pVolumeCurve = &kFalloffCurve;
     // Within this radius panning eases toward center, so the player's own
     // muzzle blast doesn't hard-pan when they fire sideways.
-    emitter.InnerRadius = 2.0f;
+    //
+    // Half a unit, down from two. The case this was written for is untouched by
+    // the change: a Fire event carries the shooter's body position, and the ear
+    // is the local soldier's body position, so the player's own gunfire plays
+    // at a distance of essentially zero and centers under any radius at all.
+    // Two units bought nothing there, and charged for it everywhere else — a
+    // soldier fighting at arm's length is a real direction, and rounding him to
+    // the middle of the stereo field is exactly the moment the mix stops
+    // sounding like it is made of places. Half a unit keeps the smoothing for
+    // things genuinely on top of the ear and lets the rest pan.
+    emitter.InnerRadius = 0.5f;
 
     inst->SetPitch(pitch);
     // Voice volume and the 3D transform are separate settings on the same
