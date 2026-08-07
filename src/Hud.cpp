@@ -500,7 +500,7 @@ namespace
         float width = 0.0f; // filled in during layout
     };
 
-    // As many key caps as the row will take. There are seven today; the ceiling
+    // As many key caps as the row will take. There are six today; the ceiling
     // is here so the layout has a fixed amount of stack to work in, not because
     // the number means anything.
     constexpr size_t kMaxHints = 10;

@@ -2521,13 +2521,10 @@ void Game::RenderHud(Renderer& renderer)
     addHint(m_binds.Label(Act::Grenade), "GRENADE");
     addHint(m_binds.Label(Act::Melee), "MELEE");
     addHint(m_binds.Label(Act::Steady), "STEADY");
-    // The cap is the word that gets shouted, off the callout table rather than
-    // spelled again here — the same deal the ability cap has with its class.
-    // MEDIC over VOICE for the same reason FIELD DRESSING beat ABILITY: a
-    // player wants to know what the key does to the match, not what kind of
-    // key it is.
-    addHint(m_binds.Label(Act::VoiceMedic), kVoiceDefs[static_cast<size_t>(VoiceId::Medic)].name);
-    addHint(m_binds.Label(Act::Scoreboard), "SCORES");
+    // The medic callout and the scoreboard had caps here and lost them. Both
+    // are still bound and still in the settings screen; neither is a thing the
+    // player is deciding between while being shot at, which is what this row is
+    // for. A row that lists everything is a row nobody reads.
     // The class change, but only where it would work: standing on your own
     // spawn, or waiting to come back from it. A cap that was always up would be
     // a cap that lies five minutes out of every six, and one that appears
